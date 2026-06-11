@@ -1500,42 +1500,59 @@ cargarDesdeSupabase();
 
 function applyReadonlyMode(readonly) {
   if (!readonly) return;
-  // Buscar en fullscreen-content o en el módulo directo
-  const container = document.getElementById('fullscreen-content') || document.querySelector('.stock-module');
-  if (!container) return;
+  // Usar setTimeout para esperar que el DOM del stock esté listo
+  setTimeout(function() {
+    const container = document.getElementById('fullscreen-content') || document.querySelector('.stock-module');
+    if (!container) return;
 
-  // Ocultar tabs de modificación
-  container.querySelectorAll('.tab').forEach(btn => {
-    const txt = btn.textContent || btn.innerText || '';
-    if (txt.includes('Ingreso') || txt.includes('Egreso') || txt.includes('Remitos')) {
-      btn.style.display = 'none';
-    }
-  });
-
-  // Deshabilitar todos los botones en paneles de ingreso/egreso/remitos
-  ['panel-ingreso','panel-egreso','panel-remitos'].forEach(panelId => {
-    const panel = container.querySelector('#' + panelId);
-    if (!panel) return;
-    panel.querySelectorAll('button, input, select, textarea').forEach(el => {
-      el.disabled = true;
-      if (el.tagName === 'BUTTON') {
-        el.style.opacity = '0.4';
-        el.style.cursor = 'not-allowed';
+    // 1. Ocultar tabs de Ingreso, Egreso y Remitos
+    container.querySelectorAll('.tab').forEach(btn => {
+      const txt = (btn.textContent || btn.innerText || '').trim();
+      if (txt.includes('Ingreso') || txt.includes('Egreso') || txt.includes('Remitos')) {
+        btn.style.display = 'none';
       }
     });
-  });
 
-  // Agregar cartel visible en panel de ingreso si alguien llegara por URL
-  ['panel-ingreso','panel-egreso'].forEach(panelId => {
-    const panel = container.querySelector('#' + panelId);
-    if (panel && !panel.querySelector('.readonly-block')) {
-      const div = document.createElement('div');
-      div.className = 'readonly-block';
-      div.style.cssText = 'background:var(--green-bg,#E1F5EE);border:0.5px solid #5DCAA5;border-radius:8px;padding:16px;color:var(--green-txt,#0F6E56);font-size:13px;margin:16px';
-      div.innerHTML = '<i class="ti ti-lock"></i> Acceso de solo lectura — no podés registrar movimientos en este módulo.';
-      panel.prepend(div);
+    // 2. Si el usuario está en una tab bloqueada, redirigir a Stock
+    const activeTab = container.querySelector('.tab.active');
+    if (activeTab) {
+      const activeTxt = (activeTab.textContent || '').trim();
+      if (activeTxt.includes('Ingreso') || activeTxt.includes('Egreso') || activeTxt.includes('Remitos')) {
+        const stockTab = container.querySelector('.tab');
+        if (stockTab) stockTab.click();
+      }
     }
-  });
+
+    // 3. Deshabilitar controles en paneles bloqueados
+    ['panel-ingreso', 'panel-egreso', 'panel-remitos'].forEach(panelId => {
+      const panel = container.querySelector('#' + panelId);
+      if (!panel) return;
+      panel.querySelectorAll('button, input, select, textarea').forEach(el => {
+        el.disabled = true;
+        if (el.tagName === 'BUTTON') {
+          el.style.opacity = '0.4';
+          el.style.cursor = 'not-allowed';
+        }
+      });
+      // Cartel de solo lectura
+      if (!panel.querySelector('.readonly-block')) {
+        const div = document.createElement('div');
+        div.className = 'readonly-block';
+        div.style.cssText = 'background:#E1F5EE;border:0.5px solid #5DCAA5;border-radius:8px;padding:14px 16px;color:#0F6E56;font-size:13px;margin:16px;display:flex;align-items:center;gap:8px;';
+        div.innerHTML = '🔒 Acceso de solo lectura — no podés registrar movimientos en este módulo.';
+        panel.prepend(div);
+      }
+    });
+
+    // 4. Interceptar clicks en tabs bloqueadas por si acaso
+    container.querySelectorAll('.tab').forEach(btn => {
+      const txt = (btn.textContent || btn.innerText || '').trim();
+      if (txt.includes('Ingreso') || txt.includes('Egreso') || txt.includes('Remitos')) {
+        btn.onclick = function(e) { e.stopImmediatePropagation(); return false; };
+      }
+    });
+
+  }, 300); // 300ms alcanza para que renderAll() termine
 }
 
 </script>
