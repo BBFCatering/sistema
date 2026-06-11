@@ -1491,6 +1491,7 @@ function importarBackup(event){
 function renderAll(){
   renderAlertas(); renderStock(); renderProductos(); renderProveedores(); renderHistorial(); renderRemitos();
   document.getElementById('stat-provs').textContent = DB.proveedores.filter(p=>p.activo).length;
+  if (isReadonly) applyReadonlyMode(true);
 }
 document.getElementById('ing-vencimiento').min=new Date().toISOString().split('T')[0];
 renderAll();
@@ -1500,8 +1501,8 @@ cargarDesdeSupabase();
 
 function applyReadonlyMode(readonly) {
   if (!readonly) return;
-  // Usar setTimeout para esperar que el DOM del stock esté listo
-  setTimeout(function() {
+  // Ejecutar directo — se llama desde renderAll() que ya terminó
+  (function() {
     const container = document.getElementById('fullscreen-content') || document.querySelector('.stock-module');
     if (!container) return;
 
@@ -1552,7 +1553,7 @@ function applyReadonlyMode(readonly) {
       }
     });
 
-  }, 300); // 300ms alcanza para que renderAll() termine
+  })();
 }
 
 </script>
@@ -1869,6 +1870,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
 </div>`;
 let currentUser  = null;
 let activeModule = null;
+let isReadonly   = false;
 let editingUser  = null;  // null = nuevo usuario
 
 /* ════════════════════════════════════════════
