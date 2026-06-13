@@ -617,7 +617,14 @@ if(!DB.remitos) DB.remitos=[];
 if(!DB.ordenesCompra) DB.ordenesCompra=[];
 if(!DB.historialPrecios) DB.historialPrecios=[];
 DB.productos.forEach(p=>{ if(!p.precios) p.precios={}; });
-let idSeq = { prod: maxId('productos'), prov: maxId('proveedores'), lote: maxId('lotes'), remito: DB.remitos.length?Math.max(...DB.remitos.map(x=>x.id),0)+1:1, oc: DB.ordenesCompra.length?Math.max(...DB.ordenesCompra.map(x=>x.id),0)+1:1 };
+// idSeq AFTER migration so arrays exist
+let idSeq = {
+  prod:   maxId('productos'),
+  prov:   maxId('proveedores'),
+  lote:   maxId('lotes'),
+  remito: DB.remitos.length ? Math.max(...DB.remitos.map(x=>x.id)) + 1 : 1,
+  oc:     DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id)) + 1 : 1
+};
 let editProdId=null, editProvId=null;
 let ocEnEdicion=null; // {proveedorId, lineas:[{productoId,cantidad,precio,bonificacion}]}
 
@@ -724,7 +731,8 @@ function fmtMoney(n){ return '$ ' + (Number(n)||0).toLocaleString('es-AR',{minim
 function getPrecioInfo(productoId, proveedorId){
   const p=getProd(productoId);
   if(!p||!p.precios) return {precio:0,bonificacion:0};
-  return p.precios[proveedorId] || {precio:0,bonificacion:0};
+  // Check both int and string key (JSON keys are always strings)
+  return p.precios[proveedorId] || p.precios[String(proveedorId)] || {precio:0,bonificacion:0};
 }
 function precioFinal(precio,bonif){
   return precio * (1 - (Number(bonif)||0)/100);
@@ -732,7 +740,8 @@ function precioFinal(precio,bonif){
 function setPrecioProv(productoId, proveedorId, nuevoPrecio, nuevaBonif){
   const p=getProd(productoId);
   if(!p.precios) p.precios={};
-  const actual = p.precios[proveedorId] || {precio:0,bonificacion:0};
+  proveedorId = parseInt(proveedorId); // normalize
+  const actual = p.precios[proveedorId] || p.precios[String(proveedorId)] || {precio:0,bonificacion:0};
   nuevoPrecio = Number(nuevoPrecio)||0;
   nuevaBonif = Number(nuevaBonif)||0;
   if(actual.precio !== nuevoPrecio || actual.bonificacion !== nuevaBonif){
@@ -1285,7 +1294,7 @@ function cancelarOC(){
 
 function onOCProveedorChange(){
   const provId = parseInt(document.getElementById('oc-proveedor').value);
-  if(!provId){ document.getElementById('oc-lineas-wrap').classList.add('hidden'); return; }
+  if(!provId || isNaN(provId)){ document.getElementById('oc-lineas-wrap').classList.add('hidden'); return; }
   ocEnEdicion = { proveedorId: provId, lineas: [] };
   document.getElementById('oc-lineas-wrap').classList.remove('hidden');
 
@@ -1309,6 +1318,9 @@ function onOCProveedorChange(){
 }
 
 function toggleOCLinea(productoId, proveedorId){
+  // Ensure integer types
+  productoId  = parseInt(productoId);
+  proveedorId = parseInt(proveedorId);
   const checked = document.getElementById('oc-check-'+productoId).checked;
   if(checked){
     const info = getPrecioInfo(productoId, proveedorId);
@@ -1382,9 +1394,15 @@ function guardarOC(){
     setPrecioProv(l.productoId, oc.proveedorId, l.precio, l.bonificacion);
   });
 
-  save(); cancelarOC(); renderOCs(); renderAll();
-  toast(`✓ Orden ${nro} creada`);
-  abrirVerOC(oc.id);
+  try {
+    save();
+  } catch(e) { console.error('Error al guardar OC:', e); toast('Error al guardar','error'); return; }
+
+  cancelarOC();
+  try { renderOCs(); } catch(e){ console.warn('renderOCs:', e); }
+  try { renderAll(); } catch(e){ console.warn('renderAll:', e); }
+  toast('✓ Orden ' + nro + ' creada');
+  try { abrirVerOC(oc.id); } catch(e){ console.warn('abrirVerOC:', e); }
 }
 
 function renderOCs(){
