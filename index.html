@@ -1175,13 +1175,20 @@ function guardarProducto(){
   else { prod={id:idSeq.prod++,precios:{},...datos}; DB.productos.push(prod); toast(`✓ "${nombre}" creado`); }
   if(!prod.precios) prod.precios={};
   // Guardar precios/bonificaciones por proveedor (con historial de cambios)
+  // Buscar en el modal primero, luego en el documento (por si está en fullscreen)
+  const modalCtx = document.getElementById('modal-producto') || document;
   provIds.forEach(provId=>{
-    const precioInput = document.getElementById('prod-precio-'+provId);
-    const bonifInput = document.getElementById('prod-bonif-'+provId);
+    const precioInput = modalCtx.querySelector('#prod-precio-'+provId)
+                     || document.querySelector('#prod-precio-'+provId);
+    const bonifInput  = modalCtx.querySelector('#prod-bonif-'+provId)
+                     || document.querySelector('#prod-bonif-'+provId);
     if(precioInput){
       const nuevoPrecio = parseFloat(precioInput.value)||0;
-      const nuevaBonif = parseFloat(bonifInput.value)||0;
+      const nuevaBonif  = parseFloat(bonifInput ? bonifInput.value : 0)||0;
       setPrecioProv(prod.id, provId, nuevoPrecio, nuevaBonif);
+    } else {
+      // Fallback: leer del formulario directamente via name attr
+      console.warn('No se encontró input precio para proveedor', provId);
     }
   });
   save(); cerrarModal('modal-producto'); renderAll();
