@@ -674,11 +674,17 @@ async function cargarDesdeSupabase(){
       const remotoLen = (remoto.historial||[]).length;
       if(remotoLen >= localLen){
         DB = remoto;
-        if(!DB.remitos) DB.remitos = [];
+        // ── Migraciones completas después de cargar desde Supabase ──
+        if(!DB.remitos)        DB.remitos        = [];
+        if(!DB.ordenesCompra)  DB.ordenesCompra  = [];
+        if(!DB.historialPrecios) DB.historialPrecios = [];
+        DB.productos.forEach(p=>{ if(!p.precios) p.precios={}; });
+        // Recalcular todos los contadores de ID
         idSeq.prod   = maxId('productos');
         idSeq.prov   = maxId('proveedores');
         idSeq.lote   = maxId('lotes');
         idSeq.remito = DB.remitos.length ? Math.max(...DB.remitos.map(x=>x.id),0)+1 : 1;
+        idSeq.oc     = DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id),0)+1 : 1;
         localStorage.setItem('sf_v3', JSON.stringify(DB));
         renderAll();
       }
@@ -740,6 +746,8 @@ function precioFinal(precio,bonif){
 function setPrecioProv(productoId, proveedorId, nuevoPrecio, nuevaBonif){
   const p=getProd(productoId);
   if(!p.precios) p.precios={};
+  if(!DB.historialPrecios) DB.historialPrecios=[];
+  if(!DB.ordenesCompra) DB.ordenesCompra=[];
   proveedorId = parseInt(proveedorId); // normalize
   const actual = p.precios[proveedorId] || p.precios[String(proveedorId)] || {precio:0,bonificacion:0};
   nuevoPrecio = Number(nuevoPrecio)||0;
