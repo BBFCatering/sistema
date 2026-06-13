@@ -401,6 +401,21 @@
   .prod-check-item{display:flex;align-items:center;gap:8px;font-size:.83rem;cursor:pointer;}
   .prod-check-item input[type=checkbox]{width:auto;cursor:pointer;}
 
+  /* PRECIOS POR PROVEEDOR EN MODAL PRODUCTO */
+  .prod-prov-row{display:flex;flex-direction:column;gap:6px;padding:8px 0;border-bottom:1px solid var(--border);}
+  .prod-prov-row:last-child{border-bottom:none;}
+  .prod-prov-precios{display:flex;gap:10px;padding-left:24px;}
+  .prod-prov-precios > div{flex:1;}
+  .prod-prov-precios label{display:block;color:var(--muted);margin-bottom:2px;}
+  .prod-prov-precios input{padding:5px 8px;font-size:.8rem;}
+
+  /* TABLA ORDENES DE COMPRA */
+  .oc-table{width:100%;border-collapse:collapse;font-size:.85rem;}
+  .oc-table th,.oc-table td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;}
+  .oc-table th{color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;}
+  .oc-table tfoot td{border-top:2px solid var(--border);border-bottom:none;}
+  .oc-table input[type=number]{padding:5px 8px;font-size:.82rem;}
+
   .search-bar{position:relative;margin-bottom:16px;}
   .search-bar input{padding-left:36px;}
   .search-icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);}
@@ -482,6 +497,9 @@
 
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 </head>
 <body>
 
@@ -585,17 +603,23 @@
 
 // ── DATA ──────────────────────────────────────────────
 let DB = JSON.parse(localStorage.getItem('sf_v3')||'null') || {
-  productos:[],   // {id,nombre,unidad,perecedero,proveedoresIds[],desc,activo}
+  productos:[],   // {id,nombre,unidad,perecedero,proveedoresIds[],desc,activo,precios:{provId:{precio,bonificacion}}}
   proveedores:[], // {id,nombre,cuit,tel,email,pago,notas,activo}
   lotes:[],       // {id,productoId,proveedorId,cantidad,cantidadInicial,vencimiento,ingreso,loteRef}
   stockSimple:{}, // {productoId: {cantidad,unidad}}  — para no perecederos
   remitos:[],     // {id,nro,fecha,obs,lineas[],fechaCierre}
-  historial:[]
+  historial:[],
+  ordenesCompra:[],    // {id,nro,fecha,proveedorId,lineas:[{productoId,cantidad,precio,bonificacion,subtotal}],total,enviada}
+  historialPrecios:[]  // {fecha,productoId,proveedorId,precioAnterior,precioNuevo,bonifAnterior,bonifNueva}
 };
-// migrate old data without remitos
+// migrate old data
 if(!DB.remitos) DB.remitos=[];
-let idSeq = { prod: maxId('productos'), prov: maxId('proveedores'), lote: maxId('lotes'), remito: DB.remitos.length?Math.max(...DB.remitos.map(x=>x.id),0)+1:1 };
+if(!DB.ordenesCompra) DB.ordenesCompra=[];
+if(!DB.historialPrecios) DB.historialPrecios=[];
+DB.productos.forEach(p=>{ if(!p.precios) p.precios={}; });
+let idSeq = { prod: maxId('productos'), prov: maxId('proveedores'), lote: maxId('lotes'), remito: DB.remitos.length?Math.max(...DB.remitos.map(x=>x.id),0)+1:1, oc: DB.ordenesCompra.length?Math.max(...DB.ordenesCompra.map(x=>x.id),0)+1:1 };
 let editProdId=null, editProvId=null;
+let ocEnEdicion=null; // {proveedorId, lineas:[{productoId,cantidad,precio,bonificacion}]}
 
 function maxId(k){ return DB[k].length ? Math.max(...DB[k].map(x=>x.id),0)+1 : 1; }
 
@@ -604,6 +628,13 @@ const SB_URL = 'https://aeucfekavdptmbccoftu.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFldWNmZWthdmRwdG1iY2NvZnR1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExMDY1NDksImV4cCI6MjA5NjY4MjU0OX0.s7KWmO1RXzNWrJj70tp_UdGYs17BRlxndqQ1b727iAc';
 // Nuevo formato Supabase: sb_publishable va SOLO en apikey, sin Authorization Bearer
 const SB_HEADERS = { 'Content-Type':'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
+
+// ── EMAILJS (para enviar Órdenes de Compra por email) ──
+// Para activar el envío de OC por email: crear cuenta gratis en emailjs.com,
+// configurar un servicio y template, y completar estos 3 valores:
+const EMAILJS_SERVICE_ID  = ''; // ej: 'service_xxxxxxx'
+const EMAILJS_TEMPLATE_ID = ''; // ej: 'template_xxxxxxx'
+const EMAILJS_PUBLIC_KEY  = ''; // ej: 'XXXXXXXXXXXXXXXXX'
 
 let syncTimer = null;
 let syncPendiente = false;
@@ -687,6 +718,33 @@ function getProd(id){ return DB.productos.find(p=>p.id===id); }
 function getProv(id){ return DB.proveedores.find(p=>p.id===id); }
 function nomProv(id){ const p=getProv(id);return p?p.nombre:'—'; }
 function nomProd(id){ const p=getProd(id);return p?p.nombre:'—'; }
+
+// ── PRECIOS / BONIFICACIONES ────────────────────────────
+function fmtMoney(n){ return '$ ' + (Number(n)||0).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function getPrecioInfo(productoId, proveedorId){
+  const p=getProd(productoId);
+  if(!p||!p.precios) return {precio:0,bonificacion:0};
+  return p.precios[proveedorId] || {precio:0,bonificacion:0};
+}
+function precioFinal(precio,bonif){
+  return precio * (1 - (Number(bonif)||0)/100);
+}
+function setPrecioProv(productoId, proveedorId, nuevoPrecio, nuevaBonif){
+  const p=getProd(productoId);
+  if(!p.precios) p.precios={};
+  const actual = p.precios[proveedorId] || {precio:0,bonificacion:0};
+  nuevoPrecio = Number(nuevoPrecio)||0;
+  nuevaBonif = Number(nuevaBonif)||0;
+  if(actual.precio !== nuevoPrecio || actual.bonificacion !== nuevaBonif){
+    DB.historialPrecios.unshift({
+      fecha: new Date().toISOString(),
+      productoId, proveedorId,
+      precioAnterior: actual.precio, precioNuevo: nuevoPrecio,
+      bonifAnterior: actual.bonificacion, bonifNueva: nuevaBonif
+    });
+  }
+  p.precios[proveedorId] = {precio:nuevoPrecio, bonificacion:nuevaBonif};
+}
 function stockTotal(productoId){
   const prod=getProd(productoId);
   if(!prod) return 0;
@@ -993,6 +1051,12 @@ function renderProductos(){
   }
   el.innerHTML=[...lista].sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(p=>{
     const provNames=((p.proveedoresIds)||[]).map(id=>nomProv(id)).filter(Boolean).join(', ')||'—';
+    const preciosTxt = ((p.proveedoresIds)||[]).map(pid=>{
+      const info = getPrecioInfo(p.id,pid);
+      if(!info.precio) return '';
+      const bonifTxt = info.bonificacion ? ` (-${info.bonificacion}%)` : '';
+      return `${nomProv(pid)}: ${fmtMoney(info.precio)}${bonifTxt}`;
+    }).filter(Boolean).join(' · ');
     return `<div class="item-card ${p.activo?'':'inactivo'}">
       <div>
         <div class="item-name">${p.nombre} ${!p.activo?'<span class="badge badge-neutral">Inactivo</span>':''}
@@ -1000,15 +1064,43 @@ function renderProductos(){
         </div>
         <div class="item-detail">
           Unidad: <strong>${p.unidad}</strong> · Proveedores: ${provNames}
+          ${preciosTxt?`<br>💲 ${preciosTxt}`:''}
           ${p.desc?`<br>${p.desc}`:''}
         </div>
       </div>
       <div class="item-actions">
         <button class="btn btn-secondary btn-sm" onclick="abrirModalProducto(${p.id})">Editar</button>
+        <button class="btn btn-secondary btn-sm" onclick="abrirHistorialPrecios(${p.id})" title="Historial de precios">🕓 Precios</button>
         <button class="btn btn-sm ${p.activo?'btn-warn':'btn-secondary'}" onclick="toggleActivoProd(${p.id})">${p.activo?'Desactivar':'Activar'}</button>
       </div>
     </div>`;
   }).join('');
+}
+
+function abrirHistorialPrecios(productoId){
+  const prod=getProd(productoId);
+  const hist = DB.historialPrecios.filter(h=>h.productoId===productoId).sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+  const body = document.getElementById('historial-precios-body');
+  document.getElementById('historial-precios-title').textContent = `Historial de precios — ${prod.nombre}`;
+  if(!hist.length){
+    body.innerHTML = `<div class="empty-state"><div class="icon">💲</div><p>Sin cambios de precio registrados.</p></div>`;
+  } else {
+    body.innerHTML = hist.map(h=>{
+      const cambioPrecio = h.precioAnterior !== h.precioNuevo;
+      const cambioBonif = h.bonifAnterior !== h.bonifNueva;
+      return `<div class="item-card">
+        <div>
+          <div class="item-name">${nomProv(h.proveedorId)}</div>
+          <div class="item-detail">
+            ${cambioPrecio?`Precio: ${fmtMoney(h.precioAnterior)} → <strong>${fmtMoney(h.precioNuevo)}</strong><br>`:''}
+            ${cambioBonif?`Bonificación: ${h.bonifAnterior}% → <strong>${h.bonifNueva}%</strong><br>`:''}
+            ${fdt(h.fecha)}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  document.getElementById('modal-historial-precios').classList.remove('hidden');
 }
 
 function abrirModalProducto(id=null){
@@ -1029,9 +1121,33 @@ function abrirModalProducto(id=null){
   }
   document.getElementById('prod-provs-list').innerHTML=
     provs.length
-    ? provs.map(p=>`<label class="prod-check-item"><input type="checkbox" value="${p.id}" ${selIds.includes(p.id)?'checked':''}> ${p.nombre}</label>`).join('')
+    ? provs.map(p=>{
+        const precioInfo = (id && p.id) ? getPrecioInfo(id, p.id) : {precio:0,bonificacion:0};
+        const checked = selIds.includes(p.id);
+        return `<div class="prod-prov-row">
+          <label class="prod-check-item">
+            <input type="checkbox" class="prod-prov-check" value="${p.id}" ${checked?'checked':''} onchange="toggleProdPrecioRow(${p.id})"> ${p.nombre}
+          </label>
+          <div class="prod-prov-precios" id="prod-precio-row-${p.id}" style="${checked?'':'display:none'}">
+            <div>
+              <label style="font-size:.7rem">Precio</label>
+              <input type="number" step="0.01" min="0" id="prod-precio-${p.id}" value="${precioInfo.precio||''}" placeholder="0.00">
+            </div>
+            <div>
+              <label style="font-size:.7rem">Bonif. %</label>
+              <input type="number" step="0.01" min="0" max="100" id="prod-bonif-${p.id}" value="${precioInfo.bonificacion||''}" placeholder="0">
+            </div>
+          </div>
+        </div>`;
+      }).join('')
     : '<p style="color:var(--muted);font-size:.8rem">No hay proveedores activos. Creá uno primero.</p>';
   document.getElementById('modal-producto').classList.remove('hidden');
+}
+
+function toggleProdPrecioRow(provId){
+  const row = document.getElementById('prod-precio-row-'+provId);
+  const checked = document.querySelector(`.prod-prov-check[value="${provId}"]`).checked;
+  if(row) row.style.display = checked ? '' : 'none';
 }
 
 function guardarProducto(){
@@ -1045,8 +1161,20 @@ function guardarProducto(){
   if(!unidad){toast('Seleccioná una unidad','error');return;}
   if(!provIds.length){toast('Asociá al menos un proveedor','error');return;}
   const datos={nombre,unidad,perecedero,desc,proveedoresIds:provIds,activo:true};
-  if(editProdId){ Object.assign(getProd(editProdId),datos); toast(`✓ "${nombre}" actualizado`); }
-  else { DB.productos.push({id:idSeq.prod++,...datos}); toast(`✓ "${nombre}" creado`); }
+  let prod;
+  if(editProdId){ prod=getProd(editProdId); Object.assign(prod,datos); toast(`✓ "${nombre}" actualizado`); }
+  else { prod={id:idSeq.prod++,precios:{},...datos}; DB.productos.push(prod); toast(`✓ "${nombre}" creado`); }
+  if(!prod.precios) prod.precios={};
+  // Guardar precios/bonificaciones por proveedor (con historial de cambios)
+  provIds.forEach(provId=>{
+    const precioInput = document.getElementById('prod-precio-'+provId);
+    const bonifInput = document.getElementById('prod-bonif-'+provId);
+    if(precioInput){
+      const nuevoPrecio = parseFloat(precioInput.value)||0;
+      const nuevaBonif = parseFloat(bonifInput.value)||0;
+      setPrecioProv(prod.id, provId, nuevoPrecio, nuevaBonif);
+    }
+  });
   save(); cerrarModal('modal-producto'); renderAll();
 }
 
@@ -1137,7 +1265,309 @@ function updateIngProvSelect(){
   sel.value=val;
 }
 
-// ── HISTORIAL ─────────────────────────────────────────
+// ── ÓRDENES DE COMPRA ─────────────────────────────────
+function abrirNuevaOC(){
+  ocEnEdicion = { proveedorId:null, lineas:[] };
+  document.getElementById('oc-form').classList.remove('hidden');
+  document.getElementById('oc-lineas-wrap').classList.add('hidden');
+  document.getElementById('btn-nueva-oc').classList.add('hidden');
+  const sel=document.getElementById('oc-proveedor');
+  sel.innerHTML='<option value="">— Seleccioná proveedor —</option>'+
+    DB.proveedores.filter(p=>p.activo).map(p=>`<option value="${p.id}">${p.nombre}</option>`).join('');
+  sel.value='';
+}
+
+function cancelarOC(){
+  ocEnEdicion=null;
+  document.getElementById('oc-form').classList.add('hidden');
+  document.getElementById('btn-nueva-oc').classList.remove('hidden');
+}
+
+function onOCProveedorChange(){
+  const provId = parseInt(document.getElementById('oc-proveedor').value);
+  if(!provId){ document.getElementById('oc-lineas-wrap').classList.add('hidden'); return; }
+  ocEnEdicion = { proveedorId: provId, lineas: [] };
+  document.getElementById('oc-lineas-wrap').classList.remove('hidden');
+
+  const prods = DB.productos.filter(p=>p.activo && (p.proveedoresIds||[]).includes(provId));
+  const el = document.getElementById('oc-productos-list');
+  if(!prods.length){
+    el.innerHTML = `<p style="color:var(--muted);font-size:.85rem">Este proveedor no tiene productos asociados. Asocialo desde la pestaña Productos.</p>`;
+  } else {
+    el.innerHTML = prods.map(p=>{
+      const info = getPrecioInfo(p.id, provId);
+      return `<label class="prod-check-item" style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" onchange="toggleOCLinea(${p.id},${provId})" id="oc-check-${p.id}">
+        ${p.nombre}
+        <span style="color:var(--muted);font-size:.78rem;margin-left:auto">
+          ${info.precio?fmtMoney(info.precio):'Sin precio'}${info.bonificacion?` (-${info.bonificacion}%)`:''}
+        </span>
+      </label>`;
+    }).join('');
+  }
+  renderOCLineas();
+}
+
+function toggleOCLinea(productoId, proveedorId){
+  const checked = document.getElementById('oc-check-'+productoId).checked;
+  if(checked){
+    const info = getPrecioInfo(productoId, proveedorId);
+    ocEnEdicion.lineas.push({ productoId, cantidad:1, precio:info.precio||0, bonificacion:info.bonificacion||0 });
+  } else {
+    ocEnEdicion.lineas = ocEnEdicion.lineas.filter(l=>l.productoId!==productoId);
+  }
+  renderOCLineas();
+}
+
+function renderOCLineas(){
+  const tbody = document.getElementById('oc-lineas-tbody');
+  if(!ocEnEdicion.lineas.length){
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:16px">Seleccioná productos arriba para agregarlos a la orden</td></tr>`;
+    document.getElementById('oc-total').textContent = fmtMoney(0);
+    return;
+  }
+  let total=0;
+  tbody.innerHTML = ocEnEdicion.lineas.map((l,i)=>{
+    const prod=getProd(l.productoId);
+    const subtotal = l.cantidad * precioFinal(l.precio, l.bonificacion);
+    total += subtotal;
+    return `<tr>
+      <td>${prod.nombre}</td>
+      <td><input type="number" min="0.01" step="0.01" value="${l.cantidad}" style="width:80px" onchange="updateOCLinea(${i},'cantidad',this.value)"></td>
+      <td><input type="number" min="0" step="0.01" value="${l.precio}" style="width:100px" onchange="updateOCLinea(${i},'precio',this.value)"></td>
+      <td><input type="number" min="0" max="100" step="0.01" value="${l.bonificacion}" style="width:80px" onchange="updateOCLinea(${i},'bonificacion',this.value)"></td>
+      <td>${fmtMoney(subtotal)}</td>
+      <td><button class="btn btn-sm btn-warn" onclick="quitarOCLinea(${i})">✕</button></td>
+    </tr>`;
+  }).join('');
+  document.getElementById('oc-total').textContent = fmtMoney(total);
+}
+
+function updateOCLinea(idx, campo, valor){
+  ocEnEdicion.lineas[idx][campo] = parseFloat(valor)||0;
+  renderOCLineas();
+}
+
+function quitarOCLinea(idx){
+  const l = ocEnEdicion.lineas[idx];
+  ocEnEdicion.lineas.splice(idx,1);
+  const chk = document.getElementById('oc-check-'+l.productoId);
+  if(chk) chk.checked=false;
+  renderOCLineas();
+}
+
+function guardarOC(){
+  if(!ocEnEdicion || !ocEnEdicion.proveedorId){ toast('Seleccioná un proveedor','error'); return; }
+  if(!ocEnEdicion.lineas.length){ toast('Agregá al menos un producto','error'); return; }
+  for(const l of ocEnEdicion.lineas){
+    if(!l.cantidad || l.cantidad<=0){ toast('Revisá las cantidades','error'); return; }
+  }
+  const year = new Date().getFullYear();
+  const nroSec = String(idSeq.oc).padStart(5,'0');
+  const nro = `OC-${year}-${nroSec}`;
+  const total = ocEnEdicion.lineas.reduce((s,l)=>s+l.cantidad*precioFinal(l.precio,l.bonificacion),0);
+  const oc = {
+    id: idSeq.oc++,
+    nro,
+    fecha: new Date().toISOString(),
+    proveedorId: ocEnEdicion.proveedorId,
+    lineas: JSON.parse(JSON.stringify(ocEnEdicion.lineas)),
+    total,
+    enviada: false
+  };
+  DB.ordenesCompra.unshift(oc);
+
+  // Actualizar precios/bonificaciones del producto si cambiaron en la OC
+  oc.lineas.forEach(l=>{
+    setPrecioProv(l.productoId, oc.proveedorId, l.precio, l.bonificacion);
+  });
+
+  save(); cancelarOC(); renderOCs(); renderAll();
+  toast(`✓ Orden ${nro} creada`);
+  abrirVerOC(oc.id);
+}
+
+function renderOCs(){
+  const el = document.getElementById('oc-list');
+  const q = (document.getElementById('search-oc')?.value||'').toLowerCase();
+  const lista = DB.ordenesCompra.filter(oc=>!q || oc.nro.toLowerCase().includes(q) || nomProv(oc.proveedorId).toLowerCase().includes(q));
+  if(!DB.ordenesCompra.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">🛒</div><p>No hay órdenes de compra registradas.<br>Creá la primera con el botón de arriba.</p></div>`;
+    return;
+  }
+  if(!lista.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">🔍</div><p>No se encontraron órdenes con "<strong>${q}</strong>".</p></div>`;
+    return;
+  }
+  el.innerHTML = lista.map(oc=>`
+    <div class="item-card">
+      <div>
+        <div class="item-name">${oc.nro} — ${nomProv(oc.proveedorId)}</div>
+        <div class="item-detail">
+          ${fdt(oc.fecha)} · ${oc.lineas.length} ítem${oc.lineas.length>1?'s':''} · Total: <strong>${fmtMoney(oc.total)}</strong>
+          ${oc.enviada?' · <span class="badge badge-perecedero">Enviada</span>':''}
+        </div>
+      </div>
+      <div class="item-actions">
+        <button class="btn btn-secondary btn-sm" onclick="abrirVerOC(${oc.id})">Ver / Imprimir</button>
+      </div>
+    </div>`).join('');
+}
+
+function abrirVerOC(ocId){
+  const oc = DB.ordenesCompra.find(o=>o.id===ocId);
+  if(!oc) return;
+  const prov = getProv(oc.proveedorId);
+  document.getElementById('ver-oc-title').textContent = oc.nro;
+  document.getElementById('ver-oc-body').innerHTML = `
+    <div style="margin-bottom:12px;font-size:.9rem">
+      <strong>Fecha:</strong> ${ff(oc.fecha.slice(0,10))}<br>
+      <strong>Proveedor:</strong> ${prov?prov.nombre:'—'}${prov&&prov.email?` (${prov.email})`:''}
+    </div>
+    <table class="oc-table">
+      <thead><tr><th>Item</th><th>Descripción</th><th>Cantidad</th><th>Precio</th>${oc.lineas.some(l=>l.bonificacion)?'<th>Bonif.</th>':''}<th>Total</th></tr></thead>
+      <tbody>
+        ${oc.lineas.map((l,i)=>{
+          const prod=getProd(l.productoId);
+          const final = precioFinal(l.precio,l.bonificacion);
+          return `<tr>
+            <td>${i+1}</td>
+            <td>${prod?prod.nombre:'—'}</td>
+            <td>${l.cantidad}</td>
+            <td>${fmtMoney(l.precio)}</td>
+            ${oc.lineas.some(x=>x.bonificacion)?`<td>${l.bonificacion?l.bonificacion+'%':'—'}</td>`:''}
+            <td>${fmtMoney(l.cantidad*final)}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+      <tfoot><tr><td colspan="${oc.lineas.some(l=>l.bonificacion)?4:3}" style="text-align:right;font-weight:700">Total</td><td colspan="2" style="font-weight:700">${fmtMoney(oc.total)}</td></tr></tfoot>
+    </table>
+  `;
+  document.getElementById('ver-oc-pdf-btn').onclick = ()=>generarPDF_OC(oc);
+  document.getElementById('ver-oc-email-btn').onclick = ()=>enviarOCPorEmail(oc);
+  if(!prov || !prov.email){
+    const btn = document.getElementById('ver-oc-email-btn');
+    btn.disabled = true;
+    btn.title = 'El proveedor no tiene email configurado';
+    btn.style.opacity='0.5';
+  } else {
+    const btn = document.getElementById('ver-oc-email-btn');
+    btn.disabled = false; btn.style.opacity='';
+    btn.title='';
+  }
+  document.getElementById('modal-ver-oc').classList.remove('hidden');
+}
+
+function generarPDF_OC(oc){
+  if(typeof window.jspdf === 'undefined'){
+    toast('Cargando generador de PDF, intentá de nuevo en unos segundos...','error');
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const prov = getProv(oc.proveedorId);
+
+  // Logo BBF (si existe en el DOM)
+  const logoImg = document.querySelector('.sidebar-logo img');
+  let y = 15;
+  try {
+    if(logoImg && logoImg.src.startsWith('data:image')){
+      doc.addImage(logoImg.src, 'JPEG', 15, y, 28, 22);
+    }
+  } catch(e){}
+
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(18);
+  doc.text(`Orden de Compra Nº ${oc.nro}`, 50, y+12);
+
+  y += 32;
+  doc.setFontSize(11);
+  doc.setFont('helvetica','bold');
+  doc.text('Fecha:', 15, y);
+  doc.setFont('helvetica','normal');
+  doc.text(ff(oc.fecha.slice(0,10)), 35, y);
+
+  y += 8;
+  doc.setFont('helvetica','bold');
+  doc.text('Proveedor:', 15, y);
+  doc.setFont('helvetica','normal');
+  doc.text(prov ? prov.nombre : '—', 40, y);
+
+  y += 10;
+  const hasBonif = oc.lineas.some(l=>l.bonificacion);
+  const head = hasBonif
+    ? [['Item','Descripción','Cant.','Precio','Bonif.','Total']]
+    : [['Item','Descripción','Cant.','Precio','Total']];
+  const body = oc.lineas.map((l,i)=>{
+    const prod=getProd(l.productoId);
+    const final = precioFinal(l.precio,l.bonificacion);
+    const row = [String(i+1), prod?prod.nombre:'—', String(l.cantidad), fmtMoney(l.precio)];
+    if(hasBonif) row.push(l.bonificacion?l.bonificacion+'%':'—');
+    row.push(fmtMoney(l.cantidad*final));
+    return row;
+  });
+
+  doc.autoTable({
+    startY: y,
+    head, body,
+    foot: [[{content:'Total', colSpan: hasBonif?5:4, styles:{halign:'right',fontStyle:'bold'}}, {content: fmtMoney(oc.total), styles:{fontStyle:'bold'}}]],
+    theme:'grid',
+    headStyles:{ fillColor:[29,158,117], textColor:255 },
+    styles:{ fontSize:10 }
+  });
+
+  doc.save(`${oc.nro}.pdf`);
+}
+
+function enviarOCPorEmail(oc){
+  const prov = getProv(oc.proveedorId);
+  if(!prov || !prov.email){ toast('El proveedor no tiene email configurado','error'); return; }
+
+  if(typeof emailjs === 'undefined'){
+    toast('Servicio de email no configurado todavía. Descargá el PDF y enviálo manualmente.','error');
+    return;
+  }
+
+  // Generar PDF como base64 para adjuntar
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  // (reutiliza la misma lógica de generarPDF_OC de forma simplificada)
+  doc.setFontSize(14);
+  doc.text(`Orden de Compra ${oc.nro}`, 15, 15);
+  doc.autoTable({
+    startY: 25,
+    head:[['Item','Descripción','Cant.','Precio','Total']],
+    body: oc.lineas.map((l,i)=>{
+      const prod=getProd(l.productoId);
+      const final = precioFinal(l.precio,l.bonificacion);
+      return [String(i+1), prod?prod.nombre:'—', String(l.cantidad), fmtMoney(l.precio), fmtMoney(l.cantidad*final)];
+    })
+  });
+  const pdfBase64 = doc.output('datauristring');
+
+  const params = {
+    to_email: prov.email,
+    proveedor: prov.nombre,
+    nro_oc: oc.nro,
+    fecha: ff(oc.fecha.slice(0,10)),
+    total: fmtMoney(oc.total),
+    pdf_attachment: pdfBase64
+  };
+
+  // EMAILJS_SERVICE_ID / EMAILJS_TEMPLATE_ID / EMAILJS_PUBLIC_KEY deben configurarse
+  emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, params, EMAILJS_PUBLIC_KEY)
+    .then(()=>{
+      oc.enviada = true;
+      save(); renderOCs();
+      toast(`✓ Orden enviada a ${prov.email}`);
+    })
+    .catch(err=>{
+      console.error(err);
+      toast('Error al enviar el email','error');
+    });
+}
+
+
 function renderHistorial(){
   const el = document.getElementById('history-list');
   const countEl = document.getElementById('hist-count');
@@ -1437,13 +1867,14 @@ function renderRemitos(){
 
 // ── TABS ──────────────────────────────────────────────
 function switchTab(tab){
-  const tabs=['stock','listado','ingreso','egreso','remitos','productos','proveedores','historial'];
+  const tabs=['stock','listado','ingreso','egreso','remitos','productos','proveedores','compras','historial'];
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===tab));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   document.getElementById('panel-'+tab).classList.add('active');
   if(tab==='listado') renderListado();
   if(tab==='egreso') initEgreso();
   if(tab==='remitos') renderRemitos();
+  if(tab==='compras') renderOCs();
 }
 
 // ── BACKUP / RESTORE ──────────────────────────────────
@@ -1509,7 +1940,7 @@ function applyReadonlyMode(readonly) {
     // 1. Ocultar tabs de Ingreso, Egreso y Remitos
     container.querySelectorAll('.tab').forEach(btn => {
       const txt = (btn.textContent || btn.innerText || '').trim();
-      if (txt.includes('Ingreso') || txt.includes('Egreso') || txt.includes('Remitos')) {
+      if (txt.includes('Ingreso') || txt.includes('Egreso') || txt.includes('Remitos') || txt.includes('Compras')) {
         btn.style.display = 'none';
       }
     });
@@ -1518,14 +1949,14 @@ function applyReadonlyMode(readonly) {
     const activeTab = container.querySelector('.tab.active');
     if (activeTab) {
       const activeTxt = (activeTab.textContent || '').trim();
-      if (activeTxt.includes('Ingreso') || activeTxt.includes('Egreso') || activeTxt.includes('Remitos')) {
+      if (activeTxt.includes('Ingreso') || activeTxt.includes('Egreso') || activeTxt.includes('Remitos') || activeTxt.includes('Compras')) {
         const stockTab = container.querySelector('.tab');
         if (stockTab) stockTab.click();
       }
     }
 
     // 3. Deshabilitar controles en paneles bloqueados
-    ['panel-ingreso', 'panel-egreso', 'panel-remitos'].forEach(panelId => {
+    ['panel-ingreso', 'panel-egreso', 'panel-remitos','panel-compras'].forEach(panelId => {
       const panel = container.querySelector('#' + panelId);
       if (!panel) return;
       panel.querySelectorAll('button, input, select, textarea').forEach(el => {
@@ -1609,6 +2040,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
     <button class="tab" onclick="switchTab('remitos')">🧾 Remitos</button>
     <button class="tab" onclick="switchTab('productos')">🏷 Productos</button>
     <button class="tab" onclick="switchTab('proveedores')">🏭 Proveedores</button>
+    <button class="tab" onclick="switchTab('compras')">🛒 Compras</button>
     <button class="tab" onclick="switchTab('historial')">🕓 Historial</button>
   </div>
 
@@ -1769,6 +2201,47 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
     <div id="proveedores-list" class="item-list"></div>
   </div>
 
+  <!-- COMPRAS -->
+  <div id="panel-compras" class="panel">
+    <div class="section-header">
+      <div class="section-title">Órdenes de compra</div>
+      <button class="btn btn-primary btn-sm" id="btn-nueva-oc" onclick="abrirNuevaOC()">+ Nueva orden de compra</button>
+    </div>
+
+    <!-- Formulario nueva OC -->
+    <div id="oc-form" class="hidden" style="margin-bottom:24px;border:1px solid var(--border);border-radius:var(--radius);padding:16px;background:var(--surface)">
+      <div class="form-grid">
+        <div class="col-full">
+          <label>Proveedor <span class="req">*</span></label>
+          <select id="oc-proveedor" onchange="onOCProveedorChange()">
+            <option value="">— Seleccioná proveedor —</option>
+          </select>
+        </div>
+      </div>
+      <div id="oc-lineas-wrap" class="hidden" style="margin-top:14px">
+        <div class="section-title" style="font-size:.95rem;margin-bottom:8px">Productos disponibles</div>
+        <div id="oc-productos-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px"></div>
+
+        <div class="section-title" style="font-size:.95rem;margin-bottom:8px">Líneas de la orden</div>
+        <table class="oc-table" id="oc-lineas-tabla">
+          <thead><tr><th>Producto</th><th>Cant.</th><th>Precio</th><th>Bonif. %</th><th>Subtotal</th><th></th></tr></thead>
+          <tbody id="oc-lineas-tbody"></tbody>
+          <tfoot><tr><td colspan="4" style="text-align:right;font-weight:700">Total</td><td id="oc-total" style="font-weight:700"></td><td></td></tr></tfoot>
+        </table>
+
+        <div class="modal-footer" style="margin-top:16px">
+          <button class="btn btn-secondary" onclick="cancelarOC()">Cancelar</button>
+          <button class="btn btn-primary" onclick="guardarOC()">Guardar orden de compra</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Historial de OCs -->
+    <div class="section-title" style="font-size:.95rem;margin-bottom:8px">Historial de órdenes</div>
+    <div class="search-bar"><span class="search-icon">🔍</span><input type="text" id="search-oc" placeholder="Buscar por proveedor o número..." oninput="renderOCs()"></div>
+    <div id="oc-list" class="item-list"></div>
+  </div>
+
   <!-- HISTORIAL -->
   <div id="panel-historial" class="panel">
     <div class="section-header">
@@ -1862,6 +2335,30 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="cerrarModal('modal-proveedor')">Cancelar</button>
       <button class="btn btn-primary" onclick="guardarProveedor()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL HISTORIAL DE PRECIOS -->
+<div id="modal-historial-precios" class="modal-overlay hidden" onclick="cerrarSiOverlay(event,'modal-historial-precios')">
+  <div class="modal">
+    <div class="modal-title" id="historial-precios-title">Historial de precios</div>
+    <div id="historial-precios-body" style="max-height:50vh;overflow-y:auto"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="cerrarModal('modal-historial-precios')">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL VER ORDEN DE COMPRA -->
+<div id="modal-ver-oc" class="modal-overlay hidden" onclick="cerrarSiOverlay(event,'modal-ver-oc')">
+  <div class="modal" style="max-width:700px">
+    <div class="modal-title" id="ver-oc-title">Orden de compra</div>
+    <div id="ver-oc-body" style="max-height:60vh;overflow-y:auto"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="cerrarModal('modal-ver-oc')">Cerrar</button>
+      <button class="btn btn-secondary" id="ver-oc-pdf-btn" onclick="">📄 Descargar PDF</button>
+      <button class="btn btn-primary" id="ver-oc-email-btn" onclick="">✉ Enviar por email</button>
     </div>
   </div>
 </div>
@@ -2027,6 +2524,12 @@ function renderMain() {
   // Módulo STOCK integrado — abre en fullscreen
   if (activeModule === 'stock') {
     openFullscreen('Stock', stockModuleHTML, perm);
+    return;
+  }
+
+  // Módulo COMPRAS — usa el mismo sistema de stock, pestaña "Compras"
+  if (activeModule === 'compras') {
+    openFullscreen('Órdenes de compra', stockModuleHTML, perm, 'compras');
     return;
   }
 
@@ -2203,7 +2706,7 @@ document.getElementById('modalSave').onclick = () => {
 };
 
 /* ── FULLSCREEN ── */
-function openFullscreen(modName, moduleHTML, perm) {
+function openFullscreen(modName, moduleHTML, perm, initialTab) {
   const overlay = document.getElementById('fullscreen-overlay');
   const contentEl = document.getElementById('fullscreen-content');
   const nameEl = document.getElementById('fs-module-name');
@@ -2227,6 +2730,7 @@ function openFullscreen(modName, moduleHTML, perm) {
     renderAll();
     cargarDesdeSupabase();
     if (perm === 'read') applyReadonlyMode(true);
+    if (initialTab) switchTab(initialTab);
   } catch(e) { console.warn('Stock init:', e); }
 }
 
