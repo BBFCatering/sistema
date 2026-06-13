@@ -1965,56 +1965,84 @@ cargarDesdeSupabase();
 
 function applyReadonlyMode(readonly) {
   if (!readonly) return;
-  // Ejecutar directo — se llama desde renderAll() que ya terminó
   (function() {
     const container = document.getElementById('fullscreen-content') || document.querySelector('.stock-module');
     if (!container) return;
 
-    // 1. Ocultar tabs de Ingreso, Egreso y Remitos
+    // 1. Ocultar tabs de escritura (Ingreso, Egreso, Remitos, Compras)
+    const TABS_BLOQUEADAS = ['Ingreso','Egreso','Remitos','Compras'];
     container.querySelectorAll('.tab').forEach(btn => {
       const txt = (btn.textContent || btn.innerText || '').trim();
-      if (txt.includes('Ingreso') || txt.includes('Egreso') || txt.includes('Remitos') || txt.includes('Compras')) {
+      if (TABS_BLOQUEADAS.some(t => txt.includes(t))) {
         btn.style.display = 'none';
+        btn.onclick = e => { e.stopImmediatePropagation(); return false; };
       }
     });
 
-    // 2. Si el usuario está en una tab bloqueada, redirigir a Stock
+    // 2. Si la tab activa es una bloqueada, ir a Stock
     const activeTab = container.querySelector('.tab.active');
     if (activeTab) {
       const activeTxt = (activeTab.textContent || '').trim();
-      if (activeTxt.includes('Ingreso') || activeTxt.includes('Egreso') || activeTxt.includes('Remitos') || activeTxt.includes('Compras')) {
+      if (TABS_BLOQUEADAS.some(t => activeTxt.includes(t))) {
         const stockTab = container.querySelector('.tab');
         if (stockTab) stockTab.click();
       }
     }
 
-    // 3. Deshabilitar controles en paneles bloqueados
-    ['panel-ingreso', 'panel-egreso', 'panel-remitos','panel-compras'].forEach(panelId => {
+    // 3. En Productos: ocultar botones Editar, Desactivar/Activar y el botón Nueva
+    const panelProd = container.querySelector('#panel-productos');
+    if (panelProd) {
+      // Ocultar botón "Nuevo producto"
+      panelProd.querySelectorAll('.btn-primary, .section-header button').forEach(btn => {
+        btn.style.display = 'none';
+      });
+      // Ocultar botones de acción en cada producto (Editar, Desactivar, Precios)
+      panelProd.querySelectorAll('.item-actions').forEach(div => {
+        div.style.display = 'none';
+      });
+    }
+
+    // 4. En Proveedores: ocultar botones Editar, Desactivar/Activar y Nuevo
+    const panelProv = container.querySelector('#panel-proveedores');
+    if (panelProv) {
+      panelProv.querySelectorAll('.btn-primary, .section-header button').forEach(btn => {
+        btn.style.display = 'none';
+      });
+      panelProv.querySelectorAll('.item-actions').forEach(div => {
+        div.style.display = 'none';
+      });
+    }
+
+    // 5. En Compras: ocultar botón nueva OC pero mantener historial visible
+    const panelCompras = container.querySelector('#panel-compras');
+    if (panelCompras) {
+      const btnNueva = panelCompras.querySelector('#btn-nueva-oc');
+      if (btnNueva) btnNueva.style.display = 'none';
+      // Si el formulario estuviera abierto, cerrarlo
+      const form = panelCompras.querySelector('#oc-form');
+      if (form) form.classList.add('hidden');
+      // En el historial: ocultar el botón "Ver / Imprimir" solo dejarlo visible
+      // (lo dejamos visible porque es lectura — ver PDF está bien)
+    }
+
+    // 6. Cartel de aviso en panel-stock
+    const panelStock = container.querySelector('#panel-stock');
+    if (panelStock && !panelStock.querySelector('.readonly-block')) {
+      const div = document.createElement('div');
+      div.className = 'readonly-block';
+      div.style.cssText = 'background:#E1F5EE;border:0.5px solid #5DCAA5;border-radius:8px;padding:12px 16px;color:#0F6E56;font-size:13px;margin:0 0 12px 0;display:flex;align-items:center;gap:8px;';
+      div.innerHTML = '🔒 Modo solo lectura — podés consultar toda la información pero no registrar movimientos.';
+      panelStock.prepend(div);
+    }
+
+    // 7. Deshabilitar paneles de escritura completos como seguridad extra
+    ['panel-ingreso','panel-egreso','panel-remitos'].forEach(panelId => {
       const panel = container.querySelector('#' + panelId);
       if (!panel) return;
       panel.querySelectorAll('button, input, select, textarea').forEach(el => {
         el.disabled = true;
-        if (el.tagName === 'BUTTON') {
-          el.style.opacity = '0.4';
-          el.style.cursor = 'not-allowed';
-        }
+        if (el.tagName === 'BUTTON') { el.style.opacity='0.4'; el.style.cursor='not-allowed'; }
       });
-      // Cartel de solo lectura
-      if (!panel.querySelector('.readonly-block')) {
-        const div = document.createElement('div');
-        div.className = 'readonly-block';
-        div.style.cssText = 'background:#E1F5EE;border:0.5px solid #5DCAA5;border-radius:8px;padding:14px 16px;color:#0F6E56;font-size:13px;margin:16px;display:flex;align-items:center;gap:8px;';
-        div.innerHTML = '🔒 Acceso de solo lectura — no podés registrar movimientos en este módulo.';
-        panel.prepend(div);
-      }
-    });
-
-    // 4. Interceptar clicks en tabs bloqueadas por si acaso
-    container.querySelectorAll('.tab').forEach(btn => {
-      const txt = (btn.textContent || btn.innerText || '').trim();
-      if (txt.includes('Ingreso') || txt.includes('Egreso') || txt.includes('Remitos')) {
-        btn.onclick = function(e) { e.stopImmediatePropagation(); return false; };
-      }
     });
 
   })();
@@ -2040,13 +2068,13 @@ let users = [
   { id: 1, name: 'Admin',  username: 'admin', password: 'Dsnv13579',   role: 'admin',
     perms: { stock: 'edit', compras: 'edit', ventas: 'edit', usuarios: 'edit' } },
   { id: 2, name: 'Facu',   username: 'facu',  password: 'Facu02468',   role: 'user',
-    perms: { stock: 'edit' } },
+    perms: { stock: 'edit', compras: 'edit' } },
   { id: 3, name: 'Silvia', username: 'silvia',password: 'Silvia02468', role: 'user',
-    perms: { stock: 'edit' } },
+    perms: { stock: 'edit', compras: 'edit' } },
   { id: 4, name: 'Elian',  username: 'elian', password: 'Elian02468',  role: 'user',
-    perms: { stock: 'edit' } },
+    perms: { stock: 'edit', compras: 'edit' } },
   { id: 5, name: 'Fer',    username: 'fer',   password: 'Fer02468',    role: 'user',
-    perms: { stock: 'edit' } },
+    perms: { stock: 'read' } },
 ];
 
 /* ── Estado de la app ── */
