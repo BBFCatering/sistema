@@ -610,12 +610,14 @@ let DB = JSON.parse(localStorage.getItem('sf_v3')||'null') || {
   remitos:[],     // {id,nro,fecha,obs,lineas[],fechaCierre}
   historial:[],
   ordenesCompra:[],    // {id,nro,fecha,proveedorId,lineas:[{productoId,cantidad,precio,bonificacion,subtotal}],total,enviada}
-  historialPrecios:[]  // {fecha,productoId,proveedorId,precioAnterior,precioNuevo,bonifAnterior,bonifNueva}
+  historialPrecios:[], // {fecha,productoId,proveedorId,precioAnterior,precioNuevo,bonifAnterior,bonifNueva}
+  usuarios:null   // array de usuarios del sistema (login/roles/permisos) — null = usar defaults locales
 };
 // migrate old data
 if(!DB.remitos) DB.remitos=[];
 if(!DB.ordenesCompra) DB.ordenesCompra=[];
 if(!DB.historialPrecios) DB.historialPrecios=[];
+if(DB.usuarios === undefined) DB.usuarios = null;
 DB.productos.forEach(p=>{ if(!p.precios) p.precios={}; });
 // idSeq AFTER migration so arrays exist
 let idSeq = {
@@ -678,6 +680,7 @@ async function cargarDesdeSupabase(){
         if(!DB.remitos)        DB.remitos        = [];
         if(!DB.ordenesCompra)  DB.ordenesCompra  = [];
         if(!DB.historialPrecios) DB.historialPrecios = [];
+        if(DB.usuarios === undefined) DB.usuarios = null;
         DB.productos.forEach(p=>{ if(!p.precios) p.precios={}; });
         // Recalcular todos los contadores de ID
         idSeq.prod   = maxId('productos');
@@ -714,46 +717,7 @@ async function guardarEnSupabase(){
   }
 }
 
-// ── USUARIOS (login, roles, permisos) — persistidos en Supabase ──
-// Se guardan en la misma tabla 'stockbbf', en la fila con id='users'
-async function guardarUsuariosEnSupabase(usersArray){
-  try {
-    const res = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.users`, {
-      method: 'PATCH',
-      headers: { ...SB_HEADERS, 'Prefer': 'return=minimal' },
-      body: JSON.stringify({ data: { users: usersArray }, updated_at: new Date().toISOString() })
-    });
-    if(res.status === 404 || res.status === 406){
-      // La fila 'users' no existe — crearla
-      await fetch(`${SB_URL}/rest/v1/stockbbf`, {
-        method: 'POST',
-        headers: { ...SB_HEADERS, 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ id: 'users', data: { users: usersArray }, updated_at: new Date().toISOString() })
-      });
-    } else if(!res.ok){
-      throw new Error('HTTP ' + res.status);
-    }
-    return true;
-  } catch(e){
-    console.warn('Error guardando usuarios en Supabase:', e);
-    return false;
-  }
-}
-
-async function cargarUsuariosDesdeSupabase(){
-  try {
-    const res = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.users&select=data`, { headers: SB_HEADERS });
-    if(!res.ok) throw new Error('HTTP ' + res.status);
-    const rows = await res.json();
-    if(rows && rows.length && rows[0].data && Array.isArray(rows[0].data.users) && rows[0].data.users.length){
-      return rows[0].data.users;
-    }
-    return null;
-  } catch(e){
-    console.warn('Error cargando usuarios desde Supabase:', e);
-    return null;
-  }
-}
+// (sección de usuarios migrada a DB.usuarios — ver más abajo)
 
 function save(){
   localStorage.setItem('sf_v3', JSON.stringify(DB));
@@ -1996,9 +1960,11 @@ function importarBackup(event){
 function renderAll(){
   renderAlertas(); renderStock(); renderProductos(); renderProveedores(); renderHistorial(); renderRemitos();
   document.getElementById('stat-provs').textContent = DB.proveedores.filter(p=>p.activo).length;
+  const ingVenc = document.getElementById('ing-vencimiento');
+  if (ingVenc) ingVenc.min = new Date().toISOString().split('T')[0];
   if (isReadonly) applyReadonlyMode(true);
 }
-document.getElementById('ing-vencimiento').min=new Date().toISOString().split('T')[0];
+{ const ingVenc = document.getElementById('ing-vencimiento'); if (ingVenc) ingVenc.min = new Date().toISOString().split('T')[0]; }
 renderAll();
 // Cargar desde Supabase al iniciar
 cargarDesdeSupabase();
@@ -2118,20 +2084,30 @@ let users = [
     perms: { stock: 'read' } },
 ];
 
-// ── Cargar usuarios desde Supabase (si existen) ──
-// Esto permite que los cambios hechos desde "Gestión de usuarios"
-// (contraseñas, permisos, altas/bajas) persistan y se vean en cualquier equipo.
+// ── Cargar usuarios desde la nube (Supabase, dentro de DB.usuarios) ──
+// Si DB.usuarios ya tiene datos (cargados por cargarDesdeSupabase), usarlos.
+// Si no, usar los locales por defecto y guardarlos como base inicial.
 (async function inicializarUsuarios(){
   const loginBtn = document.getElementById('loginBtn');
   const original = loginBtn ? loginBtn.textContent : '';
   if(loginBtn){ loginBtn.disabled = true; loginBtn.textContent = 'Cargando...'; }
   try {
-    const remoteUsers = await cargarUsuariosDesdeSupabase();
-    if(remoteUsers && remoteUsers.length){
-      users = remoteUsers;
-    } else {
-      // Primera vez: no hay usuarios en la nube — subir los locales como base
-      guardarUsuariosEnSupabase(users);
+    // cargarDesdeSupabase() corre de forma async al cargar el script del stock.
+    // Esperamos un poco y reintentamos varias veces hasta que DB.usuarios aparezca
+    // (o hasta agotar los intentos, en cuyo caso usamos los locales).
+    let intentos = 0;
+    while(intentos < 8){
+      await new Promise(r => setTimeout(r, 300));
+      if(DB.usuarios && Array.isArray(DB.usuarios) && DB.usuarios.length){
+        users = DB.usuarios;
+        break;
+      }
+      intentos++;
+    }
+    if(!DB.usuarios || !Array.isArray(DB.usuarios) || !DB.usuarios.length){
+      // No había datos en la nube (primera vez) — subir los locales como base
+      DB.usuarios = users;
+      save();
     }
   } catch(e){
     console.warn('No se pudieron cargar usuarios desde la nube, se usan los locales:', e);
@@ -2738,11 +2714,13 @@ function bindUsersEvents() {
       if (confirm('¿Eliminar este usuario?')) {
         users = users.filter(u => u.id !== +btn.dataset.id);
         renderMain();
-        if (typeof guardarUsuariosEnSupabase === 'function') {
-          guardarUsuariosEnSupabase(users).then(ok => {
-            if (ok) toast2('✓ Usuario eliminado y sincronizado');
-            else toast2('⚠ No se pudo sincronizar con la nube', true);
-          });
+        DB.usuarios = users;
+        try {
+          save();
+          toast2('✓ Usuario eliminado');
+        } catch(e) {
+          console.warn('Error eliminando usuario:', e);
+          toast2('⚠ No se pudo guardar el cambio', true);
         }
       }
     };
@@ -2834,13 +2812,14 @@ document.getElementById('modalSave').onclick = () => {
   renderMain();
   renderNav(); // por si cambió el módulo activo
 
-  // Persistir usuarios en Supabase para que el cambio se mantenga
-  // y se vea desde cualquier computadora
-  if (typeof guardarUsuariosEnSupabase === 'function') {
-    guardarUsuariosEnSupabase(users).then(ok => {
-      if (ok) toast2('✓ Cambios de usuarios guardados en la nube');
-      else toast2('⚠ No se pudo sincronizar con la nube (se guardó solo en este equipo)', true);
-    });
+  // Persistir usuarios: mismo mecanismo que el resto de los datos (DB + Supabase)
+  DB.usuarios = users;
+  try {
+    save(); // guarda en localStorage y dispara sync a Supabase (guardarEnSupabase)
+    toast2('✓ Cambios de usuarios guardados');
+  } catch(e) {
+    console.warn('Error guardando usuarios:', e);
+    toast2('⚠ No se pudo guardar el cambio', true);
   }
 }
 
