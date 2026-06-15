@@ -411,6 +411,14 @@
 
   /* TABLA ORDENES DE COMPRA */
   .oc-table{width:100%;border-collapse:collapse;font-size:.85rem;}
+
+  /* SUBMENÚ DE LISTADOS */
+  .listado-submenu{display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0;flex-wrap:wrap;}
+  .listado-subtab{padding:8px 16px;border:none;background:none;color:var(--muted);font-size:.85rem;cursor:pointer;border-bottom:2px solid transparent;font-family:inherit;}
+  .listado-subtab:hover{color:var(--text);}
+  .listado-subtab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:700;}
+  .listado-subpanel{display:none;}
+  .listado-subpanel.active{display:block;}
   .oc-table th,.oc-table td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;}
   .oc-table th{color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;}
   .oc-table tfoot td{border-top:2px solid var(--border);border-bottom:none;}
@@ -465,6 +473,13 @@
     font-size: 14px; font-weight: 600; color: var(--text);
   }
   .fullscreen-sep { color: var(--text3); font-size: 13px; }
+  .fullscreen-username { font-size: 13px; color: var(--text2); }
+  .fullscreen-readonly-tag {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 500; padding: 3px 10px;
+    border-radius: 20px; background: var(--green-bg, #E1F5EE); color: var(--green-txt, #0F6E56);
+    margin-left: 8px;
+  }
   .btn-exit-fullscreen {
     display: flex; align-items: center; gap: 6px;
     padding: 6px 14px;
@@ -868,18 +883,71 @@ function renderStock(){
 function toggleCard(h){ h.parentElement.classList.toggle('open'); }
 
 // ── LISTADO ───────────────────────────────────────────
+// Devuelve el precio final (precio - bonificación) más bajo entre los proveedores
+// asociados a un producto que tengan precio cargado. Si ninguno tiene precio, null.
+function mejorPrecioFinal(productoId){
+  const prod=getProd(productoId);
+  if(!prod||!prod.proveedoresIds||!prod.proveedoresIds.length) return null;
+  let mejor=null;
+  prod.proveedoresIds.forEach(provId=>{
+    const info=getPrecioInfo(productoId,provId);
+    if(info.precio>0){
+      const f=precioFinal(info.precio,info.bonificacion);
+      if(mejor===null||f<mejor) mejor=f;
+    }
+  });
+  return mejor;
+}
+
 function renderListado(){
   const filtro=document.getElementById('filtro-tipo').value;
-  const prods=DB.productos.filter(p=>p.activo&&(!filtro||(filtro==='perecedero'&&p.perecedero==='si')||(filtro==='normal'&&p.perecedero==='no')));
+  let prods=DB.productos.filter(p=>p.activo);
+
+  if(filtro==='perecedero') prods=prods.filter(p=>p.perecedero==='si');
+  else if(filtro==='normal') prods=prods.filter(p=>p.perecedero==='no');
+  else if(filtro==='sinstock') prods=prods.filter(p=>stockTotal(p.id)===0);
+  else if(filtro==='constock') prods=prods.filter(p=>stockTotal(p.id)>0);
+  else if(filtro==='valorizado') prods=prods.filter(p=>stockTotal(p.id)>0);
+
   const el=document.getElementById('listado-container');
   if(!prods.length){el.innerHTML=`<div class="empty-state"><div class="icon">📋</div><p>Sin datos para mostrar.</p></div>`;return;}
 
-  // Perecederos con lotes
+  // ── VALORIZADO ──
+  if(filtro==='valorizado'){
+    let totalGeneral=0;
+    let html=`<div class="section-title" style="margin-bottom:10px">Valorización de stock</div>
+    <div style="overflow-x:auto"><table class="stock-table">
+      <thead><tr><th>Producto</th><th>Cantidad</th><th>Unidad</th><th>Precio final</th><th>Subtotal</th></tr></thead>
+      <tbody>`;
+    [...prods].sort((a,b)=>a.nombre.localeCompare(b.nombre)).forEach(p=>{
+      const cant=stockTotal(p.id);
+      const precio=mejorPrecioFinal(p.id);
+      const subtotal = precio!==null ? cant*precio : 0;
+      totalGeneral += subtotal;
+      html+=`<tr>
+        <td>${p.nombre}</td>
+        <td><strong>${cant}</strong></td>
+        <td>${p.unidad}</td>
+        <td>${precio!==null?fmtMoney(precio):'<span style="color:var(--muted)">Sin precio</span>'}</td>
+        <td>${precio!==null?fmtMoney(subtotal):'—'}</td>
+      </tr>`;
+    });
+    html+=`</tbody>
+    <tfoot><tr style="border-top:2px solid var(--border)">
+      <td colspan="4" style="text-align:right;font-weight:700">Valorización total</td>
+      <td style="font-weight:700">${fmtMoney(totalGeneral)}</td>
+    </tr></tfoot>
+    </table></div>`;
+    el.innerHTML=html;
+    return;
+  }
+
+  // ── Perecederos con lotes / No perecederos ──
   const per=prods.filter(p=>p.perecedero==='si');
   const nor=prods.filter(p=>p.perecedero==='no');
   let html='';
 
-  if(per.length&&filtro!=='normal'){
+  if(per.length){
     html+=`<div class="section-title" style="margin-bottom:10px">Perecederos — por lote</div>
     <div style="overflow-x:auto;margin-bottom:24px"><table class="stock-table">
       <thead><tr><th>Producto</th><th>Lote</th><th>Cantidad</th><th>Unidad</th><th>Vencimiento</th><th>Proveedor</th></tr></thead>
@@ -912,7 +980,7 @@ function renderListado(){
     html+=`</tbody></table></div>`;
   }
 
-  if(nor.length&&filtro!=='perecedero'){
+  if(nor.length){
     html+=`<div class="section-title" style="margin-bottom:10px">No perecederos — stock total</div>
     <div style="overflow-x:auto"><table class="stock-table">
       <thead><tr><th>Producto</th><th>Cantidad</th><th>Unidad</th></tr></thead>
@@ -923,7 +991,107 @@ function renderListado(){
     });
     html+=`</tbody></table></div>`;
   }
+
+  if(!html) html=`<div class="empty-state"><div class="icon">📋</div><p>Sin datos para mostrar.</p></div>`;
   el.innerHTML=html;
+}
+
+// ── LISTADO DE REMITOS (filtro por fecha de emisión) ──
+function renderListadoRemitos(){
+  const desde = document.getElementById('lrem-desde').value;
+  const hasta = document.getElementById('lrem-hasta').value;
+  const el = document.getElementById('listado-remitos-container');
+
+  let remitos = [...(DB.remitos||[])];
+  if(desde) remitos = remitos.filter(r => r.fecha >= desde);
+  if(hasta) remitos = remitos.filter(r => r.fecha <= hasta);
+  remitos.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+
+  if(!remitos.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">🧾</div><p>No hay remitos en el rango seleccionado.</p></div>`;
+    return;
+  }
+
+  let html = `<div style="overflow-x:auto"><table class="stock-table">
+    <thead><tr><th>Remito</th><th>Fecha</th><th>Producto</th><th>Lote</th><th>Cantidad</th><th>Unidad</th><th>Proveedor</th></tr></thead>
+    <tbody>`;
+  remitos.forEach(r=>{
+    r.lineas.forEach((l,i)=>{
+      html += `<tr>
+        <td>${i===0?`<strong>${r.nro}</strong>`:''}</td>
+        <td>${i===0?ff(r.fecha):''}</td>
+        <td>${l.nombre}</td>
+        <td style="color:var(--muted);font-size:.76rem">${l.loteRef||'—'}</td>
+        <td><strong>${l.cantidad}</strong></td>
+        <td>${l.unidad}</td>
+        <td style="font-size:.78rem">${l.proveedorId?nomProv(l.proveedorId):'—'}</td>
+      </tr>`;
+    });
+  });
+  html += `</tbody></table></div>`;
+  el.innerHTML = html;
+}
+
+// ── LISTADO DE ÓRDENES DE COMPRA (por fecha o por número) ──
+function renderListadoOC(){
+  const modo = document.getElementById('loc-modo').value;
+  const el = document.getElementById('listado-oc-container');
+
+  let ocs = [...(DB.ordenesCompra||[])];
+
+  if(modo==='fecha'){
+    const desde = document.getElementById('loc-desde').value;
+    const hasta = document.getElementById('loc-hasta').value;
+    if(desde) ocs = ocs.filter(o => o.fecha.slice(0,10) >= desde);
+    if(hasta) ocs = ocs.filter(o => o.fecha.slice(0,10) <= hasta);
+  } else {
+    const nDesde = parseInt(document.getElementById('loc-nro-desde').value);
+    const nHasta = parseInt(document.getElementById('loc-nro-hasta').value);
+    ocs = ocs.filter(o=>{
+      const m = o.nro.match(/(\d+)$/);
+      const n = m ? parseInt(m[1]) : null;
+      if(n===null) return false;
+      if(!isNaN(nDesde) && n < nDesde) return false;
+      if(!isNaN(nHasta) && n > nHasta) return false;
+      return true;
+    });
+  }
+
+  ocs.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+
+  if(!ocs.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">🛒</div><p>No hay órdenes de compra en el rango seleccionado.</p></div>`;
+    return;
+  }
+
+  let totalGeneral=0;
+  let html = `<div style="overflow-x:auto"><table class="stock-table">
+    <thead><tr><th>N° OC</th><th>Fecha</th><th>Proveedor</th><th>Producto</th><th>Cant.</th><th>Precio</th><th>Bonif.</th><th>Subtotal</th></tr></thead>
+    <tbody>`;
+  ocs.forEach(o=>{
+    o.lineas.forEach((l,i)=>{
+      const prod=getProd(l.productoId);
+      const subtotal = l.cantidad*precioFinal(l.precio,l.bonificacion);
+      if(i===0) totalGeneral += o.total;
+      html += `<tr>
+        <td>${i===0?`<strong>${o.nro}</strong>`:''}</td>
+        <td>${i===0?ff(o.fecha.slice(0,10)):''}</td>
+        <td style="font-size:.78rem">${i===0?nomProv(o.proveedorId):''}</td>
+        <td>${prod?prod.nombre:'—'}</td>
+        <td>${l.cantidad}</td>
+        <td>${fmtMoney(l.precio)}</td>
+        <td>${l.bonificacion?l.bonificacion+'%':'—'}</td>
+        <td>${fmtMoney(subtotal)}</td>
+      </tr>`;
+    });
+  });
+  html += `</tbody>
+  <tfoot><tr style="border-top:2px solid var(--border)">
+    <td colspan="7" style="text-align:right;font-weight:700">Total general</td>
+    <td style="font-weight:700">${fmtMoney(totalGeneral)}</td>
+  </tr></tfoot>
+  </table></div>`;
+  el.innerHTML = html;
 }
 
 function imprimirListado(){
@@ -1606,6 +1774,170 @@ function enviarOCPorEmail(oc){
 }
 
 
+// ── EXPORTAR LISTADOS A PDF ──────────────────────────────
+function pdfLogoYTitulo(doc, titulo){
+  const logoImg = document.querySelector('.sidebar-logo img');
+  let y = 15;
+  try {
+    if(logoImg && logoImg.src.startsWith('data:image')){
+      doc.addImage(logoImg.src, 'JPEG', 15, y, 28, 22);
+    }
+  } catch(e){}
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(16);
+  doc.text(titulo, 50, y+12);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(9);
+  doc.text('Generado: ' + new Date().toLocaleString('es-AR'), 50, y+20);
+  return y+34;
+}
+
+function exportarPDF_ListadoStock(){
+  if(typeof window.jspdf === 'undefined'){ toast('Cargando generador de PDF...','error'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const filtro = document.getElementById('filtro-tipo').value;
+  const titulos = {
+    '': 'Listado de Stock — Todos',
+    'perecedero': 'Listado de Stock — Perecederos',
+    'normal': 'Listado de Stock — No perecederos',
+    'sinstock': 'Listado de Stock — Sin stock',
+    'constock': 'Listado de Stock — Con stock',
+    'valorizado': 'Listado de Stock — Valorizado'
+  };
+  let y = pdfLogoYTitulo(doc, titulos[filtro] || 'Listado de Stock');
+
+  let prods=DB.productos.filter(p=>p.activo);
+  if(filtro==='perecedero') prods=prods.filter(p=>p.perecedero==='si');
+  else if(filtro==='normal') prods=prods.filter(p=>p.perecedero==='no');
+  else if(filtro==='sinstock') prods=prods.filter(p=>stockTotal(p.id)===0);
+  else if(filtro==='constock'||filtro==='valorizado') prods=prods.filter(p=>stockTotal(p.id)>0);
+
+  if(filtro==='valorizado'){
+    let totalGeneral=0;
+    const body = [...prods].sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(p=>{
+      const cant=stockTotal(p.id);
+      const precio=mejorPrecioFinal(p.id);
+      const subtotal = precio!==null ? cant*precio : 0;
+      totalGeneral += subtotal;
+      return [p.nombre, String(cant), p.unidad, precio!==null?fmtMoney(precio):'Sin precio', precio!==null?fmtMoney(subtotal):'—'];
+    });
+    doc.autoTable({
+      startY: y,
+      head: [['Producto','Cantidad','Unidad','Precio final','Subtotal']],
+      body,
+      foot: [[{content:'Valorización total', colSpan:4, styles:{halign:'right',fontStyle:'bold'}}, {content:fmtMoney(totalGeneral), styles:{fontStyle:'bold'}}]],
+      theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:9}
+    });
+  } else {
+    const per=prods.filter(p=>p.perecedero==='si');
+    const nor=prods.filter(p=>p.perecedero==='no');
+    if(per.length){
+      const body=[];
+      per.forEach(p=>{
+        const lotes=DB.lotes.filter(l=>l.productoId===p.id&&l.cantidad>0).sort((a,b)=>new Date(a.vencimiento)-new Date(b.vencimiento));
+        if(!lotes.length){ body.push([p.nombre,'—','—','—','—','Sin stock']); }
+        else lotes.forEach((l,i)=>{
+          body.push([i===0?p.nombre:'', l.loteRef||'#'+l.id, String(l.cantidad), p.unidad, ff(l.vencimiento), nomProv(l.proveedorId)]);
+        });
+      });
+      doc.autoTable({ startY:y, head:[['Producto','Lote','Cantidad','Unidad','Vencimiento','Proveedor']], body, theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:9} });
+      y = doc.lastAutoTable.finalY + 10;
+    }
+    if(nor.length){
+      const body = nor.map(p=>{ const st=DB.stockSimple[p.id]||{cantidad:0}; return [p.nombre, String(st.cantidad), p.unidad]; });
+      doc.autoTable({ startY:y, head:[['Producto','Cantidad','Unidad']], body, theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:9} });
+    }
+  }
+  doc.save('listado-stock.pdf');
+}
+
+function exportarPDF_ListadoRemitos(){
+  if(typeof window.jspdf === 'undefined'){ toast('Cargando generador de PDF...','error'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  let y = pdfLogoYTitulo(doc, 'Listado de Remitos');
+
+  const desde = document.getElementById('lrem-desde').value;
+  const hasta = document.getElementById('lrem-hasta').value;
+  let remitos = [...(DB.remitos||[])];
+  if(desde) remitos = remitos.filter(r => r.fecha >= desde);
+  if(hasta) remitos = remitos.filter(r => r.fecha <= hasta);
+  remitos.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+
+  if(!remitos.length){ toast('No hay remitos en el rango seleccionado','error'); return; }
+
+  const body=[];
+  remitos.forEach(r=>{
+    r.lineas.forEach((l,i)=>{
+      body.push([
+        i===0?r.nro:'', i===0?ff(r.fecha):'', l.nombre, l.loteRef||'—',
+        String(l.cantidad), l.unidad, l.proveedorId?nomProv(l.proveedorId):'—'
+      ]);
+    });
+  });
+  doc.autoTable({
+    startY:y,
+    head:[['Remito','Fecha','Producto','Lote','Cantidad','Unidad','Proveedor']],
+    body, theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:9}
+  });
+  doc.save('listado-remitos.pdf');
+}
+
+function exportarPDF_ListadoOC(){
+  if(typeof window.jspdf === 'undefined'){ toast('Cargando generador de PDF...','error'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  let y = pdfLogoYTitulo(doc, 'Listado de Órdenes de Compra');
+
+  const modo = document.getElementById('loc-modo').value;
+  let ocs = [...(DB.ordenesCompra||[])];
+  if(modo==='fecha'){
+    const desde = document.getElementById('loc-desde').value;
+    const hasta = document.getElementById('loc-hasta').value;
+    if(desde) ocs = ocs.filter(o => o.fecha.slice(0,10) >= desde);
+    if(hasta) ocs = ocs.filter(o => o.fecha.slice(0,10) <= hasta);
+  } else {
+    const nDesde = parseInt(document.getElementById('loc-nro-desde').value);
+    const nHasta = parseInt(document.getElementById('loc-nro-hasta').value);
+    ocs = ocs.filter(o=>{
+      const m = o.nro.match(/(\d+)$/);
+      const n = m ? parseInt(m[1]) : null;
+      if(n===null) return false;
+      if(!isNaN(nDesde) && n < nDesde) return false;
+      if(!isNaN(nHasta) && n > nHasta) return false;
+      return true;
+    });
+  }
+  ocs.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+
+  if(!ocs.length){ toast('No hay órdenes de compra en el rango seleccionado','error'); return; }
+
+  let totalGeneral=0;
+  const body=[];
+  ocs.forEach(o=>{
+    o.lineas.forEach((l,i)=>{
+      const prod=getProd(l.productoId);
+      const subtotal = l.cantidad*precioFinal(l.precio,l.bonificacion);
+      if(i===0) totalGeneral += o.total;
+      body.push([
+        i===0?o.nro:'', i===0?ff(o.fecha.slice(0,10)):'', i===0?nomProv(o.proveedorId):'',
+        prod?prod.nombre:'—', String(l.cantidad), fmtMoney(l.precio),
+        l.bonificacion?l.bonificacion+'%':'—', fmtMoney(subtotal)
+      ]);
+    });
+  });
+  doc.autoTable({
+    startY:y,
+    head:[['N° OC','Fecha','Proveedor','Producto','Cant.','Precio','Bonif.','Subtotal']],
+    body,
+    foot:[[{content:'Total general', colSpan:7, styles:{halign:'right',fontStyle:'bold'}}, {content:fmtMoney(totalGeneral), styles:{fontStyle:'bold'}}]],
+    theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:8.5}
+  });
+  doc.save('listado-ordenes-compra.pdf');
+}
+
+
 function renderHistorial(){
   const el = document.getElementById('history-list');
   const countEl = document.getElementById('hist-count');
@@ -1915,6 +2247,23 @@ function switchTab(tab){
   if(tab==='compras') renderOCs();
 }
 
+// ── SUBMENÚ DE LISTADOS ─────────────────────────────────
+function switchListadoSub(sub){
+  const subs=['stock','remitos','oc'];
+  document.querySelectorAll('.listado-subtab').forEach(t=>t.classList.toggle('active', t.dataset.sub===sub));
+  document.querySelectorAll('.listado-subpanel').forEach(p=>p.classList.remove('active'));
+  document.getElementById('listado-sub-'+sub).classList.add('active');
+  if(sub==='stock') renderListado();
+  if(sub==='remitos') renderListadoRemitos();
+  if(sub==='oc') renderListadoOC();
+}
+
+function onLOCModoChange(){
+  const modo = document.getElementById('loc-modo').value;
+  document.getElementById('loc-filtros-fecha').style.display = modo==='fecha' ? 'flex' : 'none';
+  document.getElementById('loc-filtros-numero').style.display = modo==='numero' ? 'flex' : 'none';
+}
+
 // ── BACKUP / RESTORE ──────────────────────────────────
 function exportarBackup(){
   const fecha = new Date().toISOString().slice(0,10);
@@ -2032,15 +2381,7 @@ function applyReadonlyMode(readonly) {
       // (lo dejamos visible porque es lectura — ver PDF está bien)
     }
 
-    // 6. Cartel de aviso en panel-stock
-    const panelStock = container.querySelector('#panel-stock');
-    if (panelStock && !panelStock.querySelector('.readonly-block')) {
-      const div = document.createElement('div');
-      div.className = 'readonly-block';
-      div.style.cssText = 'background:#E1F5EE;border:0.5px solid #5DCAA5;border-radius:8px;padding:12px 16px;color:#0F6E56;font-size:13px;margin:0 0 12px 0;display:flex;align-items:center;gap:8px;';
-      div.innerHTML = '🔒 Modo solo lectura — podés consultar toda la información pero no registrar movimientos.';
-      panelStock.prepend(div);
-    }
+    // 6. (Aviso de solo lectura ahora se muestra en la barra superior del módulo)
 
     // 7. Deshabilitar paneles de escritura completos como seguridad extra
     ['panel-ingreso','panel-egreso','panel-remitos'].forEach(panelId => {
@@ -2155,18 +2496,84 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
 
   <!-- LISTADO -->
   <div id="panel-listado" class="panel">
-    <div class="section-header">
-      <div class="section-title">Listado de stock</div>
-      <div style="display:flex;gap:8px">
-        <select id="filtro-tipo" onchange="renderListado()" style="width:auto;font-size:.78rem;padding:6px 10px;">
-          <option value="">Todos</option>
-          <option value="perecedero">Solo perecederos</option>
-          <option value="normal">Solo no perecederos</option>
-        </select>
-        <button class="btn btn-secondary btn-sm" onclick="imprimirListado()">🖨 Imprimir</button>
-      </div>
+    <!-- Submenú de listados -->
+    <div class="listado-submenu">
+      <button class="listado-subtab active" data-sub="stock" onclick="switchListadoSub('stock')">📦 Stock</button>
+      <button class="listado-subtab" data-sub="remitos" onclick="switchListadoSub('remitos')">🧾 Remitos</button>
+      <button class="listado-subtab" data-sub="oc" onclick="switchListadoSub('oc')">🛒 Órdenes de compra</button>
     </div>
-    <div id="listado-container"></div>
+
+    <!-- SUB: Listado de Stock -->
+    <div id="listado-sub-stock" class="listado-subpanel active">
+      <div class="section-header">
+        <div class="section-title">Listado de stock</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <select id="filtro-tipo" onchange="renderListado()" style="width:auto;font-size:.78rem;padding:6px 10px;">
+            <option value="">Todos</option>
+            <option value="perecedero">Solo perecederos</option>
+            <option value="normal">Solo no perecederos</option>
+            <option value="sinstock">Sin stock</option>
+            <option value="constock">Con stock</option>
+            <option value="valorizado">Valorizado</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" onclick="imprimirListado()">🖨 Imprimir</button>
+          <button class="btn btn-secondary btn-sm" onclick="exportarPDF_ListadoStock()">📄 PDF</button>
+        </div>
+      </div>
+      <div id="listado-container"></div>
+    </div>
+
+    <!-- SUB: Listado de Remitos -->
+    <div id="listado-sub-remitos" class="listado-subpanel">
+      <div class="section-header">
+        <div class="section-title">Listado de remitos</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <label style="font-size:.78rem;color:var(--muted)">Desde
+            <input type="date" id="lrem-desde" style="width:auto;font-size:.78rem;padding:5px 8px;">
+          </label>
+          <label style="font-size:.78rem;color:var(--muted)">Hasta
+            <input type="date" id="lrem-hasta" style="width:auto;font-size:.78rem;padding:5px 8px;">
+          </label>
+          <button class="btn btn-secondary btn-sm" onclick="renderListadoRemitos()">🔍 Filtrar</button>
+          <button class="btn btn-secondary btn-sm" onclick="exportarPDF_ListadoRemitos()">📄 PDF</button>
+        </div>
+      </div>
+      <div id="listado-remitos-container"></div>
+    </div>
+
+    <!-- SUB: Listado de Órdenes de Compra -->
+    <div id="listado-sub-oc" class="listado-subpanel">
+      <div class="section-header">
+        <div class="section-title">Listado de órdenes de compra</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+        <label style="font-size:.78rem;color:var(--muted)">Filtrar por
+          <select id="loc-modo" onchange="onLOCModoChange()" style="width:auto;font-size:.78rem;padding:5px 8px;">
+            <option value="fecha">Rango de fechas</option>
+            <option value="numero">Rango de número de OC</option>
+          </select>
+        </label>
+        <span id="loc-filtros-fecha" style="display:flex;gap:8px;align-items:center">
+          <label style="font-size:.78rem;color:var(--muted)">Desde
+            <input type="date" id="loc-desde" style="width:auto;font-size:.78rem;padding:5px 8px;">
+          </label>
+          <label style="font-size:.78rem;color:var(--muted)">Hasta
+            <input type="date" id="loc-hasta" style="width:auto;font-size:.78rem;padding:5px 8px;">
+          </label>
+        </span>
+        <span id="loc-filtros-numero" style="display:none;gap:8px;align-items:center">
+          <label style="font-size:.78rem;color:var(--muted)">N° desde
+            <input type="number" min="1" id="loc-nro-desde" placeholder="1" style="width:90px;font-size:.78rem;padding:5px 8px;">
+          </label>
+          <label style="font-size:.78rem;color:var(--muted)">N° hasta
+            <input type="number" min="1" id="loc-nro-hasta" placeholder="999" style="width:90px;font-size:.78rem;padding:5px 8px;">
+          </label>
+        </span>
+        <button class="btn btn-secondary btn-sm" onclick="renderListadoOC()">🔍 Filtrar</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportarPDF_ListadoOC()">📄 PDF</button>
+      </div>
+      <div id="listado-oc-container"></div>
+    </div>
   </div>
 
   <!-- INGRESO -->
@@ -2845,16 +3252,23 @@ function openFullscreen(modName, moduleHTML, perm, initialTab) {
   const contentEl = document.getElementById('fullscreen-content');
   const nameEl = document.getElementById('fs-module-name');
   const logoWrap = document.getElementById('fs-logo-wrap');
+  const userInfoEl = document.getElementById('fs-user-info');
+  const readonlyTagEl = document.getElementById('fs-readonly-tag');
 
   // Copy logo into fullscreen topbar
   const sidebarLogo = document.querySelector('.sidebar-logo');
   if (sidebarLogo) logoWrap.innerHTML = sidebarLogo.innerHTML;
 
   nameEl.textContent = modName;
+  if (userInfoEl) userInfoEl.textContent = currentUser ? currentUser.name : '';
 
-  const readBar = perm === 'read'
-    ? '<div class="readonly-bar" style="border-radius:0;margin-bottom:0"><i class="ti ti-eye"></i> Solo lectura — no podés registrar ingresos ni egresos</div>' : '';
-  contentEl.innerHTML = readBar + moduleHTML;
+  if (readonlyTagEl) {
+    readonlyTagEl.innerHTML = perm === 'read'
+      ? '<span class="fullscreen-readonly-tag"><i class="ti ti-eye" style="font-size:12px"></i> Solo lectura — podés consultar pero no registrar movimientos</span>'
+      : '';
+  }
+
+  contentEl.innerHTML = moduleHTML;
 
   overlay.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
@@ -2907,6 +3321,9 @@ document.addEventListener('DOMContentLoaded', function() {
       <span class="fullscreen-appname">BBF Gestión en Nube</span>
       <span class="fullscreen-sep">›</span>
       <span class="fullscreen-modname" id="fs-module-name">Stock</span>
+      <span class="fullscreen-sep">·</span>
+      <span class="fullscreen-username" id="fs-user-info"></span>
+      <span id="fs-readonly-tag"></span>
     </div>
     <button class="btn-exit-fullscreen" id="btn-exit-fullscreen" onclick="closeFullscreen()">
       <i class="ti ti-arrow-back-up" style="font-size:15px" aria-hidden="true"></i>
