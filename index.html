@@ -1288,7 +1288,7 @@ function renderIngOCLineas(){
   tbody.innerHTML = ingOCLineas.map((l,i)=>{
     const prod = getProd(l.productoId);
     return `<tr>
-      <td>${prod?prod.nombre:'—'}</td>
+      <td>${prod?prod.nombre:'—'}${l.extra?' <span class="badge badge-noperecedero" style="font-size:.65rem">Adicional</span>':''}</td>
       <td><input type="number" min="0.01" step="0.01" value="${l.cantidad}" style="width:90px" onchange="updateIngOCLinea(${i},'cantidad',this.value)"></td>
       <td>${l.unidad}</td>
       <td>${l.perecedero==='si'
@@ -1317,7 +1317,7 @@ function agregarLineaIngOC(){
   const prod = getProd(prodId);
   ingOCLineas.push({
     productoId: prodId, cantidad: 1, unidad: prod.unidad,
-    perecedero: prod.perecedero, vencimiento: '', loteRef: ''
+    perecedero: prod.perecedero, vencimiento: '', loteRef: '', extra: true
   });
   document.getElementById('ingoc-add-producto').value='';
   renderIngOCLineas();
@@ -1336,10 +1336,12 @@ function confirmarIngresoOC(){
   }
 
   const provId = ingOCActual.proveedorId;
-  const detalleExtra = `Ingreso desde OC ${ingOCActual.nro}`;
 
   ingOCLineas.forEach(l=>{
-    aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalleExtra);
+    const detalle = l.extra
+      ? `Adicional — no incluido en OC ${ingOCActual.nro}`
+      : `Ingreso desde OC ${ingOCActual.nro}`;
+    aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle);
   });
 
   // Marcar la OC como recibida
