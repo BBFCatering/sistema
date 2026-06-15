@@ -393,6 +393,8 @@
   .stock-table.listado-table td{padding:6px 8px;white-space:nowrap;}
   .stock-table.listado-table td:first-child,
   .stock-table.listado-table th:first-child{white-space:normal;}
+  .stock-table.listado-table td.col-wrap,
+  .stock-table.listado-table th.col-wrap{white-space:normal;min-width:160px;}
   .stock-table tr:last-child td{border-bottom:none;}
   .stock-table tr:hover td{background:rgba(255,255,255,.02);}
 
@@ -760,7 +762,7 @@ function nomProv(id){ const p=getProv(id);return p?p.nombre:'—'; }
 function nomProd(id){ const p=getProd(id);return p?p.nombre:'—'; }
 
 // ── PRECIOS / BONIFICACIONES ────────────────────────────
-function fmtMoney(n){ return '$ ' + (Number(n)||0).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtMoney(n){ return '$\u00A0' + (Number(n)||0).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function getPrecioInfo(productoId, proveedorId){
   const p=getProd(productoId);
   if(!p||!p.precios) return {precio:0,bonificacion:0};
@@ -1020,14 +1022,14 @@ function renderListadoRemitos(){
   }
 
   let html = `<div style="overflow-x:auto"><table class="stock-table listado-table">
-    <thead><tr><th>Remito</th><th>Fecha</th><th>Producto</th><th>Lote</th><th>Cantidad</th><th>Unidad</th><th>Proveedor</th></tr></thead>
+    <thead><tr><th>Remito</th><th>Fecha</th><th class="col-wrap">Producto</th><th>Lote</th><th>Cantidad</th><th>Unidad</th><th>Proveedor</th></tr></thead>
     <tbody>`;
   remitos.forEach(r=>{
     r.lineas.forEach((l,i)=>{
       html += `<tr>
         <td>${i===0?`<strong>${r.nro}</strong>`:''}</td>
         <td>${i===0?ff(r.fecha):''}</td>
-        <td>${l.nombre}</td>
+        <td class="col-wrap">${l.nombre}</td>
         <td style="color:var(--muted);font-size:.76rem">${l.loteRef||'—'}</td>
         <td><strong>${l.cantidad}</strong></td>
         <td>${l.unidad}</td>
@@ -1076,7 +1078,7 @@ function renderListadoOC(){
 
   let totalGeneral=0;
   let html = `<div style="overflow-x:auto"><table class="stock-table listado-table">
-    <thead><tr><th>N° OC</th><th>Fecha</th><th>Proveedor</th><th>Estado</th><th>Producto</th><th>Cant.</th><th>Precio</th><th>Bonif.</th><th>Subtotal</th></tr></thead>
+    <thead><tr><th>N° OC</th><th>Fecha</th><th class="col-wrap">Proveedor</th><th>Estado</th><th class="col-wrap">Producto</th><th>Cant.</th><th>Precio</th><th>Bonif.</th><th>Subtotal</th></tr></thead>
     <tbody>`;
   ocs.forEach(o=>{
     o.lineas.forEach((l,i)=>{
@@ -1086,9 +1088,9 @@ function renderListadoOC(){
       html += `<tr>
         <td>${i===0?`<strong>${o.nro}</strong>`:''}</td>
         <td>${i===0?ff(o.fecha.slice(0,10)):''}</td>
-        <td style="font-size:.78rem">${i===0?nomProv(o.proveedorId):''}</td>
+        <td class="col-wrap" style="font-size:.78rem">${i===0?nomProv(o.proveedorId):''}</td>
         <td>${i===0?(o.recibida?'<span class="badge badge-noperecedero">Recibida</span>':'<span class="badge badge-perecedero">Activa</span>'):''}</td>
-        <td>${prod?prod.nombre:'—'}</td>
+        <td class="col-wrap">${prod?prod.nombre:'—'}</td>
         <td>${l.cantidad}</td>
         <td>${fmtMoney(l.precio)}</td>
         <td>${l.bonificacion?l.bonificacion+'%':'—'}</td>
@@ -2079,7 +2081,7 @@ function exportarPDF_ListadoRemitos(){
 function exportarPDF_ListadoOC(){
   if(typeof window.jspdf === 'undefined'){ toast('Cargando generador de PDF...','error'); return; }
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF();
+  const doc = new jsPDF({ orientation: 'landscape' });
   let y = pdfLogoYTitulo(doc, 'Listado de Órdenes de Compra');
 
   const modo = document.getElementById('loc-modo').value;
