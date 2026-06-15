@@ -386,6 +386,13 @@
   .stock-table{width:100%;border-collapse:collapse;font-size:.82rem;}
   .stock-table th{text-align:left;font-size:.66rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);padding:8px 12px;border-bottom:1px solid var(--border);}
   .stock-table td{padding:9px 12px;border-bottom:1px solid rgba(42,48,69,.4);}
+
+  /* TABLAS DE LISTADOS (Stock/Remitos/OC) — fuente más chica y sin salto de línea en números */
+  .stock-table.listado-table{font-size:.74rem;}
+  .stock-table.listado-table th{font-size:.6rem;padding:6px 8px;}
+  .stock-table.listado-table td{padding:6px 8px;white-space:nowrap;}
+  .stock-table.listado-table td:first-child,
+  .stock-table.listado-table th:first-child{white-space:normal;}
   .stock-table tr:last-child td{border-bottom:none;}
   .stock-table tr:hover td{background:rgba(255,255,255,.02);}
 
@@ -916,7 +923,7 @@ function renderListado(){
   if(filtro==='valorizado'){
     let totalGeneral=0;
     let html=`<div class="section-title" style="margin-bottom:10px">Valorización de stock</div>
-    <div style="overflow-x:auto"><table class="stock-table">
+    <div style="overflow-x:auto"><table class="stock-table listado-table">
       <thead><tr><th>Producto</th><th>Cantidad</th><th>Unidad</th><th>Precio final</th><th>Subtotal</th></tr></thead>
       <tbody>`;
     [...prods].sort((a,b)=>a.nombre.localeCompare(b.nombre)).forEach(p=>{
@@ -949,7 +956,7 @@ function renderListado(){
 
   if(per.length){
     html+=`<div class="section-title" style="margin-bottom:10px">Perecederos — por lote</div>
-    <div style="overflow-x:auto;margin-bottom:24px"><table class="stock-table">
+    <div style="overflow-x:auto;margin-bottom:24px"><table class="stock-table listado-table">
       <thead><tr><th>Producto</th><th>Lote</th><th>Cantidad</th><th>Unidad</th><th>Vencimiento</th><th>Proveedor</th></tr></thead>
       <tbody>`;
     per.forEach(p=>{
@@ -982,7 +989,7 @@ function renderListado(){
 
   if(nor.length){
     html+=`<div class="section-title" style="margin-bottom:10px">No perecederos — stock total</div>
-    <div style="overflow-x:auto"><table class="stock-table">
+    <div style="overflow-x:auto"><table class="stock-table listado-table">
       <thead><tr><th>Producto</th><th>Cantidad</th><th>Unidad</th></tr></thead>
       <tbody>`;
     nor.forEach(p=>{
@@ -1012,7 +1019,7 @@ function renderListadoRemitos(){
     return;
   }
 
-  let html = `<div style="overflow-x:auto"><table class="stock-table">
+  let html = `<div style="overflow-x:auto"><table class="stock-table listado-table">
     <thead><tr><th>Remito</th><th>Fecha</th><th>Producto</th><th>Lote</th><th>Cantidad</th><th>Unidad</th><th>Proveedor</th></tr></thead>
     <tbody>`;
   remitos.forEach(r=>{
@@ -1068,7 +1075,7 @@ function renderListadoOC(){
   }
 
   let totalGeneral=0;
-  let html = `<div style="overflow-x:auto"><table class="stock-table">
+  let html = `<div style="overflow-x:auto"><table class="stock-table listado-table">
     <thead><tr><th>N° OC</th><th>Fecha</th><th>Proveedor</th><th>Estado</th><th>Producto</th><th>Cant.</th><th>Precio</th><th>Bonif.</th><th>Subtotal</th></tr></thead>
     <tbody>`;
   ocs.forEach(o=>{
