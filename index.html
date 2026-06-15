@@ -1184,6 +1184,184 @@ function ingresarStock(){
   toast(`✓ Ingresado: ${cant} ${prod.unidad} de ${prod.nombre}`);
 }
 
+// Aplica un ingreso de stock para un producto dado (usado tanto por el
+// ingreso manual como por el ingreso desde Orden de Compra)
+function aplicarIngresoLinea(prodId, provId, cant, venc, loteRef, detalleExtra){
+  const prod=getProd(prodId);
+  if(!prod) return;
+  if(prod.perecedero==='si'){
+    const lote={id:idSeq.lote++,productoId:prodId,proveedorId:provId,cantidad:cant,cantidadInicial:cant,vencimiento:venc,ingreso:new Date().toISOString(),loteRef};
+    DB.lotes.push(lote);
+    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleExtra?' · '+detalleExtra:''}`,fecha:new Date().toISOString()});
+  } else {
+    if(!DB.stockSimple[prodId]) DB.stockSimple[prodId]={cantidad:0,unidad:prod.unidad};
+    DB.stockSimple[prodId].cantidad+=cant;
+    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Proveedor: ${nomProv(provId)}${loteRef?' · '+loteRef:''}${detalleExtra?' · '+detalleExtra:''}`,fecha:new Date().toISOString()});
+  }
+}
+
+// ── INGRESO DESDE ORDEN DE COMPRA ────────────────────────
+let ingOCLineas = []; // [{productoId, cantidad, unidad, perecedero, vencimiento, loteRef}]
+let ingOCActual = null; // referencia a la OC seleccionada
+
+function onIngModoChange(){
+  const modo = document.getElementById('ing-modo').value;
+  document.getElementById('ing-modo-manual').style.display = modo==='manual' ? '' : 'none';
+  document.getElementById('ing-modo-oc').style.display = modo==='oc' ? '' : 'none';
+  if(modo==='oc'){
+    updateIngOCProvSelect();
+  }
+}
+
+function updateIngOCProvSelect(){
+  const sel = document.getElementById('ingoc-proveedor');
+  const val = sel.value;
+  sel.innerHTML = '<option value="">— Seleccioná proveedor —</option>' +
+    DB.proveedores.filter(p=>p.activo).map(p=>`<option value="${p.id}">${p.nombre}</option>`).join('');
+  sel.value = val;
+}
+
+function onIngOCProveedorChange(){
+  const provId = parseInt(document.getElementById('ingoc-proveedor').value);
+  const selOrden = document.getElementById('ingoc-orden');
+  document.getElementById('ingoc-lineas-wrap').style.display = 'none';
+  ingOCLineas = []; ingOCActual = null;
+
+  if(!provId){
+    selOrden.disabled = true;
+    selOrden.innerHTML = '<option value="">— Primero elegí proveedor —</option>';
+    return;
+  }
+
+  // OC del proveedor que todavía no fueron usadas para un ingreso (no recibidas)
+  const ocsPendientes = (DB.ordenesCompra||[]).filter(o => o.proveedorId===provId && !o.recibida);
+
+  if(!ocsPendientes.length){
+    selOrden.disabled = true;
+    selOrden.innerHTML = '<option value="">Sin órdenes de compra pendientes para este proveedor</option>';
+    return;
+  }
+  selOrden.disabled = false;
+  selOrden.innerHTML = '<option value="">— Seleccioná orden de compra —</option>' +
+    ocsPendientes.map(o=>`<option value="${o.id}">${o.nro} — ${ff(o.fecha.slice(0,10))} (${o.lineas.length} ítem${o.lineas.length!==1?'s':''})</option>`).join('');
+}
+
+function onIngOCOrdenChange(){
+  const ocId = parseInt(document.getElementById('ingoc-orden').value);
+  const wrap = document.getElementById('ingoc-lineas-wrap');
+  if(!ocId){ wrap.style.display='none'; ingOCLineas=[]; ingOCActual=null; return; }
+
+  const oc = DB.ordenesCompra.find(o=>o.id===ocId);
+  if(!oc) return;
+  ingOCActual = oc;
+
+  // Precargar líneas a partir de la OC
+  ingOCLineas = oc.lineas.map(l=>{
+    const prod = getProd(l.productoId);
+    return {
+      productoId: l.productoId,
+      cantidad: l.cantidad,
+      unidad: prod ? prod.unidad : '',
+      perecedero: prod ? prod.perecedero : 'no',
+      vencimiento: '',
+      loteRef: ''
+    };
+  });
+
+  // Poblar selector de "agregar otro producto" con productos del proveedor
+  const provId = oc.proveedorId;
+  const prodsProv = DB.productos.filter(p=>p.activo && p.proveedoresIds && p.proveedoresIds.includes(provId));
+  const selAdd = document.getElementById('ingoc-add-producto');
+  selAdd.innerHTML = '<option value="">— Seleccioná producto —</option>' +
+    prodsProv.map(p=>`<option value="${p.id}">${p.nombre} (${p.perecedero==='si'?'Perecedero':'No perecedero'})</option>`).join('');
+
+  wrap.style.display = '';
+  renderIngOCLineas();
+}
+
+function renderIngOCLineas(){
+  const tbody = document.getElementById('ingoc-lineas-tbody');
+  if(!ingOCLineas.length){
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:16px">No quedan líneas. Agregá un producto o cancelá.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = ingOCLineas.map((l,i)=>{
+    const prod = getProd(l.productoId);
+    return `<tr>
+      <td>${prod?prod.nombre:'—'}</td>
+      <td><input type="number" min="0.01" step="0.01" value="${l.cantidad}" style="width:90px" onchange="updateIngOCLinea(${i},'cantidad',this.value)"></td>
+      <td>${l.unidad}</td>
+      <td>${l.perecedero==='si'
+        ? `<input type="date" value="${l.vencimiento}" required onchange="updateIngOCLinea(${i},'vencimiento',this.value)">`
+        : '<span style="color:var(--muted)">—</span>'}</td>
+      <td><input type="text" value="${l.loteRef}" placeholder="Nº lote/remito" style="width:130px" onchange="updateIngOCLinea(${i},'loteRef',this.value)"></td>
+      <td><button class="btn btn-sm btn-warn" onclick="quitarLineaIngOC(${i})">✕</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function updateIngOCLinea(idx, campo, valor){
+  if(campo==='cantidad') ingOCLineas[idx][campo] = parseFloat(valor)||0;
+  else ingOCLineas[idx][campo] = valor;
+}
+
+function quitarLineaIngOC(idx){
+  ingOCLineas.splice(idx,1);
+  renderIngOCLineas();
+}
+
+function agregarLineaIngOC(){
+  const prodId = parseInt(document.getElementById('ingoc-add-producto').value);
+  if(!prodId){ toast('Seleccioná un producto','error'); return; }
+  if(ingOCLineas.some(l=>l.productoId===prodId)){ toast('Ese producto ya está en la lista','error'); return; }
+  const prod = getProd(prodId);
+  ingOCLineas.push({
+    productoId: prodId, cantidad: 1, unidad: prod.unidad,
+    perecedero: prod.perecedero, vencimiento: '', loteRef: ''
+  });
+  document.getElementById('ingoc-add-producto').value='';
+  renderIngOCLineas();
+}
+
+function confirmarIngresoOC(){
+  if(!ingOCActual){ toast('Seleccioná una orden de compra','error'); return; }
+  if(!ingOCLineas.length){ toast('No hay líneas para ingresar','error'); return; }
+
+  for(const l of ingOCLineas){
+    if(!l.cantidad || l.cantidad<=0){ toast('Revisá las cantidades — deben ser mayores a 0','error'); return; }
+    if(l.perecedero==='si' && !l.vencimiento){
+      const prod=getProd(l.productoId);
+      toast(`Falta la fecha de vencimiento de "${prod?prod.nombre:''}"`,'error'); return;
+    }
+  }
+
+  const provId = ingOCActual.proveedorId;
+  const detalleExtra = `Ingreso desde OC ${ingOCActual.nro}`;
+
+  ingOCLineas.forEach(l=>{
+    aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalleExtra);
+  });
+
+  // Marcar la OC como recibida
+  ingOCActual.recibida = true;
+  ingOCActual.fechaRecepcion = new Date().toISOString();
+
+  save();
+  toast(`✓ Ingreso registrado desde ${ingOCActual.nro}`);
+
+  cancelarIngresoOC();
+  renderAll();
+  switchTab('stock');
+}
+
+function cancelarIngresoOC(){
+  ingOCLineas = [];
+  ingOCActual = null;
+  document.getElementById('ingoc-orden').value = '';
+  document.getElementById('ingoc-lineas-wrap').style.display = 'none';
+}
+
+
 // ── EGRESO ────────────────────────────────────────────
 function egresoFIFO(prodId, evt){
   if(evt) evt.stopPropagation();
@@ -1612,6 +1790,7 @@ function renderOCs(){
         <div class="item-detail">
           ${fdt(oc.fecha)} · ${oc.lineas.length} ítem${oc.lineas.length>1?'s':''} · Total: <strong>${fmtMoney(oc.total)}</strong>
           ${oc.enviada?' · <span class="badge badge-perecedero">Enviada</span>':''}
+          ${oc.recibida?' · <span class="badge badge-noperecedero">Recibida</span>':''}
         </div>
       </div>
       <div class="item-actions">
@@ -2582,38 +2761,93 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
       <div class="card-title">➕ Registrar ingreso de stock</div>
       <div class="form-grid">
         <div>
-          <label>1. Proveedor <span class="req">*</span></label>
-          <select id="ing-proveedor" onchange="onProveedorChange()">
-            <option value="">— Seleccioná proveedor —</option>
+          <label>Modo de carga</label>
+          <select id="ing-modo" onchange="onIngModoChange()">
+            <option value="manual">Manual (producto por producto)</option>
+            <option value="oc">Desde Orden de Compra</option>
           </select>
-        </div>
-        <div>
-          <label>2. Producto <span class="req">*</span></label>
-          <select id="ing-producto" onchange="onProductoChange()" disabled>
-            <option value="">— Primero elegí proveedor —</option>
-          </select>
-        </div>
-        <div id="ing-cantidad-wrap" style="display:none">
-          <label>Cantidad <span class="req">*</span></label>
-          <input type="number" id="ing-cantidad" placeholder="0" min="0.01" step="0.01">
-        </div>
-        <div id="ing-unidad-wrap" style="display:none">
-          <label>Unidad</label>
-          <input type="text" id="ing-unidad" readonly style="color:var(--muted)">
-        </div>
-        <div id="ing-venc-wrap" style="display:none">
-          <label>Fecha de vencimiento <span class="req">*</span></label>
-          <input type="date" id="ing-vencimiento">
-          <p class="hint">⚠ Este producto es perecedero — campo obligatorio</p>
-        </div>
-        <div id="ing-lote-wrap" style="display:none">
-          <label>Lote / Remito (opcional)</label>
-          <input type="text" id="ing-lote" placeholder="Nº lote o remito">
         </div>
       </div>
-      <div id="ing-btn-wrap" style="display:none">
-        <button class="btn btn-primary" onclick="ingresarStock()">Registrar ingreso</button>
-        <span class="hint" style="display:inline-block;margin-left:12px;">* campos obligatorios</span>
+
+      <!-- MODO MANUAL -->
+      <div id="ing-modo-manual">
+        <div class="form-grid">
+          <div>
+            <label>1. Proveedor <span class="req">*</span></label>
+            <select id="ing-proveedor" onchange="onProveedorChange()">
+              <option value="">— Seleccioná proveedor —</option>
+            </select>
+          </div>
+          <div>
+            <label>2. Producto <span class="req">*</span></label>
+            <select id="ing-producto" onchange="onProductoChange()" disabled>
+              <option value="">— Primero elegí proveedor —</option>
+            </select>
+          </div>
+          <div id="ing-cantidad-wrap" style="display:none">
+            <label>Cantidad <span class="req">*</span></label>
+            <input type="number" id="ing-cantidad" placeholder="0" min="0.01" step="0.01">
+          </div>
+          <div id="ing-unidad-wrap" style="display:none">
+            <label>Unidad</label>
+            <input type="text" id="ing-unidad" readonly style="color:var(--muted)">
+          </div>
+          <div id="ing-venc-wrap" style="display:none">
+            <label>Fecha de vencimiento <span class="req">*</span></label>
+            <input type="date" id="ing-vencimiento">
+            <p class="hint">⚠ Este producto es perecedero — campo obligatorio</p>
+          </div>
+          <div id="ing-lote-wrap" style="display:none">
+            <label>Lote / Remito (opcional)</label>
+            <input type="text" id="ing-lote" placeholder="Nº lote o remito">
+          </div>
+        </div>
+        <div id="ing-btn-wrap" style="display:none">
+          <button class="btn btn-primary" onclick="ingresarStock()">Registrar ingreso</button>
+          <span class="hint" style="display:inline-block;margin-left:12px;">* campos obligatorios</span>
+        </div>
+      </div>
+
+      <!-- MODO DESDE ORDEN DE COMPRA -->
+      <div id="ing-modo-oc" style="display:none">
+        <div class="form-grid">
+          <div>
+            <label>1. Proveedor <span class="req">*</span></label>
+            <select id="ingoc-proveedor" onchange="onIngOCProveedorChange()">
+              <option value="">— Seleccioná proveedor —</option>
+            </select>
+          </div>
+          <div>
+            <label>2. Orden de compra <span class="req">*</span></label>
+            <select id="ingoc-orden" onchange="onIngOCOrdenChange()" disabled>
+              <option value="">— Primero elegí proveedor —</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="ingoc-lineas-wrap" style="display:none;margin-top:14px">
+          <div class="section-title" style="font-size:.95rem;margin-bottom:8px">Líneas a ingresar</div>
+          <p class="hint" style="margin-bottom:10px">Podés ajustar las cantidades, completar fechas de vencimiento, quitar líneas que no llegaron, o agregar productos extra que vinieron en el mismo remito.</p>
+          <table class="oc-table" id="ingoc-lineas-tabla">
+            <thead><tr><th>Producto</th><th>Cantidad</th><th>Unidad</th><th>Vencimiento</th><th>Lote/Remito</th><th></th></tr></thead>
+            <tbody id="ingoc-lineas-tbody"></tbody>
+          </table>
+
+          <div style="margin-top:12px;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+            <div style="flex:1;min-width:180px">
+              <label style="font-size:.78rem">Agregar otro producto</label>
+              <select id="ingoc-add-producto" style="width:100%">
+                <option value="">— Seleccioná producto —</option>
+              </select>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="agregarLineaIngOC()">+ Agregar línea</button>
+          </div>
+
+          <div style="margin-top:18px">
+            <button class="btn btn-primary" onclick="confirmarIngresoOC()">✓ Confirmar ingreso</button>
+            <button class="btn btn-secondary" onclick="cancelarIngresoOC()">Cancelar</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
