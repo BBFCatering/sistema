@@ -1486,6 +1486,58 @@ function abrirHistorialPrecios(productoId){
   document.getElementById('modal-historial-precios').classList.remove('hidden');
 }
 
+// ── HISTORIAL GENERAL DE PRECIOS/BONIFICACIONES (submenú de Historial) ──
+function updateHistPProductoSelect(){
+  const sel = document.getElementById('histp-producto');
+  if(!sel) return;
+  const val = sel.value;
+  const prods = [...DB.productos].sort((a,b)=>a.nombre.localeCompare(b.nombre));
+  sel.innerHTML = '<option value="">Todos los productos</option>' +
+    prods.map(p=>`<option value="${p.id}">${p.nombre}</option>`).join('');
+  sel.value = val;
+}
+
+function renderHistorialPrecios(){
+  updateHistPProductoSelect();
+  const el = document.getElementById('historial-precios-list');
+  const countEl = document.getElementById('histp-count');
+  const prodId = parseInt(document.getElementById('histp-producto').value);
+
+  let hist = [...(DB.historialPrecios||[])];
+  if(prodId) hist = hist.filter(h=>h.productoId===prodId);
+  hist.sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+
+  if(!DB.historialPrecios || !DB.historialPrecios.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">💲</div><p>Sin cambios de precio o bonificación registrados todavía.</p></div>`;
+    if(countEl) countEl.textContent='';
+    return;
+  }
+  if(!hist.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">🔍</div><p>No hay cambios registrados para ese producto.</p></div>`;
+    if(countEl) countEl.textContent='';
+    return;
+  }
+
+  if(countEl) countEl.textContent = `${hist.length} cambio${hist.length!==1?'s':''}${prodId?' (filtrado)':' en total'}`;
+
+  el.innerHTML = `<div class="item-list">` + hist.map(h=>{
+    const prod = getProd(h.productoId);
+    const cambioPrecio = h.precioAnterior !== h.precioNuevo;
+    const cambioBonif = h.bonifAnterior !== h.bonifNueva;
+    return `<div class="item-card">
+      <div>
+        <div class="item-name">${prod?prod.nombre:'—'}</div>
+        <div class="item-detail">
+          Proveedor: ${nomProv(h.proveedorId)}<br>
+          ${cambioPrecio?`Precio: ${fmtMoney(h.precioAnterior)} → <strong>${fmtMoney(h.precioNuevo)}</strong><br>`:''}
+          ${cambioBonif?`Bonificación: ${h.bonifAnterior}% → <strong>${h.bonifNueva}%</strong><br>`:''}
+          ${fdt(h.fecha)}
+        </div>
+      </div>
+    </div>`;
+  }).join('') + `</div>`;
+}
+
 function abrirModalProducto(id=null){
   editProdId=id;
   document.getElementById('modal-prod-title').textContent=id?'Editar producto':'Nuevo producto';
@@ -2140,9 +2192,13 @@ function renderHistorial(){
   const el = document.getElementById('history-list');
   const countEl = document.getElementById('hist-count');
   const q = (document.getElementById('search-historial')?.value||'').toLowerCase();
-  const lista = q
-    ? DB.historial.filter(h => h.nombre.toLowerCase().includes(q))
-    : DB.historial;
+  const desde = document.getElementById('hist-desde')?.value||'';
+  const hasta = document.getElementById('hist-hasta')?.value||'';
+
+  let lista = DB.historial;
+  if(q) lista = lista.filter(h => h.nombre.toLowerCase().includes(q));
+  if(desde) lista = lista.filter(h => h.fecha.slice(0,10) >= desde);
+  if(hasta) lista = lista.filter(h => h.fecha.slice(0,10) <= hasta);
 
   if(!DB.historial.length){
     el.innerHTML=`<div class="empty-state"><div class="icon">🕓</div><p>Sin movimientos registrados.</p></div>`;
@@ -2150,15 +2206,13 @@ function renderHistorial(){
     return;
   }
   if(!lista.length){
-    el.innerHTML=`<div class="empty-state"><div class="icon">🔍</div><p>No hay movimientos para "<strong>${q}</strong>".</p></div>`;
+    el.innerHTML=`<div class="empty-state"><div class="icon">🔍</div><p>No hay movimientos para los filtros aplicados.</p></div>`;
     if(countEl) countEl.textContent='';
     return;
   }
 
   const mostrar = lista.slice(0, 200);
-  if(countEl) countEl.textContent = q
-    ? `${lista.length} movimiento${lista.length!==1?'s':''} de "${q}"`
-    : `${lista.length} movimiento${lista.length!==1?'s':''} en total`;
+  if(countEl) countEl.textContent = `${lista.length} movimiento${lista.length!==1?'s':''}${(q||desde||hasta)?' (filtrado)':' en total'}`;
 
   el.innerHTML=`<div class="item-list">`+mostrar.map(h=>`
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:13px 16px;display:grid;grid-template-columns:auto 1fr auto auto;gap:14px;align-items:center;font-size:.81rem;">
@@ -2443,6 +2497,16 @@ function switchTab(tab){
   if(tab==='egreso') initEgreso();
   if(tab==='remitos') renderRemitos();
   if(tab==='compras') renderOCs();
+  if(tab==='historial') renderHistorial();
+}
+
+// ── SUBMENÚ DE HISTORIAL ─────────────────────────────────
+function switchHistorialSub(sub){
+  document.querySelectorAll('#panel-historial .listado-subtab').forEach(t=>t.classList.toggle('active', t.dataset.sub===sub));
+  document.querySelectorAll('#panel-historial .listado-subpanel').forEach(p=>p.classList.remove('active'));
+  document.getElementById('historial-sub-'+sub).classList.add('active');
+  if(sub==='movs') renderHistorial();
+  if(sub==='precios') renderHistorialPrecios();
 }
 
 // ── SUBMENÚ DE LISTADOS ─────────────────────────────────
@@ -3011,12 +3075,45 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
 
   <!-- HISTORIAL -->
   <div id="panel-historial" class="panel">
-    <div class="section-header">
-      <div class="section-title">Movimientos</div>
-      <span id="hist-count" style="font-size:.78rem;color:var(--muted)"></span>
+    <!-- Submenú de historial -->
+    <div class="listado-submenu">
+      <button class="listado-subtab active" data-sub="movs" onclick="switchHistorialSub('movs')">🕓 Movimientos de stock</button>
+      <button class="listado-subtab" data-sub="precios" onclick="switchHistorialSub('precios')">💲 Cambios de precios/bonificaciones</button>
     </div>
-    <div class="search-bar"><span class="search-icon">🔍</span><input type="text" id="search-historial" placeholder="Buscar producto en historial..." oninput="renderHistorial()"></div>
-    <div id="history-list"></div>
+
+    <!-- SUB: Movimientos de stock -->
+    <div id="historial-sub-movs" class="listado-subpanel active">
+      <div class="section-header">
+        <div class="section-title">Movimientos</div>
+        <span id="hist-count" style="font-size:.78rem;color:var(--muted)"></span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+        <label style="font-size:.78rem;color:var(--muted)">Desde
+          <input type="date" id="hist-desde" onchange="renderHistorial()" style="width:auto;font-size:.78rem;padding:5px 8px;">
+        </label>
+        <label style="font-size:.78rem;color:var(--muted)">Hasta
+          <input type="date" id="hist-hasta" onchange="renderHistorial()" style="width:auto;font-size:.78rem;padding:5px 8px;">
+        </label>
+      </div>
+      <div class="search-bar"><span class="search-icon">🔍</span><input type="text" id="search-historial" placeholder="Buscar producto en historial..." oninput="renderHistorial()"></div>
+      <div id="history-list"></div>
+    </div>
+
+    <!-- SUB: Cambios de precios/bonificaciones -->
+    <div id="historial-sub-precios" class="listado-subpanel">
+      <div class="section-header">
+        <div class="section-title">Cambios de precios y bonificaciones</div>
+        <span id="histp-count" style="font-size:.78rem;color:var(--muted)"></span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+        <label style="font-size:.78rem;color:var(--muted)">Producto
+          <select id="histp-producto" onchange="renderHistorialPrecios()" style="width:auto;font-size:.78rem;padding:5px 8px;">
+            <option value="">Todos los productos</option>
+          </select>
+        </label>
+      </div>
+      <div id="historial-precios-list"></div>
+    </div>
   </div>
 </div>
 
