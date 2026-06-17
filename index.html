@@ -3365,13 +3365,30 @@ function showApp() {
 
   iniciarMonitorInactividad();
 
-  // Si venimos de una recarga forzada (al entrar a Stock/Compras), ir directo ahí
+  // Si venimos de una recarga forzada (al entrar a Stock/Compras), abrir
+  // el módulo DIRECTAMENTE sin pasar por renderMain() — de lo contrario
+  // renderMain() vuelve a llamar a forzarRecargaYAbrir() y se entra en
+  // un bucle infinito de recarga + login.
   const moduloPendiente = sessionStorage.getItem('bbf_modulo_pendiente');
   if(moduloPendiente && currentUser.perms[moduloPendiente]){
     sessionStorage.removeItem('bbf_modulo_pendiente');
     activeModule = moduloPendiente;
     renderNav();
-    renderMain();
+
+    const mod = MODULES.find(m => m.id === moduloPendiente);
+    const perm = currentUser.perms[moduloPendiente];
+    document.getElementById('topbarTitle').textContent = mod?.label || '—';
+    const permPill = document.getElementById('topbarPerm');
+    if (perm) {
+      permPill.className = 'perm-pill ' + perm;
+      permPill.innerHTML = `<i class="ti ti-${perm === 'edit' ? 'edit' : 'eye'}" style="font-size:12px"></i> ${perm === 'edit' ? 'Edición' : 'Solo lectura'}`;
+    }
+
+    if(moduloPendiente === 'stock'){
+      openFullscreen('Stock', stockModuleHTML, perm);
+    } else if(moduloPendiente === 'compras'){
+      openFullscreen('Órdenes de compra', stockModuleHTML, perm, 'compras');
+    }
     return;
   }
 
