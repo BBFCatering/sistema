@@ -807,16 +807,20 @@ function renderAlertas(){
     if(d<=0) al.push({t:'danger',m:`⚠ ${pn} — Lote ${l.loteRef||'#'+l.id} VENCIDO (${ff(l.vencimiento)})`});
     else if(d<=7) al.push({t:'warn',m:`⏱ ${pn} — Lote ${l.loteRef||'#'+l.id} vence en ${d} día${d===1?'':'s'} (${ff(l.vencimiento)})`});
   });
-  document.getElementById('stat-alertas').textContent=al.length;
-  document.getElementById('alerts-banner').innerHTML=al.map(a=>`<div class="alert-item ${a.t}"><span class="alert-dot"></span><span>${a.m}</span></div>`).join('');
+  const statAlertas = document.getElementById('stat-alertas');
+  if(statAlertas) statAlertas.textContent=al.length;
+  const alertsBanner = document.getElementById('alerts-banner');
+  if(alertsBanner) alertsBanner.innerHTML=al.map(a=>`<div class="alert-item ${a.t}"><span class="alert-dot"></span><span>${a.m}</span></div>`).join('');
 }
 
 // ── STOCK ─────────────────────────────────────────────
 function renderStock(){
-  const q=document.getElementById('search-stock').value.toLowerCase();
+  const q=(document.getElementById('search-stock')?.value||'').toLowerCase();
   const prodsActivos=DB.productos.filter(p=>p.activo&&(!q||p.nombre.toLowerCase().includes(q)));
-  document.getElementById('stat-prods').textContent=DB.productos.filter(p=>p.activo).length;
-  document.getElementById('stat-lotes').textContent=DB.lotes.filter(l=>l.cantidad>0).length;
+  const statProds = document.getElementById('stat-prods');
+  if(statProds) statProds.textContent=DB.productos.filter(p=>p.activo).length;
+  const statLotes = document.getElementById('stat-lotes');
+  if(statLotes) statLotes.textContent=DB.lotes.filter(l=>l.cantidad>0).length;
   const colMap={ok:'var(--accent)',warn:'var(--warn)',danger:'var(--danger)'};
   const el=document.getElementById('products-list');
 
@@ -2569,8 +2573,12 @@ function importarBackup(event){
 
 // ── INIT ──────────────────────────────────────────────
 function renderAll(){
-  renderAlertas(); renderStock(); renderProductos(); renderProveedores(); renderHistorial(); renderRemitos();
-  document.getElementById('stat-provs').textContent = DB.proveedores.filter(p=>p.activo).length;
+  const pasos = [renderAlertas, renderStock, renderProductos, renderProveedores, renderHistorial, renderRemitos];
+  pasos.forEach(fn => {
+    try { fn(); } catch(e) { console.warn('renderAll — error en ' + fn.name + ':', e); }
+  });
+  const statProvs = document.getElementById('stat-provs');
+  if (statProvs) statProvs.textContent = DB.proveedores.filter(p=>p.activo).length;
   const ingVenc = document.getElementById('ing-vencimiento');
   if (ingVenc) ingVenc.min = new Date().toISOString().split('T')[0];
   if (isReadonly) applyReadonlyMode(true);
