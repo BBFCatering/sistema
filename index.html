@@ -2758,25 +2758,30 @@ let users = [
   const original = loginBtn ? loginBtn.textContent : '';
   if(loginBtn){ loginBtn.disabled = true; loginBtn.textContent = 'Cargando...'; }
   try {
-    // cargarDesdeSupabase() corre de forma async al cargar el script del stock.
-    // Esperamos un poco y reintentamos varias veces hasta que DB.usuarios aparezca
-    // (o hasta agotar los intentos, en cuyo caso usamos los locales).
+    // Esperamos a que termine la carga REAL desde Supabase (cargarDesdeSupabase
+    // marca cargaInicialCompleta=true recién cuando obtuvo respuesta o falló
+    // definitivamente). Esto evita usar un tiempo fijo arbitrario que podía
+    // cortarse antes de tiempo y pisar los usuarios reales con los de prueba.
     let intentos = 0;
-    while(intentos < 8){
-      await new Promise(r => setTimeout(r, 300));
-      if(DB.usuarios && Array.isArray(DB.usuarios) && DB.usuarios.length){
-        users = DB.usuarios;
-        break;
-      }
+    while(typeof cargaInicialCompleta !== 'undefined' && !cargaInicialCompleta && intentos < 100){
+      await new Promise(r => setTimeout(r, 150));
       intentos++;
     }
-    if(!DB.usuarios || !Array.isArray(DB.usuarios) || !DB.usuarios.length){
-      // No había datos en la nube (primera vez) — subir los locales como base
-      DB.usuarios = users;
-      save();
+
+    if(DB.usuarios && Array.isArray(DB.usuarios) && DB.usuarios.length){
+      // La nube tiene usuarios reales — los usamos siempre, sin excepción.
+      users = DB.usuarios;
+    } else if(DB.usuarios === null || DB.usuarios === undefined){
+      // Sólo subimos los usuarios locales (de prueba) como base si la nube
+      // respondió y el campo "usuarios" realmente no existe todavía
+      // (primera vez que se usa el sistema). Si hubo un error de conexión,
+      // el overlay de "sin conexión" ya bloqueó la pantalla — no llegamos
+      // a este punto en ese caso porque el login queda inutilizable igual,
+      // pero por seguridad no forzamos ningún guardado acá.
+      console.warn('No se encontraron usuarios en la nube — usando usuarios locales de base (primer uso del sistema).');
     }
   } catch(e){
-    console.warn('No se pudieron cargar usuarios desde la nube, se usan los locales:', e);
+    console.warn('Error inicializando usuarios, se usan los locales:', e);
   } finally {
     if(loginBtn){ loginBtn.disabled = false; loginBtn.textContent = original || 'Ingresar'; }
   }
