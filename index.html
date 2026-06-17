@@ -671,6 +671,7 @@ const EMAILJS_PUBLIC_KEY  = ''; // ej: 'XXXXXXXXXXXXXXXXX'
 
 let syncTimer = null;
 let syncPendiente = false;
+let cargaInicialCompleta = false; // true recién después de leer Supabase por primera vez
 
 function setSyncStatus(estado){
   const el = document.getElementById('sync-indicator');
@@ -693,39 +694,79 @@ async function cargarDesdeSupabase(){
     const res = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.main&select=data`, { headers: SB_HEADERS });
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const rows = await res.json();
+
     if(rows && rows.length && rows[0].data && Object.keys(rows[0].data).length > 0){
-      const remoto = rows[0].data;
-      // Comparar con local por historial length para ver cuál es más nuevo
-      const localLen = (DB.historial||[]).length;
-      const remotoLen = (remoto.historial||[]).length;
-      if(remotoLen >= localLen){
-        DB = remoto;
-        // ── Migraciones completas después de cargar desde Supabase ──
-        if(!DB.remitos)        DB.remitos        = [];
-        if(!DB.ordenesCompra)  DB.ordenesCompra  = [];
-        if(!DB.historialPrecios) DB.historialPrecios = [];
-        if(DB.usuarios === undefined) DB.usuarios = null;
-        DB.productos.forEach(p=>{ if(!p.precios) p.precios={}; });
-        // Recalcular todos los contadores de ID
-        idSeq.prod   = maxId('productos');
-        idSeq.prov   = maxId('proveedores');
-        idSeq.lote   = maxId('lotes');
-        idSeq.remito = DB.remitos.length ? Math.max(...DB.remitos.map(x=>x.id),0)+1 : 1;
-        idSeq.oc     = DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id),0)+1 : 1;
-        localStorage.setItem('sf_v3', JSON.stringify(DB));
-        renderAll();
-      }
+      // La nube es la fuente de verdad: si Supabase respondió correctamente,
+      // SIEMPRE usamos esos datos, sin comparar contra lo que hay en este equipo.
+      // Esto evita que una copia local vieja o vacía (por ej. tras borrar el
+      // historial del navegador, o por trabajar en otra PC mientras tanto)
+      // quede "pisando" o ignorando cambios reales que ya están en la nube.
+      DB = rows[0].data;
+
+      // ── Migraciones completas después de cargar desde Supabase ──
+      if(!DB.remitos)        DB.remitos        = [];
+      if(!DB.ordenesCompra)  DB.ordenesCompra  = [];
+      if(!DB.historialPrecios) DB.historialPrecios = [];
+      if(DB.usuarios === undefined) DB.usuarios = null;
+      DB.productos.forEach(p=>{ if(!p.precios) p.precios={}; });
+      // Recalcular todos los contadores de ID
+      idSeq.prod   = maxId('productos');
+      idSeq.prov   = maxId('proveedores');
+      idSeq.lote   = maxId('lotes');
+      idSeq.remito = DB.remitos.length ? Math.max(...DB.remitos.map(x=>x.id),0)+1 : 1;
+      idSeq.oc     = DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id),0)+1 : 1;
+      localStorage.setItem('sf_v3', JSON.stringify(DB));
+      renderAll();
     }
+    // Si la nube respondió pero está vacía (primera vez), seguimos con lo
+    // que ya estaba cargado localmente — no hay nada más reciente para traer.
+    // Si la nube respondió pero está vacía (primera vez), seguimos con lo
+    // que ya estaba cargado localmente — no hay nada más reciente para traer.
     setSyncStatus('ok');
   } catch(e){
+    // Sin conexión a Supabase: por seguridad, NO seguimos trabajando con la
+    // copia local. Bloqueamos la pantalla para evitar que distintas PCs
+    // terminen con información distinta sin saberlo.
     console.warn('Supabase load error:', e);
     setSyncStatus('error');
+    const overlay = document.getElementById('sin-conexion-overlay');
+    if(overlay) overlay.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  } finally {
+    // A partir de aquí, save() ya puede sincronizar cambios hacia la nube con seguridad
+    cargaInicialCompleta = true;
   }
 }
 
 async function guardarEnSupabase(){
   setSyncStatus('saving');
   try {
+    // ── SALVAGUARDA CRÍTICA ──
+    // Si la base local está sospechosamente vacía (sin productos ni proveedores)
+    // pero la nube tiene datos, NO sobreescribimos. Esto protege contra el caso
+    // de que se borre el localStorage del navegador (ej: al limpiar el historial
+    // de Chrome) y la app, al arrancar desde cero, intente subir un DB vacío
+    // encima de datos reales que ya existen en Supabase.
+    const localVacio = (!DB.productos || DB.productos.length === 0) &&
+                        (!DB.proveedores || DB.proveedores.length === 0);
+    if(localVacio){
+      const check = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.main&select=data`, { headers: SB_HEADERS });
+      if(check.ok){
+        const rows = await check.json();
+        const remoto = rows && rows[0] && rows[0].data;
+        const remotoTieneDatos = remoto && (
+          (remoto.productos && remoto.productos.length > 0) ||
+          (remoto.proveedores && remoto.proveedores.length > 0)
+        );
+        if(remotoTieneDatos){
+          console.error('⚠ Guardado cancelado: la base local está vacía pero la nube tiene datos. No se sobreescribe para evitar pérdida de información.');
+          setSyncStatus('error');
+          toast('⚠ No se guardó: hay datos en la nube que no coinciden con esta PC. Recargá la página.', 'error');
+          return;
+        }
+      }
+    }
+
     const res = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.main`, {
       method: 'PATCH',
       headers: { ...SB_HEADERS, 'Prefer': 'return=minimal' },
@@ -745,6 +786,20 @@ async function guardarEnSupabase(){
 
 function save(){
   localStorage.setItem('sf_v3', JSON.stringify(DB));
+  // Seguridad: no sincronizar a la nube hasta que la carga inicial desde
+  // Supabase haya terminado. Esto evita que una base local vacía (por ej.
+  // tras borrar el historial del navegador) sobreescriba datos reales
+  // que ya existen en la nube. El cambio queda guardado en este equipo
+  // (localStorage) y se sincronizará automáticamente apenas la carga inicial termine.
+  if(!cargaInicialCompleta){
+    console.warn('save(): carga inicial todavía no completa — guardado en la nube postergado');
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(function reintentar(){
+      if(cargaInicialCompleta) guardarEnSupabase();
+      else syncTimer = setTimeout(reintentar, 500);
+    }, 500);
+    return;
+  }
   // Debounce: espera 1.5s después del último cambio para no saturar
   clearTimeout(syncTimer);
   syncTimer = setTimeout(guardarEnSupabase, 1500);
@@ -3303,6 +3358,18 @@ function showApp() {
   document.getElementById('sidebarRole').textContent = currentUser.role === 'admin' ? 'Administrador' : 'Usuario';
   document.getElementById('logoutBtn').onclick = doLogout;
 
+  iniciarMonitorInactividad();
+
+  // Si venimos de una recarga forzada (al entrar a Stock/Compras), ir directo ahí
+  const moduloPendiente = sessionStorage.getItem('bbf_modulo_pendiente');
+  if(moduloPendiente && currentUser.perms[moduloPendiente]){
+    sessionStorage.removeItem('bbf_modulo_pendiente');
+    activeModule = moduloPendiente;
+    renderNav();
+    renderMain();
+    return;
+  }
+
   // NO seleccionar módulo automáticamente — mostrar bienvenida
   activeModule = null;
   renderNav();
@@ -3338,9 +3405,77 @@ function renderWelcome() {
     </div>`;
 }
 
+/* ── CIERRE DE SESIÓN POR INACTIVIDAD ── */
+const INACTIVIDAD_LIMITE_MS = 14 * 60 * 1000;   // 14 minutos sin actividad → mostrar aviso
+const INACTIVIDAD_AVISO_SEG = 60;                // 60 segundos de cuenta regresiva tras el aviso
+let inactividadTimer = null;
+let inactividadCountdownTimer = null;
+let inactividadSegRestantes = INACTIVIDAD_AVISO_SEG;
+
+function iniciarMonitorInactividad(){
+  resetInactividadTimer();
+  ['mousemove','mousedown','keydown','scroll','touchstart','click'].forEach(evt => {
+    document.addEventListener(evt, resetInactividadTimer, { passive: true });
+  });
+}
+
+function resetInactividadTimer(){
+  // Si el aviso ya está visible, cualquier actividad lo cancela (vía seguirTrabajando)
+  if(!document.getElementById('inactividad-overlay')?.classList.contains('hidden')) return;
+  if(!currentUser) return; // no hay sesión activa, nada que monitorear
+  clearTimeout(inactividadTimer);
+  inactividadTimer = setTimeout(mostrarAvisoInactividad, INACTIVIDAD_LIMITE_MS);
+}
+
+function mostrarAvisoInactividad(){
+  if(!currentUser) return;
+  inactividadSegRestantes = INACTIVIDAD_AVISO_SEG;
+  const overlay = document.getElementById('inactividad-overlay');
+  const segEl = document.getElementById('inactividad-segundos');
+  overlay.classList.remove('hidden');
+  segEl.textContent = inactividadSegRestantes;
+
+  clearInterval(inactividadCountdownTimer);
+  inactividadCountdownTimer = setInterval(() => {
+    inactividadSegRestantes--;
+    segEl.textContent = inactividadSegRestantes;
+    if(inactividadSegRestantes <= 0){
+      clearInterval(inactividadCountdownTimer);
+      cerrarSesionPorInactividad();
+    }
+  }, 1000);
+}
+
+function seguirTrabajando(){
+  clearInterval(inactividadCountdownTimer);
+  document.getElementById('inactividad-overlay').classList.add('hidden');
+  resetInactividadTimer();
+}
+
+function cerrarSesionPorInactividad(){
+  document.getElementById('inactividad-overlay').classList.add('hidden');
+  // Guardar todo lo pendiente antes de cerrar sesión
+  try {
+    if(typeof DB !== 'undefined' && cargaInicialCompleta){
+      localStorage.setItem('sf_v3', JSON.stringify(DB));
+      guardarEnSupabase();
+    }
+  } catch(e){ console.warn('Error guardando antes de cerrar por inactividad:', e); }
+
+  // Si había un módulo abierto en pantalla completa, cerrarlo
+  const fsOverlay = document.getElementById('fullscreen-overlay');
+  if(fsOverlay && !fsOverlay.classList.contains('hidden')) closeFullscreen();
+
+  doLogout();
+  toast2('Sesión cerrada por inactividad', true);
+}
+
 function doLogout() {
   currentUser  = null;
   activeModule = null;
+  clearTimeout(inactividadTimer);
+  clearInterval(inactividadCountdownTimer);
+  document.getElementById('inactividad-overlay')?.classList.add('hidden');
   document.getElementById('viewApp').classList.add('hidden');
   document.getElementById('viewLogin').classList.remove('hidden');
   document.getElementById('loginUser').value = '';
@@ -3395,13 +3530,13 @@ function renderMain() {
 
   // Módulo STOCK integrado — abre en fullscreen
   if (activeModule === 'stock') {
-    openFullscreen('Stock', stockModuleHTML, perm);
+    forzarRecargaYAbrir('stock');
     return;
   }
 
   // Módulo COMPRAS — usa el mismo sistema de stock, pestaña "Compras"
   if (activeModule === 'compras') {
-    openFullscreen('Órdenes de compra', stockModuleHTML, perm, 'compras');
+    forzarRecargaYAbrir('compras');
     return;
   }
 
@@ -3611,6 +3746,20 @@ function toast2(msg, isError){
   el._t = setTimeout(()=>{ el.style.opacity='0'; }, 3000);
 };
 
+// Fuerza una recarga completa de la página (sin caché del navegador) antes
+// de abrir Stock o Compras, para garantizar que siempre se ejecute la
+// versión más reciente del sistema publicada en GitHub. Al recargar se
+// vuelve a pedir login (por seguridad y simplicidad), y apenas el usuario
+// inicia sesión de nuevo, se lo lleva directo al módulo que quería abrir.
+function forzarRecargaYAbrir(moduloDestino){
+  sessionStorage.setItem('bbf_modulo_pendiente', moduloDestino);
+  // Cache-busting: agrega/actualiza un parámetro único en la URL para
+  // asegurar que el navegador no reutilice una copia vieja del archivo.
+  const url = new URL(window.location.href);
+  url.searchParams.set('_v', Date.now());
+  window.location.href = url.toString();
+}
+
 /* ── FULLSCREEN ── */
 function openFullscreen(modName, moduleHTML, perm, initialTab) {
   const overlay = document.getElementById('fullscreen-overlay');
@@ -3696,6 +3845,32 @@ document.addEventListener('DOMContentLoaded', function() {
     </button>
   </div>
   <div class="fullscreen-content" id="fullscreen-content"></div>
+</div>
+
+<!-- BLOQUEO POR FALTA DE CONEXIÓN A LA NUBE -->
+<div id="sin-conexion-overlay" class="module-fullscreen-overlay hidden" style="display:flex;align-items:center;justify-content:center;background:#0f1117;">
+  <div style="text-align:center;max-width:420px;padding:2rem;">
+    <div style="font-size:48px;margin-bottom:16px;">📡</div>
+    <div style="font-size:20px;font-weight:600;color:#e8ecf4;margin-bottom:10px;">Sin conexión con la nube</div>
+    <div style="font-size:14px;color:#a0a6b8;margin-bottom:24px;line-height:1.6;">
+      No se pudo conectar con la base de datos. Por seguridad, el sistema no permite trabajar sin conexión
+      (para evitar que se generen versiones distintas de la información en cada computadora).
+      Verificá tu conexión a internet e intentá de nuevo.
+    </div>
+    <button class="btn btn-primary" onclick="window.location.reload()" style="padding:10px 24px;">Reintentar</button>
+  </div>
+</div>
+
+<!-- AVISO DE CIERRE DE SESIÓN POR INACTIVIDAD -->
+<div id="inactividad-overlay" class="modal-overlay hidden" style="z-index:9998;">
+  <div class="modal" style="max-width:380px;text-align:center;">
+    <div style="font-size:36px;margin-bottom:10px;">⏱</div>
+    <div class="modal-title" style="justify-content:center;">Sesión por inactividad</div>
+    <p style="font-size:14px;color:var(--text2);margin-bottom:18px;">
+      Tu sesión se va a cerrar en <strong id="inactividad-segundos">60</strong> segundos por falta de actividad.
+    </p>
+    <button class="btn-save" style="width:100%;padding:10px;" onclick="seguirTrabajando()">Sigo trabajando</button>
+  </div>
 </div>
 
 </body>
