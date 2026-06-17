@@ -2786,6 +2786,22 @@ let users = [
   } finally {
     if(loginBtn){ loginBtn.disabled = false; loginBtn.textContent = original || 'Ingresar'; }
   }
+
+  // ── AUTO-LOGIN tras una recarga forzada (al entrar a Stock/Compras) ──
+  // La recarga es solo para garantizar que se ejecute la versión más
+  // reciente del sistema; no debe obligar a loguearse de nuevo.
+  const usuarioRecordado = sessionStorage.getItem('bbf_usuario_actual');
+  if(usuarioRecordado){
+    const u = users.find(x => x.username === usuarioRecordado);
+    if(u){
+      currentUser = u;
+      showApp();
+    } else {
+      // El usuario ya no existe (fue eliminado) — limpiar y mostrar login normal
+      sessionStorage.removeItem('bbf_usuario_actual');
+      sessionStorage.removeItem('bbf_modulo_pendiente');
+    }
+  }
 })();
 
 /* ── Estado de la app ── */
@@ -3497,6 +3513,8 @@ function doLogout() {
   activeModule = null;
   clearTimeout(inactividadTimer);
   clearInterval(inactividadCountdownTimer);
+  sessionStorage.removeItem('bbf_usuario_actual');
+  sessionStorage.removeItem('bbf_modulo_pendiente');
   document.getElementById('inactividad-overlay')?.classList.add('hidden');
   document.getElementById('viewApp').classList.add('hidden');
   document.getElementById('viewLogin').classList.remove('hidden');
@@ -3775,6 +3793,10 @@ function toast2(msg, isError){
 // inicia sesión de nuevo, se lo lleva directo al módulo que quería abrir.
 function forzarRecargaYAbrir(moduloDestino){
   sessionStorage.setItem('bbf_modulo_pendiente', moduloDestino);
+  // Recordamos quién estaba logueado para no pedir el login de nuevo
+  // después de la recarga forzada — la recarga es solo para asegurar
+  // que se ejecute la versión más reciente del código, no para cerrar sesión.
+  if(currentUser) sessionStorage.setItem('bbf_usuario_actual', currentUser.username);
   // Cache-busting: agrega/actualiza un parámetro único en la URL para
   // asegurar que el navegador no reutilice una copia vieja del archivo.
   const url = new URL(window.location.href);
