@@ -672,6 +672,7 @@ const EMAILJS_PUBLIC_KEY  = ''; // ej: 'XXXXXXXXXXXXXXXXX'
 let syncTimer = null;
 let syncPendiente = false;
 let cargaInicialCompleta = false; // true recién después de leer Supabase por primera vez
+let isReadonly = false; // declarado acá porque renderAll() (script del stock) lo usa antes de que cargue el script del sistema/login
 
 function setSyncStatus(estado){
   const el = document.getElementById('sync-indicator');
@@ -3299,7 +3300,6 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
 </div>`;
 let currentUser  = null;
 let activeModule = null;
-let isReadonly   = false;
 let editingUser  = null;  // null = nuevo usuario
 
 /* ════════════════════════════════════════════
