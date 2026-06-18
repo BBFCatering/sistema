@@ -1518,6 +1518,7 @@ function renderProductos(){
       </div>
     </div>`;
   }).join('');
+  if (typeof isReadonly !== 'undefined' && isReadonly) applyReadonlyMode(true);
 }
 
 function abrirHistorialPrecios(productoId){
@@ -1599,6 +1600,7 @@ function renderHistorialPrecios(){
 }
 
 function abrirModalProducto(id=null){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés editar productos','error'); return; }
   editProdId=id;
   document.getElementById('modal-prod-title').textContent=id?'Editar producto':'Nuevo producto';
   // Cargar checkboxes de proveedores
@@ -1646,6 +1648,7 @@ function toggleProdPrecioRow(provId){
 }
 
 function guardarProducto(){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés guardar cambios','error'); return; }
   const nombre=document.getElementById('prod-nombre').value.trim();
   const unidad=document.getElementById('prod-unidad').value;
   const perecedero=document.getElementById('prod-perecedero').value;
@@ -1681,6 +1684,7 @@ function guardarProducto(){
 }
 
 function toggleActivoProd(id){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés modificar productos','error'); return; }
   const p=getProd(id);
   if(p.activo){
     const en=DB.lotes.filter(l=>l.productoId===id&&l.cantidad>0).length;
@@ -1726,9 +1730,11 @@ function renderProveedores(){
   }).join('');
   // update select ingreso
   updateIngProvSelect();
+  if (typeof isReadonly !== 'undefined' && isReadonly) applyReadonlyMode(true);
 }
 
 function abrirModalProveedor(id=null){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés editar proveedores','error'); return; }
   editProvId=id;
   document.getElementById('modal-prov-title').textContent=id?'Editar proveedor':'Nuevo proveedor';
   if(id){ const p=getProv(id);
@@ -1746,6 +1752,7 @@ function abrirModalProveedor(id=null){
 }
 
 function guardarProveedor(){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés guardar cambios','error'); return; }
   const nombre=document.getElementById('prov-nombre').value.trim();
   if(!nombre){toast('El nombre es obligatorio','error');return;}
   const datos={nombre,cuit:document.getElementById('prov-cuit').value.trim(),tel:document.getElementById('prov-tel').value.trim(),email:document.getElementById('prov-email').value.trim(),pago:document.getElementById('prov-pago').value,notas:document.getElementById('prov-notas').value.trim()};
@@ -1755,6 +1762,7 @@ function guardarProveedor(){
 }
 
 function toggleActivoProv(id){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés modificar proveedores','error'); return; }
   const p=getProv(id); p.activo=!p.activo; save(); renderAll();
   toast(`${p.nombre} ${p.activo?'activado':'desactivado'}`);
 }
@@ -2671,27 +2679,37 @@ function applyReadonlyMode(readonly) {
       }
     }
 
-    // 3. En Productos: ocultar botones Editar, Desactivar/Activar y el botón Nueva
+    // 3. En Productos: bloquear botones Editar, Desactivar/Activar, Precios y "Nuevo producto"
     const panelProd = container.querySelector('#panel-productos');
     if (panelProd) {
-      // Ocultar botón "Nuevo producto"
       panelProd.querySelectorAll('.btn-primary, .section-header button').forEach(btn => {
         btn.style.display = 'none';
+        btn.disabled = true;
+        btn.onclick = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
       });
-      // Ocultar botones de acción en cada producto (Editar, Desactivar, Precios)
       panelProd.querySelectorAll('.item-actions').forEach(div => {
         div.style.display = 'none';
+        div.querySelectorAll('button').forEach(btn => {
+          btn.disabled = true;
+          btn.onclick = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
+        });
       });
     }
 
-    // 4. En Proveedores: ocultar botones Editar, Desactivar/Activar y Nuevo
+    // 4. En Proveedores: bloquear botones Editar, Desactivar/Activar y "Nuevo proveedor"
     const panelProv = container.querySelector('#panel-proveedores');
     if (panelProv) {
       panelProv.querySelectorAll('.btn-primary, .section-header button').forEach(btn => {
         btn.style.display = 'none';
+        btn.disabled = true;
+        btn.onclick = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
       });
       panelProv.querySelectorAll('.item-actions').forEach(div => {
         div.style.display = 'none';
+        div.querySelectorAll('button').forEach(btn => {
+          btn.disabled = true;
+          btn.onclick = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
+        });
       });
     }
 
