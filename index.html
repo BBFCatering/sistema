@@ -3851,9 +3851,10 @@ function openFullscreen(modName, moduleHTML, perm, initialTab) {
 
   // Init stock module
   try {
+    // Setear isReadonly ANTES de renderAll() para que todos los guards funcionen
+    isReadonly = (perm === 'read');
     renderAll();
     cargarDesdeSupabase();
-    if (perm === 'read') applyReadonlyMode(true);
     if (initialTab) switchTab(initialTab);
   } catch(e) { console.warn('Stock init:', e); }
 }
@@ -3862,8 +3863,7 @@ function closeFullscreen() {
   const overlay = document.getElementById('fullscreen-overlay');
   overlay.classList.add('hidden');
   document.body.style.overflow = '';
-  // Deselect active nav item
-  // activeModule = null;  // keep it selected in sidebar
+  isReadonly = false; // resetear para que no afecte la próxima apertura
 }
 
 // ESC key closes fullscreen
