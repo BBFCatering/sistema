@@ -649,7 +649,7 @@ let idSeq = {
   prov:   maxId('proveedores'),
   lote:   maxId('lotes'),
   remito: DB.remitos.length ? Math.max(...DB.remitos.map(x=>x.id)) + 1 : 1,
-  oc:     DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id)) + 1 : 1
+  oc:     Math.max(252, DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id)) + 1 : 1)
 };
 let editProdId=null, editProvId=null;
 let ocEnEdicion=null; // {proveedorId, lineas:[{productoId,cantidad,precio,bonificacion}]}
@@ -715,7 +715,7 @@ async function cargarDesdeSupabase(){
       idSeq.prov   = maxId('proveedores');
       idSeq.lote   = maxId('lotes');
       idSeq.remito = DB.remitos.length ? Math.max(...DB.remitos.map(x=>x.id),0)+1 : 1;
-      idSeq.oc     = DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id),0)+1 : 1;
+      idSeq.oc     = Math.max(252, DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id),0)+1 : 1);
       localStorage.setItem('sf_v3', JSON.stringify(DB));
       renderAll();
     }
