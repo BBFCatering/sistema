@@ -823,12 +823,12 @@ function getPrecioInfo(productoId, proveedorId){
   const p=getProd(productoId);
   if(!p||!p.precios) return {precio:0,bonificacion:0};
   // Check both int and string key (JSON keys are always strings)
-  return p.precios[proveedorId] || p.precios[String(proveedorId)] || {precio:0,bonificacion:0};
+  return p.precios[proveedorId] || p.precios[String(proveedorId)] || {precio:0,bonificacion:0,obs:''};
 }
 function precioFinal(precio,bonif){
   return precio * (1 - (Number(bonif)||0)/100);
 }
-function setPrecioProv(productoId, proveedorId, nuevoPrecio, nuevaBonif){
+function setPrecioProv(productoId, proveedorId, nuevoPrecio, nuevaBonif, nuevaObs){
   const p=getProd(productoId);
   if(!p.precios) p.precios={};
   if(!DB.historialPrecios) DB.historialPrecios=[];
@@ -845,7 +845,7 @@ function setPrecioProv(productoId, proveedorId, nuevoPrecio, nuevaBonif){
       bonifAnterior: actual.bonificacion, bonifNueva: nuevaBonif
     });
   }
-  p.precios[proveedorId] = {precio:nuevoPrecio, bonificacion:nuevaBonif};
+  p.precios[proveedorId] = {precio:nuevoPrecio, bonificacion:nuevaBonif, obs:nuevaObs};
 }
 function stockTotal(productoId){
   const prod=getProd(productoId);
@@ -1508,7 +1508,8 @@ function renderProductos(){
       const info = getPrecioInfo(p.id,pid);
       if(!info.precio) return '';
       const bonifTxt = info.bonificacion ? ` (-${info.bonificacion}%)` : '';
-      return `${nomProv(pid)}: ${fmtMoney(info.precio)}${bonifTxt}`;
+      const obsTxt = info.obs ? ` — ${info.obs}` : '';
+      return `${nomProv(pid)}: ${fmtMoney(info.precio)}${bonifTxt}${obsTxt}`;
     }).filter(Boolean).join(' · ');
     return `<div class="item-card ${p.activo?'':'inactivo'}">
       <div>
@@ -1644,6 +1645,10 @@ function abrirModalProducto(id=null){
               <label style="font-size:.7rem">Bonif. %</label>
               <input type="number" step="0.01" min="0" max="100" id="prod-bonif-${p.id}" value="${precioInfo.bonificacion||''}" placeholder="0">
             </div>
+            <div style="flex:2;min-width:200px">
+              <label style="font-size:.7rem">Observaciones comerciales</label>
+              <textarea id="prod-obs-${p.id}" rows="2" placeholder="Ej: pago a 30 días, descuento 5% por volumen..." style="font-size:.78rem;resize:vertical;">${precioInfo.obs||''}</textarea>
+            </div>
           </div>
         </div>`;
       }).join('')
@@ -1684,7 +1689,9 @@ function guardarProducto(){
     if(precioInput){
       const nuevoPrecio = parseFloat(precioInput.value)||0;
       const nuevaBonif  = parseFloat(bonifInput ? bonifInput.value : 0)||0;
-      setPrecioProv(prod.id, provId, nuevoPrecio, nuevaBonif);
+      const obsInput = modalCtx.querySelector('#prod-obs-'+provId) || document.querySelector('#prod-obs-'+provId);
+      const nuevaObs = obsInput ? obsInput.value.trim() : '';
+      setPrecioProv(prod.id, provId, nuevoPrecio, nuevaBonif, nuevaObs);
     } else {
       // Fallback: leer del formulario directamente via name attr
       console.warn('No se encontró input precio para proveedor', provId);
