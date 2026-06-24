@@ -1228,6 +1228,7 @@ function ingresarStock(){
   const cant=parseFloat(document.getElementById('ing-cantidad').value);
   const venc=document.getElementById('ing-vencimiento').value;
   const loteRef=document.getElementById('ing-lote').value.trim();
+  const obs=document.getElementById('ing-observaciones').value.trim();
 
   if(!provId){toast('Seleccioná un proveedor','error');return;}
   if(!prodId){toast('Seleccioná un producto','error');return;}
@@ -1236,14 +1237,15 @@ function ingresarStock(){
   if(prod.perecedero==='si'&&!venc){toast('La fecha de vencimiento es obligatoria para perecederos','error');return;}
   if(venc&&dias(venc)<0&&!confirm('La fecha de vencimiento ya pasó. ¿Confirmar igualmente?')) return;
 
+  const detalleSufijo = obs ? ` · Obs: ${obs}` : '';
   if(prod.perecedero==='si'){
     const lote={id:idSeq.lote++,productoId:prodId,proveedorId:provId,cantidad:cant,cantidadInicial:cant,vencimiento:venc,ingreso:new Date().toISOString(),loteRef};
     DB.lotes.push(lote);
-    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}`,fecha:new Date().toISOString()});
+    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleSufijo}`,fecha:new Date().toISOString()});
   } else {
     if(!DB.stockSimple[prodId]) DB.stockSimple[prodId]={cantidad:0,unidad:prod.unidad};
     DB.stockSimple[prodId].cantidad+=cant;
-    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Proveedor: ${nomProv(provId)}${loteRef?' · '+loteRef:''}`,fecha:new Date().toISOString()});
+    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Proveedor: ${nomProv(provId)}${loteRef?' · '+loteRef:''}${detalleSufijo}`,fecha:new Date().toISOString()});
   }
 
   save();
@@ -1252,6 +1254,7 @@ function ingresarStock(){
   document.getElementById('ing-cantidad').value='';
   document.getElementById('ing-vencimiento').value='';
   document.getElementById('ing-lote').value='';
+  document.getElementById('ing-observaciones').value='';
   onProveedorChange();
   renderAll(); switchTab('stock');
   toast(`✓ Ingresado: ${cant} ${prod.unidad} de ${prod.nombre}`);
@@ -1409,17 +1412,20 @@ function confirmarIngresoOC(){
   }
 
   const provId = ingOCActual.proveedorId;
+  const obs = (document.getElementById('ingoc-observaciones')?.value||'').trim();
+  const detalleObs = obs ? ` · Obs: ${obs}` : '';
 
   ingOCLineas.forEach(l=>{
     const detalle = l.extra
-      ? `Adicional — no incluido en OC ${ingOCActual.nro}`
-      : `Ingreso desde OC ${ingOCActual.nro}`;
+      ? `Adicional — no incluido en OC ${ingOCActual.nro}${detalleObs}`
+      : `Ingreso desde OC ${ingOCActual.nro}${detalleObs}`;
     aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle);
   });
 
   // Marcar la OC como recibida
   ingOCActual.recibida = true;
   ingOCActual.fechaRecepcion = new Date().toISOString();
+  if(obs) ingOCActual.obsRecepcion = obs;
 
   save();
   toast(`✓ Ingreso registrado desde ${ingOCActual.nro}`);
@@ -1432,8 +1438,12 @@ function confirmarIngresoOC(){
 function cancelarIngresoOC(){
   ingOCLineas = [];
   ingOCActual = null;
-  document.getElementById('ingoc-orden').value = '';
-  document.getElementById('ingoc-lineas-wrap').style.display = 'none';
+  const selOrden = document.getElementById('ingoc-orden');
+  if(selOrden) selOrden.value = '';
+  const obsEl = document.getElementById('ingoc-observaciones');
+  if(obsEl) obsEl.value = '';
+  const wrap = document.getElementById('ingoc-lineas-wrap');
+  if(wrap) wrap.style.display = 'none';
 }
 
 
@@ -2996,6 +3006,10 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
           </div>
         </div>
         <div id="ing-btn-wrap" style="display:none">
+          <div style="margin-bottom:12px">
+            <label style="font-size:.78rem;color:var(--muted);display:block;margin-bottom:4px">Observaciones de recepción (opcional)</label>
+            <textarea id="ing-observaciones" rows="2" placeholder="Ej: mercadería en buen estado, faltaron 3 unidades, llegó sin factura..." style="width:100%;resize:vertical;font-size:.85rem;"></textarea>
+          </div>
           <button class="btn btn-primary" onclick="ingresarStock()">Registrar ingreso</button>
           <span class="hint" style="display:inline-block;margin-left:12px;">* campos obligatorios</span>
         </div>
@@ -3037,6 +3051,10 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
           </div>
 
           <div style="margin-top:18px">
+            <div style="margin-bottom:12px">
+              <label style="font-size:.78rem;color:var(--muted);display:block;margin-bottom:4px">Observaciones de recepción (opcional)</label>
+              <textarea id="ingoc-observaciones" rows="2" placeholder="Ej: mercadería en buen estado, faltaron 3 unidades, llegó sin factura..." style="width:100%;resize:vertical;font-size:.85rem;"></textarea>
+            </div>
             <button class="btn btn-primary" onclick="confirmarIngresoOC()">✓ Confirmar ingreso</button>
             <button class="btn btn-secondary" onclick="cancelarIngresoOC()">Cancelar</button>
           </div>
