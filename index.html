@@ -542,6 +542,30 @@
   .prov-dropdown-item:hover { background: var(--green-bg); color: var(--green-txt); }
   .prov-no-results { padding: 10px 12px; color: var(--text3); font-size: .85rem; font-style: italic; }
 
+  /* ── BUSCADOR DE PRODUCTO ── */
+  .prod-search-wrap { position: relative; }
+  .prod-search-wrap .prod-search-input { padding-right: 32px; }
+  .prod-clear-btn {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: var(--text2); cursor: pointer;
+    font-size: 16px; line-height: 1; padding: 2px 4px; width: auto;
+  }
+  .prod-clear-btn:hover { color: var(--text); }
+  .prod-dropdown {
+    position: absolute; top: 100%; left: 0; right: 0;
+    background: var(--surface); border: 1px solid var(--border2);
+    border-radius: var(--rad); box-shadow: 0 4px 16px rgba(0,0,0,0.14);
+    max-height: 220px; overflow-y: auto; z-index: 999; margin-top: 2px;
+  }
+  .prod-dropdown-item {
+    padding: 10px 12px; cursor: pointer; font-size: 14px;
+    border-bottom: 0.5px solid var(--border);
+  }
+  .prod-dropdown-item:last-child { border-bottom: none; }
+  .prod-dropdown-item:hover { background: var(--green-bg); color: var(--green-txt); }
+  .prod-no-results { padding: 10px 12px; color: var(--text3); font-size: .85rem; font-style: italic; }
+  .prod-search-input:disabled { opacity: 0.5; cursor: not-allowed; background: var(--surface2); }
+
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -1213,20 +1237,31 @@ function imprimirListado(){
 // ── INGRESO ───────────────────────────────────────────
 function onProveedorChange(){
   const provId=parseInt(document.getElementById('ing-proveedor').value);
-  const selProd=document.getElementById('ing-producto');
+  const ingProdText=document.getElementById('ing-prod-text');
   const campos=['ing-cantidad-wrap','ing-venc-wrap','ing-lote-wrap','ing-unidad-wrap','ing-btn-wrap'];
   campos.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
+  resetProdSearchWidget('ing-prod-wrap');
 
-  if(!provId){selProd.disabled=true;selProd.innerHTML='<option value="">— Primero elegí proveedor —</option>';return;}
+  if(!provId){
+    ingProdText.disabled=true;
+    ingProdText.placeholder='Primero elegí proveedor';
+    setProdSearchList('ing-prod-wrap',[]);
+    return;
+  }
 
   const prodsProv=DB.productos.filter(p=>p.activo&&p.proveedoresIds&&p.proveedoresIds.includes(provId));
   if(!prodsProv.length){
-    selProd.disabled=true;
-    selProd.innerHTML='<option value="">Este proveedor no tiene productos asociados</option>';
+    ingProdText.disabled=true;
+    ingProdText.placeholder='Este proveedor no tiene productos asociados';
+    setProdSearchList('ing-prod-wrap',[]);
     toast('Este proveedor no tiene productos asociados','error'); return;
   }
-  selProd.disabled=false;
-  selProd.innerHTML='<option value="">— Seleccioná producto —</option>'+prodsProv.map(p=>`<option value="${p.id}">${p.nombre} (${p.perecedero==='si'?'Perecedero':'No perecedero'})</option>`).join('');
+  ingProdText.disabled=false;
+  ingProdText.placeholder='Escribi para buscar producto...';
+  setProdSearchList('ing-prod-wrap', prodsProv.map(p=>({
+    id: p.id,
+    label: p.nombre+' ('+(p.perecedero==='si'?'Perecedero':'No perecedero')+')'
+  })));
 }
 
 function onProductoChange(){
@@ -1273,7 +1308,7 @@ function ingresarStock(){
 
   save();
   resetProvSearchWidget('ing-prov-wrap');
-  document.getElementById('ing-producto').value='';
+  resetProdSearchWidget('ing-prod-wrap');
   document.getElementById('ing-cantidad').value='';
   document.getElementById('ing-vencimiento').value='';
   document.getElementById('ing-lote').value='';
@@ -1363,12 +1398,14 @@ function onIngOCOrdenChange(){
     };
   });
 
-  // Poblar selector de "agregar otro producto" con productos del proveedor
+  // Poblar widget de "agregar otro producto" con productos del proveedor
   const provId = oc.proveedorId;
   const prodsProv = DB.productos.filter(p=>p.activo && p.proveedoresIds && p.proveedoresIds.includes(provId));
-  const selAdd = document.getElementById('ingoc-add-producto');
-  selAdd.innerHTML = '<option value="">— Seleccioná producto —</option>' +
-    prodsProv.map(p=>`<option value="${p.id}">${p.nombre} (${p.perecedero==='si'?'Perecedero':'No perecedero'})</option>`).join('');
+  setProdSearchList('ingoc-add-prod-wrap', prodsProv.map(p=>({
+    id: p.id,
+    label: p.nombre+' ('+(p.perecedero==='si'?'Perecedero':'No perecedero')+')'
+  })));
+  resetProdSearchWidget('ingoc-add-prod-wrap');
 
   wrap.style.display = '';
   renderIngOCLineas();
@@ -1414,7 +1451,7 @@ function agregarLineaIngOC(){
     productoId: prodId, cantidad: 1, unidad: prod.unidad,
     perecedero: prod.perecedero, vencimiento: '', loteRef: '', extra: true
   });
-  document.getElementById('ingoc-add-producto').value='';
+  resetProdSearchWidget('ingoc-add-prod-wrap');
   renderIngOCLineas();
 }
 
@@ -1858,6 +1895,67 @@ function clearProvSearch(wrapId, cb){
 }
 
 function resetProvSearchWidget(wrapId){ clearProvSearch(wrapId); }
+
+// ── BUSCADOR DE PRODUCTO (widget reutilizable) ────────────────────────
+const _prodSearchLists = {}; // wrapId -> [{id, label}]
+
+function setProdSearchList(wrapId, items){
+  _prodSearchLists[wrapId] = items;
+}
+
+function _prodWrapEls(wrapId){
+  const wrap=document.getElementById(wrapId); if(!wrap) return null;
+  return {
+    text:   wrap.querySelector('.prod-search-input'),
+    clear:  wrap.querySelector('.prod-clear-btn'),
+    drop:   wrap.querySelector('.prod-dropdown'),
+    hidden: wrap.querySelector('input[type="hidden"]')
+  };
+}
+
+function openProdDropdown(wrapId){
+  const e=_prodWrapEls(wrapId); if(!e||e.hidden.value) return;
+  filterProdSearch(wrapId);
+}
+
+function filterProdSearch(wrapId){
+  const e=_prodWrapEls(wrapId); if(!e) return;
+  const q=e.text.value.trim().toLowerCase();
+  const lista=(_prodSearchLists[wrapId]||[]);
+  const matches=lista.filter(item=>!q||item.label.toLowerCase().includes(q));
+  if(!lista.length){
+    e.drop.innerHTML='<div class="prod-no-results">Primero seleccioná el proveedor</div>';
+  } else if(!matches.length){
+    e.drop.innerHTML='<div class="prod-no-results">Sin resultados</div>';
+  } else {
+    e.drop.innerHTML=matches.map(item=>`<div class="prod-dropdown-item" onmousedown="selectProd('${wrapId}',${item.id},'${item.label.replace(/'/g,"\\'")}')"> ${item.label}</div>`).join('');
+  }
+  e.drop.style.display='block';
+}
+
+function selectProd(wrapId, prodId, prodLabel){
+  const e=_prodWrapEls(wrapId); if(!e) return;
+  e.text.value=prodLabel;
+  e.hidden.value=prodId;
+  e.clear.style.display='block';
+  e.drop.style.display='none';
+  if(wrapId==='ing-prod-wrap')         onProductoChange();
+  else if(wrapId==='rem-prod-wrap')    onRemProductoChange();
+  // ingoc-add-prod-wrap no dispara nada: el add lo hace el botón
+}
+
+function closeProdDropdownDelayed(wrapId){
+  setTimeout(()=>{ const e=_prodWrapEls(wrapId); if(e) e.drop.style.display='none'; },200);
+}
+
+function clearProdSearch(wrapId, cb){
+  const e=_prodWrapEls(wrapId); if(!e) return;
+  e.text.value=''; e.hidden.value='';
+  e.clear.style.display='none'; e.drop.style.display='none';
+  if(typeof cb==='function') cb();
+}
+
+function resetProdSearchWidget(wrapId){ clearProdSearch(wrapId); }
 
 
 // ── ÓRDENES DE COMPRA ─────────────────────────────────
@@ -2385,11 +2483,13 @@ function initEgreso(){
   const hoy = new Date().toISOString().split('T')[0];
   const fechaEl = document.getElementById('rem-fecha');
   if(!fechaEl.value) fechaEl.value = hoy;
-  // Poblar select de productos con stock
-  const sel = document.getElementById('rem-producto');
+  // Poblar widget de búsqueda con productos que tienen stock
   const prodsConStock = DB.productos.filter(p => p.activo && stockTotal(p.id) > 0);
-  sel.innerHTML = '<option value="">— Seleccioná producto —</option>' +
-    prodsConStock.map(p => `<option value="${p.id}">${p.nombre} (${stockTotal(p.id)} ${p.unidad})</option>`).join('');
+  setProdSearchList('rem-prod-wrap', prodsConStock.map(p=>({
+    id: p.id,
+    label: p.nombre+' ('+stockTotal(p.id)+' '+p.unidad+')'
+  })));
+  resetProdSearchWidget('rem-prod-wrap');
   document.getElementById('rem-lote-wrap').style.display = 'none';
   document.getElementById('rem-stock-info').textContent = '';
   renderLineasBorrador();
@@ -2447,7 +2547,7 @@ function agregarLineaRemito(){
     remitoLineas.push({ productoId: prodId, nombre: prod.nombre, unidad: prod.unidad, cantidad });
   }
   // Reset línea
-  document.getElementById('rem-producto').value='';
+  resetProdSearchWidget('rem-prod-wrap');
   document.getElementById('rem-lote-wrap').style.display='none';
   document.getElementById('rem-cantidad').value='';
   document.getElementById('rem-stock-info').textContent='';
@@ -3058,9 +3158,12 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
           </div>
           <div>
             <label>2. Producto <span class="req">*</span></label>
-            <select id="ing-producto" onchange="onProductoChange()" disabled>
-              <option value="">— Primero elegí proveedor —</option>
-            </select>
+            <div class="prod-search-wrap" id="ing-prod-wrap">
+              <input type="text" class="prod-search-input" id="ing-prod-text" placeholder="Primero elegí proveedor" autocomplete="off" disabled oninput="filterProdSearch('ing-prod-wrap')" onfocus="openProdDropdown('ing-prod-wrap')" onblur="closeProdDropdownDelayed('ing-prod-wrap')">
+              <button type="button" class="prod-clear-btn" onclick="clearProdSearch('ing-prod-wrap',onProductoChange)" style="display:none">✕</button>
+              <div class="prod-dropdown" style="display:none"></div>
+              <input type="hidden" id="ing-producto">
+            </div>
           </div>
           <div id="ing-cantidad-wrap" style="display:none">
             <label>Cantidad <span class="req">*</span></label>
@@ -3119,12 +3222,13 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
           </table>
 
           <div style="margin-top:12px;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
-            <div style="flex:1;min-width:180px">
-              <label style="font-size:.78rem">Agregar otro producto</label>
-              <select id="ingoc-add-producto" style="width:100%">
-                <option value="">— Seleccioná producto —</option>
-              </select>
-            </div>
+              <div class="prod-search-wrap" id="ingoc-add-prod-wrap" style="flex:1;min-width:180px">
+                <label style="font-size:.78rem">Agregar otro producto</label>
+                <input type="text" class="prod-search-input" id="ingoc-add-prod-text" placeholder="Buscar producto adicional..." autocomplete="off" oninput="filterProdSearch('ingoc-add-prod-wrap')" onfocus="openProdDropdown('ingoc-add-prod-wrap')" onblur="closeProdDropdownDelayed('ingoc-add-prod-wrap')">
+                <button type="button" class="prod-clear-btn" onclick="clearProdSearch('ingoc-add-prod-wrap',null)" style="display:none">✕</button>
+                <div class="prod-dropdown" style="display:none"></div>
+                <input type="hidden" id="ingoc-add-producto">
+              </div>
             <button class="btn btn-secondary btn-sm" onclick="agregarLineaIngOC()">+ Agregar línea</button>
           </div>
 
@@ -3166,9 +3270,12 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
         <div class="form-grid">
           <div>
             <label>Producto <span class="req">*</span></label>
-            <select id="rem-producto" onchange="onRemProductoChange()">
-              <option value="">— Seleccioná producto —</option>
-            </select>
+            <div class="prod-search-wrap" id="rem-prod-wrap">
+              <input type="text" class="prod-search-input" id="rem-prod-text" placeholder="Escribi para buscar producto..." autocomplete="off" oninput="filterProdSearch('rem-prod-wrap')" onfocus="openProdDropdown('rem-prod-wrap')" onblur="closeProdDropdownDelayed('rem-prod-wrap')">
+              <button type="button" class="prod-clear-btn" onclick="clearProdSearch('rem-prod-wrap',onRemProductoChange)" style="display:none">✕</button>
+              <div class="prod-dropdown" style="display:none"></div>
+              <input type="hidden" id="rem-producto">
+            </div>
           </div>
           <div id="rem-lote-wrap" style="display:none">
             <label>Lote (FIFO) <span class="req">*</span></label>
