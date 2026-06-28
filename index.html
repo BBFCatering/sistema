@@ -519,6 +519,29 @@
     min-height: 100%;
   }
 
+  /* ── BUSCADOR DE PROVEEDOR ── */
+  .prov-search-wrap { position: relative; }
+  .prov-search-wrap .prov-search-input { padding-right: 32px; }
+  .prov-clear-btn {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: var(--text2); cursor: pointer;
+    font-size: 16px; line-height: 1; padding: 2px 4px; width: auto;
+  }
+  .prov-clear-btn:hover { color: var(--text); }
+  .prov-dropdown {
+    position: absolute; top: 100%; left: 0; right: 0;
+    background: var(--surface); border: 1px solid var(--border2);
+    border-radius: var(--rad); box-shadow: 0 4px 16px rgba(0,0,0,0.14);
+    max-height: 220px; overflow-y: auto; z-index: 999; margin-top: 2px;
+  }
+  .prov-dropdown-item {
+    padding: 10px 12px; cursor: pointer; font-size: 14px;
+    border-bottom: 0.5px solid var(--border);
+  }
+  .prov-dropdown-item:last-child { border-bottom: none; }
+  .prov-dropdown-item:hover { background: var(--green-bg); color: var(--green-txt); }
+  .prov-no-results { padding: 10px 12px; color: var(--text3); font-size: .85rem; font-style: italic; }
+
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -1249,7 +1272,7 @@ function ingresarStock(){
   }
 
   save();
-  document.getElementById('ing-proveedor').value='';
+  resetProvSearchWidget('ing-prov-wrap');
   document.getElementById('ing-producto').value='';
   document.getElementById('ing-cantidad').value='';
   document.getElementById('ing-vencimiento').value='';
@@ -1290,11 +1313,7 @@ function onIngModoChange(){
 }
 
 function updateIngOCProvSelect(){
-  const sel = document.getElementById('ingoc-proveedor');
-  const val = sel.value;
-  sel.innerHTML = '<option value="">— Seleccioná proveedor —</option>' +
-    DB.proveedores.filter(p=>p.activo).map(p=>`<option value="${p.id}">${p.nombre}</option>`).join('');
-  sel.value = val;
+  // La lista se construye en tiempo real en filterProvSearch(); no se necesita repoblar
 }
 
 function onIngOCProveedorChange(){
@@ -1785,12 +1804,61 @@ function toggleActivoProv(id){
 }
 
 function updateIngProvSelect(){
-  const sel=document.getElementById('ing-proveedor');
-  const val=sel.value;
-  sel.innerHTML='<option value="">— Seleccioná proveedor —</option>'+
-    DB.proveedores.filter(p=>p.activo).map(p=>`<option value="${p.id}">${p.nombre}</option>`).join('');
-  sel.value=val;
+  // La lista se construye en tiempo real en filterProvSearch(); no se necesita repoblar
 }
+
+// ── BUSCADOR DE PROVEEDOR (widget reutilizable) ───────────────────────
+function _provWrapEls(wrapId){
+  const wrap=document.getElementById(wrapId); if(!wrap) return null;
+  return {
+    text:   wrap.querySelector('.prov-search-input'),
+    clear:  wrap.querySelector('.prov-clear-btn'),
+    drop:   wrap.querySelector('.prov-dropdown'),
+    hidden: wrap.querySelector('input[type="hidden"]')
+  };
+}
+
+function openProvDropdown(wrapId){
+  const e=_provWrapEls(wrapId); if(!e||e.hidden.value) return;
+  filterProvSearch(wrapId);
+}
+
+function filterProvSearch(wrapId){
+  const e=_provWrapEls(wrapId); if(!e) return;
+  const q=e.text.value.trim().toLowerCase();
+  const matches=DB.proveedores.filter(p=>p.activo&&(!q||p.nombre.toLowerCase().includes(q)));
+  if(!matches.length){
+    e.drop.innerHTML='<div class="prov-no-results">Sin resultados</div>';
+  } else {
+    e.drop.innerHTML=matches.map(p=>`<div class="prov-dropdown-item" onmousedown="selectProv('${wrapId}',${p.id},'${p.nombre.replace(/'/g,"\\'")}')"> ${p.nombre}</div>`).join('');
+  }
+  e.drop.style.display='block';
+}
+
+function selectProv(wrapId, provId, provNombre){
+  const e=_provWrapEls(wrapId); if(!e) return;
+  e.text.value=provNombre;
+  e.hidden.value=provId;
+  e.clear.style.display='block';
+  e.drop.style.display='none';
+  if(wrapId==='ing-prov-wrap')    onProveedorChange();
+  else if(wrapId==='ingoc-prov-wrap') onIngOCProveedorChange();
+  else if(wrapId==='oc-prov-wrap')    onOCProveedorChange();
+}
+
+function closeProvDropdownDelayed(wrapId){
+  setTimeout(()=>{ const e=_provWrapEls(wrapId); if(e) e.drop.style.display='none'; },200);
+}
+
+function clearProvSearch(wrapId, cb){
+  const e=_provWrapEls(wrapId); if(!e) return;
+  e.text.value=''; e.hidden.value='';
+  e.clear.style.display='none'; e.drop.style.display='none';
+  if(typeof cb==='function') cb();
+}
+
+function resetProvSearchWidget(wrapId){ clearProvSearch(wrapId); }
+
 
 // ── ÓRDENES DE COMPRA ─────────────────────────────────
 function abrirNuevaOC(){
@@ -1798,10 +1866,7 @@ function abrirNuevaOC(){
   document.getElementById('oc-form').classList.remove('hidden');
   document.getElementById('oc-lineas-wrap').classList.add('hidden');
   document.getElementById('btn-nueva-oc').classList.add('hidden');
-  const sel=document.getElementById('oc-proveedor');
-  sel.innerHTML='<option value="">— Seleccioná proveedor —</option>'+
-    DB.proveedores.filter(p=>p.activo).map(p=>`<option value="${p.id}">${p.nombre}</option>`).join('');
-  sel.value='';
+  resetProvSearchWidget('oc-prov-wrap');
 }
 
 function cancelarOC(){
@@ -2984,9 +3049,12 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
         <div class="form-grid">
           <div>
             <label>1. Proveedor <span class="req">*</span></label>
-            <select id="ing-proveedor" onchange="onProveedorChange()">
-              <option value="">— Seleccioná proveedor —</option>
-            </select>
+            <div class="prov-search-wrap" id="ing-prov-wrap">
+              <input type="text" class="prov-search-input" id="ing-prov-text" placeholder="Escribi para buscar proveedor..." autocomplete="off" oninput="filterProvSearch('ing-prov-wrap')" onfocus="openProvDropdown('ing-prov-wrap')" onblur="closeProvDropdownDelayed('ing-prov-wrap')">
+              <button type="button" class="prov-clear-btn" onclick="clearProvSearch('ing-prov-wrap',onProveedorChange)" style="display:none">✕</button>
+              <div class="prov-dropdown" style="display:none"></div>
+              <input type="hidden" id="ing-proveedor">
+            </div>
           </div>
           <div>
             <label>2. Producto <span class="req">*</span></label>
@@ -3027,9 +3095,12 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
         <div class="form-grid">
           <div>
             <label>1. Proveedor <span class="req">*</span></label>
-            <select id="ingoc-proveedor" onchange="onIngOCProveedorChange()">
-              <option value="">— Seleccioná proveedor —</option>
-            </select>
+            <div class="prov-search-wrap" id="ingoc-prov-wrap">
+              <input type="text" class="prov-search-input" id="ingoc-prov-text" placeholder="Escribi para buscar proveedor..." autocomplete="off" oninput="filterProvSearch('ingoc-prov-wrap')" onfocus="openProvDropdown('ingoc-prov-wrap')" onblur="closeProvDropdownDelayed('ingoc-prov-wrap')">
+              <button type="button" class="prov-clear-btn" onclick="clearProvSearch('ingoc-prov-wrap',onIngOCProveedorChange)" style="display:none">✕</button>
+              <div class="prov-dropdown" style="display:none"></div>
+              <input type="hidden" id="ingoc-proveedor">
+            </div>
           </div>
           <div>
             <label>2. Orden de compra <span class="req">*</span></label>
@@ -3172,9 +3243,12 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
       <div class="form-grid">
         <div class="col-full">
           <label>Proveedor <span class="req">*</span></label>
-          <select id="oc-proveedor" onchange="onOCProveedorChange()">
-            <option value="">— Seleccioná proveedor —</option>
-          </select>
+          <div class="prov-search-wrap" id="oc-prov-wrap">
+            <input type="text" class="prov-search-input" id="oc-prov-text" placeholder="Escribi para buscar proveedor..." autocomplete="off" oninput="filterProvSearch('oc-prov-wrap')" onfocus="openProvDropdown('oc-prov-wrap')" onblur="closeProvDropdownDelayed('oc-prov-wrap')">
+            <button type="button" class="prov-clear-btn" onclick="clearProvSearch('oc-prov-wrap',onOCProveedorChange)" style="display:none">✕</button>
+            <div class="prov-dropdown" style="display:none"></div>
+            <input type="hidden" id="oc-proveedor">
+          </div>
         </div>
       </div>
       <div id="oc-lineas-wrap" class="hidden" style="margin-top:14px">
