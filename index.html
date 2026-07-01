@@ -1116,11 +1116,13 @@ function renderListado(){
 function renderListadoRemitos(){
   const desde = document.getElementById('lrem-desde').value;
   const hasta = document.getElementById('lrem-hasta').value;
+  const destino = document.getElementById('lrem-destino').value;
   const el = document.getElementById('listado-remitos-container');
 
   let remitos = [...(DB.remitos||[])];
   if(desde) remitos = remitos.filter(r => r.fecha >= desde);
   if(hasta) remitos = remitos.filter(r => r.fecha <= hasta);
+  if(destino) remitos = remitos.filter(r => r.destino === destino);
   remitos.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
 
   if(!remitos.length){
@@ -1128,23 +1130,35 @@ function renderListadoRemitos(){
     return;
   }
 
+  let totalGeneral = 0;
   let html = `<div style="overflow-x:auto"><table class="stock-table listado-table">
-    <thead><tr><th>Remito</th><th>Fecha</th><th class="col-wrap">Producto</th><th>Lote</th><th>Cantidad</th><th>Unidad</th><th>Proveedor</th></tr></thead>
+    <thead><tr><th>Remito</th><th>Fecha</th><th>Destino</th><th class="col-wrap">Producto</th><th>Lote</th><th>Cantidad</th><th>Unidad</th><th>Proveedor</th><th>Valorización</th></tr></thead>
     <tbody>`;
   remitos.forEach(r=>{
     r.lineas.forEach((l,i)=>{
+      const precio = mejorPrecioFinal(l.productoId);
+      const subtotal = precio!==null ? l.cantidad*precio : 0;
+      totalGeneral += subtotal;
       html += `<tr>
         <td>${i===0?`<strong>${r.nro}</strong>`:''}</td>
         <td>${i===0?ff(r.fecha):''}</td>
+        <td style="font-size:.78rem">${i===0?(r.destino||'—'):''}</td>
         <td class="col-wrap">${l.nombre}</td>
         <td style="color:var(--muted);font-size:.76rem">${l.loteRef||'—'}</td>
         <td><strong>${l.cantidad}</strong></td>
         <td>${l.unidad}</td>
         <td style="font-size:.78rem">${l.proveedorId?nomProv(l.proveedorId):'—'}</td>
+        <td>${precio!==null?fmtMoney(subtotal):'<span style="color:var(--muted)">Sin precio</span>'}</td>
       </tr>`;
     });
   });
-  html += `</tbody></table></div>`;
+  html += `</tbody>
+    <tfoot><tr style="border-top:2px solid var(--border)">
+      <td colspan="8" style="text-align:right;font-weight:700">Valorización total del rango</td>
+      <td style="font-weight:700">${fmtMoney(totalGeneral)}</td>
+    </tr></tfoot>
+  </table></div>
+  <div style="font-size:.72rem;color:var(--muted);margin-top:6px">* Valorización calculada al mejor precio vigente por proveedor. No refleja necesariamente el precio histórico al momento del egreso.</div>`;
   el.innerHTML = html;
 }
 
@@ -2354,26 +2368,35 @@ function exportarPDF_ListadoRemitos(){
 
   const desde = document.getElementById('lrem-desde').value;
   const hasta = document.getElementById('lrem-hasta').value;
+  const destino = document.getElementById('lrem-destino').value;
   let remitos = [...(DB.remitos||[])];
   if(desde) remitos = remitos.filter(r => r.fecha >= desde);
   if(hasta) remitos = remitos.filter(r => r.fecha <= hasta);
+  if(destino) remitos = remitos.filter(r => r.destino === destino);
   remitos.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
 
   if(!remitos.length){ toast('No hay remitos en el rango seleccionado','error'); return; }
 
+  let totalGeneral = 0;
   const body=[];
   remitos.forEach(r=>{
     r.lineas.forEach((l,i)=>{
+      const precio = mejorPrecioFinal(l.productoId);
+      const subtotal = precio!==null ? l.cantidad*precio : 0;
+      totalGeneral += subtotal;
       body.push([
-        i===0?r.nro:'', i===0?ff(r.fecha):'', l.nombre, l.loteRef||'—',
-        String(l.cantidad), l.unidad, l.proveedorId?nomProv(l.proveedorId):'—'
+        i===0?r.nro:'', i===0?ff(r.fecha):'', i===0?(r.destino||'—'):'', l.nombre, l.loteRef||'—',
+        String(l.cantidad), l.unidad, l.proveedorId?nomProv(l.proveedorId):'—',
+        precio!==null?fmtMoney(subtotal):'—'
       ]);
     });
   });
   doc.autoTable({
     startY:y,
-    head:[['Remito','Fecha','Producto','Lote','Cantidad','Unidad','Proveedor']],
-    body, theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:9}
+    head:[['Remito','Fecha','Destino','Producto','Lote','Cantidad','Unidad','Proveedor','Valorización']],
+    body, theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:9},
+    foot:[['','','','','','','','Total:', fmtMoney(totalGeneral)]],
+    footStyles:{fillColor:[240,240,240],textColor:20,fontStyle:'bold'}
   });
   doc.save('listado-remitos.pdf');
 }
@@ -2582,9 +2605,11 @@ function renderLineasBorrador(){
 function quitarLinea(i){ remitoLineas.splice(i,1); renderLineasBorrador(); }
 
 function cerrarRemito(){
+  const destino = document.getElementById('rem-destino').value;
   const nro = document.getElementById('rem-nro').value.trim();
   const fecha = document.getElementById('rem-fecha').value;
   const obs = document.getElementById('rem-obs').value.trim();
+  if(!destino){ toast('Seleccioná el destino','error'); return; }
   if(!nro){ toast('Ingresá el número de remito','error'); return; }
   if(!fecha){ toast('Ingresá la fecha','error'); return; }
   if(!remitoLineas.length){ toast('Agregá al menos una línea','error'); return; }
@@ -2606,7 +2631,7 @@ function cerrarRemito(){
     });
   });
 
-  const remito = { id:idSeq.remito++, nro, fecha, obs, lineas:[...remitoLineas], fechaCierre:new Date().toISOString() };
+  const remito = { id:idSeq.remito++, destino, nro, fecha, obs, lineas:[...remitoLineas], fechaCierre:new Date().toISOString() };
   DB.remitos.unshift(remito);
   save();
 
@@ -2615,6 +2640,7 @@ function cerrarRemito(){
 
   // Limpiar
   remitoLineas = [];
+  document.getElementById('rem-destino').value='';
   document.getElementById('rem-nro').value='';
   document.getElementById('rem-obs').value='';
   document.getElementById('rem-fecha').value=new Date().toISOString().split('T')[0];
@@ -2626,6 +2652,7 @@ function cerrarRemito(){
 function cancelarRemito(){
   if(remitoLineas.length && !confirm('¿Cancelar el remito? Se perderán las líneas cargadas.')) return;
   remitoLineas=[];
+  document.getElementById('rem-destino').value='';
   document.getElementById('rem-nro').value='';
   document.getElementById('rem-obs').value='';
   document.getElementById('rem-fecha').value=new Date().toISOString().split('T')[0];
@@ -2634,11 +2661,12 @@ function cancelarRemito(){
 }
 
 function imprimirRemito(){
+  const destino = document.getElementById('rem-destino').value;
   const nro = document.getElementById('rem-nro').value.trim()||'BORRADOR';
   const fecha = document.getElementById('rem-fecha').value||new Date().toISOString().split('T')[0];
   const obs = document.getElementById('rem-obs').value.trim();
   if(!remitoLineas.length){ toast('No hay líneas para imprimir','error'); return; }
-  imprimirRemitoData({nro, fecha, obs, lineas:remitoLineas, borrador:true});
+  imprimirRemitoData({destino, nro, fecha, obs, lineas:remitoLineas, borrador:true});
 }
 
 function imprimirRemitoData(r){
@@ -2681,6 +2709,7 @@ function imprimirRemitoData(r){
     <div class="sub">Stock BBF — Movimiento interno de stock</div>
     ${r.borrador?'<div class="borrador">⚠ BORRADOR — No descuenta stock hasta cerrar</div>':''}
     <div class="header-grid">
+      <div class="hf"><label>Destino</label><strong>${r.destino||'—'}</strong></div>
       <div class="hf"><label>Nº Remito / Orden</label><strong>${r.nro}</strong></div>
       <div class="hf"><label>Fecha</label><strong>${ff(r.fecha)}</strong></div>
       ${r.obs?`<div class="hf" style="grid-column:1/-1"><label>Observaciones</label><strong>${r.obs}</strong></div>`:''}
@@ -2723,7 +2752,7 @@ function renderRemitos(){
   el.innerHTML = DB.remitos.map(r=>`
     <div class="item-card" style="margin-bottom:8px">
       <div>
-        <div class="item-name">Remito ${r.nro} <span style="font-size:.75rem;font-weight:400;color:var(--muted)">— ${ff(r.fecha)}</span></div>
+        <div class="item-name">Remito ${r.nro} <span style="font-size:.75rem;font-weight:400;color:var(--muted)">— ${ff(r.fecha)}${r.destino?' · '+r.destino:''}</span></div>
         <div class="item-detail">
           ${r.lineas.length} línea(s) · 
           ${r.lineas.map(l=>`${l.nombre} (${l.cantidad} ${l.unidad})`).join(', ')}
@@ -3075,6 +3104,14 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
       <div class="section-header">
         <div class="section-title">Listado de remitos</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <label style="font-size:.78rem;color:var(--muted)">Destino
+            <select id="lrem-destino" style="width:auto;font-size:.78rem;padding:5px 8px;">
+              <option value="">Todos</option>
+              <option value="Cocina Ternium">Cocina Ternium</option>
+              <option value="Cocina Comirsa">Cocina Comirsa</option>
+              <option value="Otros">Otros</option>
+            </select>
+          </label>
           <label style="font-size:.78rem;color:var(--muted)">Desde
             <input type="date" id="lrem-desde" style="width:auto;font-size:.78rem;padding:5px 8px;">
           </label>
@@ -3251,6 +3288,15 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
       <div class="card-title">➖ Nuevo remito de egreso interno</div>
       <!-- ENCABEZADO -->
       <div class="form-grid" style="margin-bottom:20px">
+        <div>
+          <label>Destino <span class="req">*</span></label>
+          <select id="rem-destino">
+            <option value="">— Seleccioná —</option>
+            <option value="Cocina Ternium">Cocina Ternium</option>
+            <option value="Cocina Comirsa">Cocina Comirsa</option>
+            <option value="Otros">Otros</option>
+          </select>
+        </div>
         <div>
           <label>Nº Remito / Orden <span class="req">*</span></label>
           <input type="text" id="rem-nro" placeholder="Ej: OP-0042">
