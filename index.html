@@ -395,6 +395,8 @@
   .stock-table.listado-table th:first-child{white-space:normal;}
   .stock-table.listado-table td.col-wrap,
   .stock-table.listado-table th.col-wrap{white-space:normal;min-width:160px;}
+  .stock-table.listado-table td.col-nowrap,
+  .stock-table.listado-table th.col-nowrap{white-space:nowrap!important;min-width:105px;}
   .stock-table tr:last-child td{border-bottom:none;}
   .stock-table tr:hover td{background:rgba(255,255,255,.02);}
 
@@ -1066,12 +1068,12 @@ function renderListado(){
   if(per.length){
     html+=`<div class="section-title" style="margin-bottom:10px">Perecederos — por lote</div>
     <div style="overflow-x:auto;margin-bottom:24px"><table class="stock-table listado-table">
-      <thead><tr><th>Producto</th><th>Lote</th><th>Cantidad</th><th>Unidad</th><th>Vencimiento</th><th>Proveedor</th></tr></thead>
+      <thead><tr><th>Producto</th><th>Lote</th><th>Cantidad</th><th>Unidad</th><th>Temp °C</th><th>Vencimiento</th><th>Proveedor</th></tr></thead>
       <tbody>`;
     per.forEach(p=>{
       const lotes=DB.lotes.filter(l=>l.productoId===p.id&&l.cantidad>0).sort((a,b)=>new Date(a.vencimiento)-new Date(b.vencimiento));
       if(!lotes.length){
-        html+=`<tr><td>${p.nombre}</td><td colspan="5" style="color:var(--muted)">Sin stock</td></tr>`;
+        html+=`<tr><td>${p.nombre}</td><td colspan="6" style="color:var(--muted)">Sin stock</td></tr>`;
       } else {
         lotes.forEach((l,i)=>{
           const d=dias(l.vencimiento);const st=stVenc(d);
@@ -1081,6 +1083,7 @@ function renderListado(){
             <td style="color:var(--muted);font-size:.76rem">${l.loteRef||'#'+l.id}</td>
             <td><strong>${l.cantidad}</strong></td>
             <td>${p.unidad}</td>
+            <td style="font-size:.78rem">${l.temp!=null&&l.temp!==''?l.temp+'°C':'<span style="color:var(--muted)">—</span>'}</td>
             <td style="color:${col}">${ff(l.vencimiento)}<br><span style="font-size:.72rem">${d<=0?'VENCIDO':d+' días'}</span></td>
             <td style="font-size:.78rem">${nomProv(l.proveedorId)}</td>
           </tr>`;
@@ -1089,7 +1092,7 @@ function renderListado(){
         html+=`<tr style="border-top:1px solid var(--border)">
           <td colspan="2" style="color:var(--muted);font-size:.75rem">Total ${p.nombre}</td>
           <td><strong style="color:var(--accent)">${stockTotal(p.id)}</strong></td>
-          <td>${p.unidad}</td><td></td><td></td>
+          <td>${p.unidad}</td><td></td><td></td><td></td>
         </tr>`;
       }
     });
@@ -1132,7 +1135,7 @@ function renderListadoRemitos(){
 
   let totalGeneral = 0;
   let html = `<div style="overflow-x:auto"><table class="stock-table listado-table">
-    <thead><tr><th>Remito</th><th>Fecha</th><th>Destino</th><th class="col-wrap">Producto</th><th>Lote</th><th>Cantidad</th><th>Unidad</th><th>Proveedor</th><th>Valorización</th></tr></thead>
+    <thead><tr><th>Remito</th><th>Fecha</th><th>Destino</th><th class="col-wrap">Producto</th><th>Lote</th><th>Temp °C</th><th>Cantidad</th><th>Unidad</th><th>Proveedor</th><th>Valorización</th></tr></thead>
     <tbody>`;
   remitos.forEach(r=>{
     r.lineas.forEach((l,i)=>{
@@ -1145,6 +1148,7 @@ function renderListadoRemitos(){
         <td style="font-size:.78rem">${i===0?(r.destino||'—'):''}</td>
         <td class="col-wrap">${l.nombre}</td>
         <td style="color:var(--muted);font-size:.76rem">${l.loteRef||'—'}</td>
+        <td style="font-size:.78rem">${(l.temp!=null&&l.temp!=='')?l.temp+'°C':'—'}</td>
         <td><strong>${l.cantidad}</strong></td>
         <td>${l.unidad}</td>
         <td style="font-size:.78rem">${l.proveedorId?nomProv(l.proveedorId):'—'}</td>
@@ -1154,7 +1158,7 @@ function renderListadoRemitos(){
   });
   html += `</tbody>
     <tfoot><tr style="border-top:2px solid var(--border)">
-      <td colspan="8" style="text-align:right;font-weight:700">Valorización total del rango</td>
+      <td colspan="9" style="text-align:right;font-weight:700">Valorización total del rango</td>
       <td style="font-weight:700">${fmtMoney(totalGeneral)}</td>
     </tr></tfoot>
   </table></div>
@@ -1199,7 +1203,7 @@ function renderListadoOC(){
 
   let totalGeneral=0;
   let html = `<div style="overflow-x:auto"><table class="stock-table listado-table">
-    <thead><tr><th>N° OC</th><th>Fecha</th><th class="col-wrap">Proveedor</th><th>Estado</th><th class="col-wrap">Producto</th><th>Cant.</th><th>Precio</th><th>Bonif.</th><th>Subtotal</th></tr></thead>
+    <thead><tr><th class="col-nowrap">N° OC</th><th>Fecha</th><th class="col-wrap" style="min-width:130px">Proveedor</th><th>Estado</th><th class="col-wrap">Producto</th><th>Cant.</th><th>Precio</th><th>Bonif.</th><th>Subtotal</th></tr></thead>
     <tbody>`;
   ocs.forEach(o=>{
     o.lineas.forEach((l,i)=>{
@@ -1207,9 +1211,9 @@ function renderListadoOC(){
       const subtotal = l.cantidad*precioFinal(l.precio,l.bonificacion);
       if(i===0) totalGeneral += o.total;
       html += `<tr>
-        <td>${i===0?`<strong>${o.nro}</strong>`:''}</td>
+        <td class="col-nowrap">${i===0?`<strong>${o.nro}</strong>`:''}</td>
         <td>${i===0?ff(o.fecha.slice(0,10)):''}</td>
-        <td class="col-wrap" style="font-size:.78rem">${i===0?nomProv(o.proveedorId):''}</td>
+        <td class="col-wrap" style="font-size:.78rem;min-width:130px">${i===0?nomProv(o.proveedorId):''}</td>
         <td>${i===0?(o.recibida?'<span class="badge badge-noperecedero">Recibida</span>':'<span class="badge badge-perecedero">Activa</span>'):''}</td>
         <td class="col-wrap">${prod?prod.nombre:'—'}</td>
         <td>${l.cantidad}</td>
@@ -1225,6 +1229,66 @@ function renderListadoOC(){
     <td style="font-weight:700">${fmtMoney(totalGeneral)}</td>
   </tr></tfoot>
   </table></div>`;
+  el.innerHTML = html;
+}
+
+// ── LISTADO DE ÓRDENES DE COMPRA OBSERVADAS (calidad) ──
+// Fuente: DB.historial (tipo='ingreso'), solo entradas con observación de recepción.
+// Incluye tanto ingresos por OC como manuales; se identifican vía extraerNroOCDeDetalle().
+function renderListadoOCObs(){
+  const modo = document.getElementById('locobs-modo').value;
+  const el = document.getElementById('listado-ocobs-container');
+
+  let entradas = (DB.historial||[]).filter(h => h.tipo==='ingreso' && extraerObsDeDetalle(h.detalle));
+
+  if(modo==='fecha'){
+    const desde = document.getElementById('locobs-desde').value;
+    const hasta = document.getElementById('locobs-hasta').value;
+    if(desde) entradas = entradas.filter(h => h.fecha.slice(0,10) >= desde);
+    if(hasta) entradas = entradas.filter(h => h.fecha.slice(0,10) <= hasta);
+  } else {
+    const nDesde = parseInt(document.getElementById('locobs-nro-desde').value);
+    const nHasta = parseInt(document.getElementById('locobs-nro-hasta').value);
+    entradas = entradas.filter(h=>{
+      const nro = extraerNroOCDeDetalle(h.detalle);
+      if(nro===null) return true; // los ingresos manuales se muestran siempre, no tienen N° de OC
+      const m = nro.match(/(\d+)$/);
+      const n = m ? parseInt(m[1]) : null;
+      if(n===null) return false;
+      if(!isNaN(nDesde) && n < nDesde) return false;
+      if(!isNaN(nHasta) && n > nHasta) return false;
+      return true;
+    });
+  }
+
+  entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+
+  if(!entradas.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">✅</div><p>No hay observaciones en los ingresos de materias primas en el rango seleccionado.</p></div>`;
+    return;
+  }
+
+  let html = `<div style="overflow-x:auto"><table class="stock-table listado-table">
+    <thead><tr><th class="col-nowrap">N° OC</th><th>Fecha</th><th class="col-wrap" style="min-width:130px">Proveedor</th><th class="col-wrap">Producto</th><th>Cantidad</th><th>Unidad</th><th class="col-wrap" style="min-width:220px">Observación</th></tr></thead>
+    <tbody>`;
+  let lastNro;
+  entradas.forEach(h=>{
+    const nro = extraerNroOCDeDetalle(h.detalle);
+    const prov = extraerProveedorDeDetalle(h.detalle);
+    const obs = extraerObsDeDetalle(h.detalle);
+    const inicioGrupo = nro===null || nro!==lastNro;
+    lastNro = nro;
+    html += `<tr>
+      <td class="col-nowrap">${inicioGrupo?`<strong>${nro||'Manual'}</strong>`:''}</td>
+      <td>${inicioGrupo?ff(h.fecha.slice(0,10)):''}</td>
+      <td class="col-wrap" style="font-size:.78rem;min-width:130px">${inicioGrupo?prov:''}</td>
+      <td class="col-wrap">${h.nombre}</td>
+      <td><strong>${h.cantidad}</strong></td>
+      <td>${h.unidad}</td>
+      <td class="col-wrap" style="font-size:.8rem;min-width:220px">${obs}</td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>`;
   el.innerHTML = html;
 }
 
@@ -1252,7 +1316,7 @@ function imprimirListado(){
 function onProveedorChange(){
   const provId=parseInt(document.getElementById('ing-proveedor').value);
   const ingProdText=document.getElementById('ing-prod-text');
-  const campos=['ing-cantidad-wrap','ing-venc-wrap','ing-lote-wrap','ing-unidad-wrap','ing-btn-wrap'];
+  const campos=['ing-cantidad-wrap','ing-venc-wrap','ing-lote-wrap','ing-unidad-wrap','ing-temp-wrap','ing-btn-wrap'];
   campos.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
   resetProdSearchWidget('ing-prod-wrap');
 
@@ -1280,9 +1344,10 @@ function onProveedorChange(){
 
 function onProductoChange(){
   const prodId=parseInt(document.getElementById('ing-producto').value);
-  ['ing-cantidad-wrap','ing-venc-wrap','ing-lote-wrap','ing-unidad-wrap','ing-btn-wrap'].forEach(id=>{
+  ['ing-cantidad-wrap','ing-venc-wrap','ing-lote-wrap','ing-unidad-wrap','ing-temp-wrap','ing-btn-wrap'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.style.display='none';
   });
+  const tempEl=document.getElementById('ing-temp'); if(tempEl) tempEl.value='';
   if(!prodId) return;
   const prod=getProd(prodId);
   if(!prod) return;
@@ -1292,6 +1357,21 @@ function onProductoChange(){
   });
   const vw=document.getElementById('ing-venc-wrap');
   vw.style.display=prod.perecedero==='si'?'':'none';
+  const tw=document.getElementById('ing-temp-wrap');
+  tw.style.display=prod.perecedero==='si'?'':'none';
+}
+
+// Valida/normaliza el formato de temperatura: -?dd.d (2 dígitos enteros, 1 decimal opcional, signo opcional)
+function validarFormatoTemp(inputId){
+  const el=document.getElementById(inputId);
+  let v=el.value.trim();
+  if(!v){ el.value=''; return; }
+  v=v.replace(',','.');
+  if(!/^-?\d{1,2}(\.\d)?$/.test(v)){
+    toast('Temperatura inválida. Formato: hasta 2 dígitos y 1 decimal, ej: -18.5','error');
+    el.value=''; el.focus(); return;
+  }
+  el.value=v;
 }
 
 function ingresarStock(){
@@ -1301,6 +1381,7 @@ function ingresarStock(){
   const venc=document.getElementById('ing-vencimiento').value;
   const loteRef=document.getElementById('ing-lote').value.trim();
   const obs=document.getElementById('ing-observaciones').value.trim();
+  let tempRaw=document.getElementById('ing-temp').value.trim().replace(',','.');
 
   if(!provId){toast('Seleccioná un proveedor','error');return;}
   if(!prodId){toast('Seleccioná un producto','error');return;}
@@ -1308,10 +1389,12 @@ function ingresarStock(){
   const prod=getProd(prodId);
   if(prod.perecedero==='si'&&!venc){toast('La fecha de vencimiento es obligatoria para perecederos','error');return;}
   if(venc&&dias(venc)<0&&!confirm('La fecha de vencimiento ya pasó. ¿Confirmar igualmente?')) return;
+  if(tempRaw && !/^-?\d{1,2}(\.\d)?$/.test(tempRaw)){ toast('Temperatura inválida. Formato: hasta 2 dígitos y 1 decimal, ej: -18.5','error'); return; }
+  const temp = (prod.perecedero==='si' && tempRaw) ? tempRaw : null;
 
-  const detalleSufijo = obs ? ` · Obs: ${obs}` : '';
+  const detalleSufijo = (obs?` · Obs: ${obs}`:'') + (temp?` · Temp: ${temp}°C`:'');
   if(prod.perecedero==='si'){
-    const lote={id:idSeq.lote++,productoId:prodId,proveedorId:provId,cantidad:cant,cantidadInicial:cant,vencimiento:venc,ingreso:new Date().toISOString(),loteRef};
+    const lote={id:idSeq.lote++,productoId:prodId,proveedorId:provId,cantidad:cant,cantidadInicial:cant,vencimiento:venc,temp,ingreso:new Date().toISOString(),loteRef};
     DB.lotes.push(lote);
     DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleSufijo}`,fecha:new Date().toISOString()});
   } else {
@@ -1327,6 +1410,7 @@ function ingresarStock(){
   document.getElementById('ing-vencimiento').value='';
   document.getElementById('ing-lote').value='';
   document.getElementById('ing-observaciones').value='';
+  document.getElementById('ing-temp').value='';
   onProveedorChange();
   renderAll(); switchTab('stock');
   toast(`✓ Ingresado: ${cant} ${prod.unidad} de ${prod.nombre}`);
@@ -1334,13 +1418,14 @@ function ingresarStock(){
 
 // Aplica un ingreso de stock para un producto dado (usado tanto por el
 // ingreso manual como por el ingreso desde Orden de Compra)
-function aplicarIngresoLinea(prodId, provId, cant, venc, loteRef, detalleExtra){
+function aplicarIngresoLinea(prodId, provId, cant, venc, loteRef, detalleExtra, temp){
   const prod=getProd(prodId);
   if(!prod) return;
   if(prod.perecedero==='si'){
-    const lote={id:idSeq.lote++,productoId:prodId,proveedorId:provId,cantidad:cant,cantidadInicial:cant,vencimiento:venc,ingreso:new Date().toISOString(),loteRef};
+    const lote={id:idSeq.lote++,productoId:prodId,proveedorId:provId,cantidad:cant,cantidadInicial:cant,vencimiento:venc,temp:temp||null,ingreso:new Date().toISOString(),loteRef};
     DB.lotes.push(lote);
-    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleExtra?' · '+detalleExtra:''}`,fecha:new Date().toISOString()});
+    const detalleTemp = temp ? ` · Temp: ${temp}°C` : '';
+    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleExtra?' · '+detalleExtra:''}${detalleTemp}`,fecha:new Date().toISOString()});
   } else {
     if(!DB.stockSimple[prodId]) DB.stockSimple[prodId]={cantidad:0,unidad:prod.unidad};
     DB.stockSimple[prodId].cantidad+=cant;
@@ -1408,7 +1493,8 @@ function onIngOCOrdenChange(){
       unidad: prod ? prod.unidad : '',
       perecedero: prod ? prod.perecedero : 'no',
       vencimiento: '',
-      loteRef: ''
+      loteRef: '',
+      temp: ''
     };
   });
 
@@ -1428,7 +1514,7 @@ function onIngOCOrdenChange(){
 function renderIngOCLineas(){
   const tbody = document.getElementById('ingoc-lineas-tbody');
   if(!ingOCLineas.length){
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:16px">No quedan líneas. Agregá un producto o cancelá.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:16px">No quedan líneas. Agregá un producto o cancelá.</td></tr>`;
     return;
   }
   tbody.innerHTML = ingOCLineas.map((l,i)=>{
@@ -1437,6 +1523,9 @@ function renderIngOCLineas(){
       <td>${prod?prod.nombre:'—'}${l.extra?' <span class="badge badge-noperecedero" style="font-size:.65rem">Adicional</span>':''}</td>
       <td><input type="number" min="0.01" step="0.01" value="${l.cantidad}" style="width:90px" onchange="updateIngOCLinea(${i},'cantidad',this.value)"></td>
       <td>${l.unidad}</td>
+      <td>${l.perecedero==='si'
+        ? `<input type="text" value="${l.temp||''}" placeholder="Ej: -18.5" inputmode="decimal" maxlength="6" style="width:70px" onchange="updateIngOCLinea(${i},'temp',this.value)">`
+        : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${l.perecedero==='si'
         ? `<input type="date" value="${l.vencimiento}" required onchange="updateIngOCLinea(${i},'vencimiento',this.value)">`
         : '<span style="color:var(--muted)">—</span>'}</td>
@@ -1447,8 +1536,19 @@ function renderIngOCLineas(){
 }
 
 function updateIngOCLinea(idx, campo, valor){
-  if(campo==='cantidad') ingOCLineas[idx][campo] = parseFloat(valor)||0;
-  else ingOCLineas[idx][campo] = valor;
+  if(campo==='cantidad'){
+    ingOCLineas[idx][campo] = parseFloat(valor)||0;
+  } else if(campo==='temp'){
+    let v = (valor||'').trim().replace(',','.');
+    if(v && !/^-?\d{1,2}(\.\d)?$/.test(v)){
+      toast('Temperatura inválida. Formato: hasta 2 dígitos y 1 decimal, ej: -18.5','error');
+      v = '';
+    }
+    ingOCLineas[idx][campo] = v;
+    renderIngOCLineas();
+  } else {
+    ingOCLineas[idx][campo] = valor;
+  }
 }
 
 function quitarLineaIngOC(idx){
@@ -1463,7 +1563,7 @@ function agregarLineaIngOC(){
   const prod = getProd(prodId);
   ingOCLineas.push({
     productoId: prodId, cantidad: 1, unidad: prod.unidad,
-    perecedero: prod.perecedero, vencimiento: '', loteRef: '', extra: true
+    perecedero: prod.perecedero, vencimiento: '', loteRef: '', temp: '', extra: true
   });
   resetProdSearchWidget('ingoc-add-prod-wrap');
   renderIngOCLineas();
@@ -1489,7 +1589,7 @@ function confirmarIngresoOC(){
     const detalle = l.extra
       ? `Adicional — no incluido en OC ${ingOCActual.nro}${detalleObs}`
       : `Ingreso desde OC ${ingOCActual.nro}${detalleObs}`;
-    aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle);
+    aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle, l.perecedero==='si'?(l.temp||null):null);
   });
 
   // Marcar la OC como recibida
@@ -2344,12 +2444,12 @@ function exportarPDF_ListadoStock(){
       const body=[];
       per.forEach(p=>{
         const lotes=DB.lotes.filter(l=>l.productoId===p.id&&l.cantidad>0).sort((a,b)=>new Date(a.vencimiento)-new Date(b.vencimiento));
-        if(!lotes.length){ body.push([p.nombre,'—','—','—','—','Sin stock']); }
+        if(!lotes.length){ body.push([p.nombre,'—','—','—','—','—','Sin stock']); }
         else lotes.forEach((l,i)=>{
-          body.push([i===0?p.nombre:'', l.loteRef||'#'+l.id, String(l.cantidad), p.unidad, ff(l.vencimiento), nomProv(l.proveedorId)]);
+          body.push([i===0?p.nombre:'', l.loteRef||'#'+l.id, String(l.cantidad), p.unidad, (l.temp!=null&&l.temp!=='')?l.temp+'°C':'—', ff(l.vencimiento), nomProv(l.proveedorId)]);
         });
       });
-      doc.autoTable({ startY:y, head:[['Producto','Lote','Cantidad','Unidad','Vencimiento','Proveedor']], body, theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:9} });
+      doc.autoTable({ startY:y, head:[['Producto','Lote','Cantidad','Unidad','Temp °C','Vencimiento','Proveedor']], body, theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:9} });
       y = doc.lastAutoTable.finalY + 10;
     }
     if(nor.length){
@@ -2386,6 +2486,7 @@ function exportarPDF_ListadoRemitos(){
       totalGeneral += subtotal;
       body.push([
         i===0?r.nro:'', i===0?ff(r.fecha):'', i===0?(r.destino||'—'):'', l.nombre, l.loteRef||'—',
+        (l.temp!=null&&l.temp!=='')?l.temp+'°C':'—',
         String(l.cantidad), l.unidad, l.proveedorId?nomProv(l.proveedorId):'—',
         precio!==null?fmtMoney(subtotal):'—'
       ]);
@@ -2393,9 +2494,9 @@ function exportarPDF_ListadoRemitos(){
   });
   doc.autoTable({
     startY:y,
-    head:[['Remito','Fecha','Destino','Producto','Lote','Cantidad','Unidad','Proveedor','Valorización']],
+    head:[['Remito','Fecha','Destino','Producto','Lote','Temp °C','Cantidad','Unidad','Proveedor','Valorización']],
     body, theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:9},
-    foot:[['','','','','','','','Total:', fmtMoney(totalGeneral)]],
+    foot:[['','','','','','','','','Total:', fmtMoney(totalGeneral)]],
     footStyles:{fillColor:[240,240,240],textColor:20,fontStyle:'bold'}
   });
   doc.save('listado-remitos.pdf');
@@ -2456,6 +2557,60 @@ function exportarPDF_ListadoOC(){
     theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:8.5}
   });
   doc.save('listado-ordenes-compra.pdf');
+}
+
+function exportarPDF_ListadoOCObs(){
+  if(typeof window.jspdf === 'undefined'){ toast('Cargando generador de PDF...','error'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape' });
+  let y = pdfLogoYTitulo(doc, 'Órdenes de Compra Observadas — Calidad');
+
+  const modo = document.getElementById('locobs-modo').value;
+  let entradas = (DB.historial||[]).filter(h => h.tipo==='ingreso' && extraerObsDeDetalle(h.detalle));
+
+  if(modo==='fecha'){
+    const desde = document.getElementById('locobs-desde').value;
+    const hasta = document.getElementById('locobs-hasta').value;
+    if(desde) entradas = entradas.filter(h => h.fecha.slice(0,10) >= desde);
+    if(hasta) entradas = entradas.filter(h => h.fecha.slice(0,10) <= hasta);
+  } else {
+    const nDesde = parseInt(document.getElementById('locobs-nro-desde').value);
+    const nHasta = parseInt(document.getElementById('locobs-nro-hasta').value);
+    entradas = entradas.filter(h=>{
+      const nro = extraerNroOCDeDetalle(h.detalle);
+      if(nro===null) return true;
+      const m = nro.match(/(\d+)$/);
+      const n = m ? parseInt(m[1]) : null;
+      if(n===null) return false;
+      if(!isNaN(nDesde) && n < nDesde) return false;
+      if(!isNaN(nHasta) && n > nHasta) return false;
+      return true;
+    });
+  }
+
+  entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+
+  if(!entradas.length){ toast('No hay observaciones en los ingresos de materias primas en el rango seleccionado','error'); return; }
+
+  const body=[];
+  let lastNro;
+  entradas.forEach(h=>{
+    const nro = extraerNroOCDeDetalle(h.detalle);
+    const prov = extraerProveedorDeDetalle(h.detalle);
+    const obs = extraerObsDeDetalle(h.detalle);
+    const inicioGrupo = nro===null || nro!==lastNro;
+    lastNro = nro;
+    body.push([
+      inicioGrupo?(nro||'Manual'):'', inicioGrupo?ff(h.fecha.slice(0,10)):'', inicioGrupo?prov:'',
+      h.nombre, String(h.cantidad), h.unidad, obs
+    ]);
+  });
+  doc.autoTable({
+    startY:y,
+    head:[['N° OC','Fecha','Proveedor','Producto','Cant.','Unidad','Observación']],
+    body, theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:8.5}
+  });
+  doc.save('ordenes-compra-observadas.pdf');
 }
 
 
@@ -2562,6 +2717,7 @@ function agregarLineaRemito(){
       productoId: prodId, nombre: prod.nombre, unidad: prod.unidad,
       loteId, loteRef: lote.loteRef||'#'+lote.id,
       vencimiento: lote.vencimiento, proveedorId: lote.proveedorId,
+      temp: lote.temp||null,
       cantidad
     });
   } else {
@@ -2675,6 +2831,7 @@ function imprimirRemitoData(r){
       <td>${i+1}</td>
       <td>${l.nombre}</td>
       <td>${l.loteRef||'—'}</td>
+      <td>${(l.temp!=null&&l.temp!=='')?l.temp+'°C':'—'}</td>
       <td>${l.vencimiento?ff(l.vencimiento):'—'}</td>
       <td>${l.loteRef?nomProv(l.proveedorId):'—'}</td>
       <td style="text-align:right"><strong>${l.cantidad}</strong></td>
@@ -2715,9 +2872,9 @@ function imprimirRemitoData(r){
       ${r.obs?`<div class="hf" style="grid-column:1/-1"><label>Observaciones</label><strong>${r.obs}</strong></div>`:''}
     </div>
     <table>
-      <thead><tr><th>#</th><th>Producto</th><th>Lote</th><th>Vencimiento</th><th>Proveedor</th><th style="text-align:right">Cantidad</th><th>Unidad</th></tr></thead>
+      <thead><tr><th>#</th><th>Producto</th><th>Lote</th><th>Temp °C</th><th>Vencimiento</th><th>Proveedor</th><th style="text-align:right">Cantidad</th><th>Unidad</th></tr></thead>
       <tbody>${lineasHtml}</tbody>
-      <tfoot><tr class="total-row"><td colspan="5">Total líneas: ${r.lineas.length}</td>
+      <tfoot><tr class="total-row"><td colspan="6">Total líneas: ${r.lineas.length}</td>
       <td style="text-align:right">${r.lineas.reduce((s,l)=>s+l.cantidad,0).toFixed(2)}</td><td></td></tr></tfoot>
     </table>
     <div class="firma">
@@ -2790,19 +2947,52 @@ function switchHistorialSub(sub){
 
 // ── SUBMENÚ DE LISTADOS ─────────────────────────────────
 function switchListadoSub(sub){
-  const subs=['stock','remitos','oc'];
+  const subs=['stock','remitos','oc','ocobs'];
   document.querySelectorAll('.listado-subtab').forEach(t=>t.classList.toggle('active', t.dataset.sub===sub));
   document.querySelectorAll('.listado-subpanel').forEach(p=>p.classList.remove('active'));
   document.getElementById('listado-sub-'+sub).classList.add('active');
   if(sub==='stock') renderListado();
   if(sub==='remitos') renderListadoRemitos();
   if(sub==='oc') renderListadoOC();
+  if(sub==='ocobs') renderListadoOCObs();
 }
 
 function onLOCModoChange(){
   const modo = document.getElementById('loc-modo').value;
   document.getElementById('loc-filtros-fecha').style.display = modo==='fecha' ? 'flex' : 'none';
   document.getElementById('loc-filtros-numero').style.display = modo==='numero' ? 'flex' : 'none';
+}
+
+function onLOCObsModoChange(){
+  const modo = document.getElementById('locobs-modo').value;
+  document.getElementById('locobs-filtros-fecha').style.display = modo==='fecha' ? 'flex' : 'none';
+  document.getElementById('locobs-filtros-numero').style.display = modo==='numero' ? 'flex' : 'none';
+}
+
+// ── Helpers de parseo de texto libre del historial de ingresos ──
+// Extrae el nombre del proveedor embebido en el "detalle" de un registro de historial
+function extraerProveedorDeDetalle(detalle){
+  if(!detalle) return '—';
+  let m = detalle.match(/Proveedor:\s*([^·]+)/);
+  if(m) return m[1].trim();
+  m = detalle.match(/^Lote[^·]*·\s*([^·]+)/);
+  if(m) return m[1].trim();
+  return '—';
+}
+// Extrae el texto de observación (después de "· Obs:") de un "detalle" de historial
+function extraerObsDeDetalle(detalle){
+  if(!detalle) return '';
+  const m = detalle.match(/·\s*Obs:\s*(.+?)(?:\s*·\s*Temp:.*)?$/);
+  return m ? m[1].trim() : '';
+}
+// Extrae el número de OC si el ingreso vino de una Orden de Compra; null si es manual
+function extraerNroOCDeDetalle(detalle){
+  if(!detalle) return null;
+  let m = detalle.match(/Ingreso desde OC (\S+)/);
+  if(m) return m[1];
+  m = detalle.match(/no incluido en OC (\S+)/);
+  if(m) return m[1];
+  return null;
 }
 
 // ── BACKUP / RESTORE ──────────────────────────────────
@@ -3077,6 +3267,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
       <button class="listado-subtab active" data-sub="stock" onclick="switchListadoSub('stock')">📦 Stock</button>
       <button class="listado-subtab" data-sub="remitos" onclick="switchListadoSub('remitos')">🧾 Remitos</button>
       <button class="listado-subtab" data-sub="oc" onclick="switchListadoSub('oc')">🛒 Órdenes de compra</button>
+      <button class="listado-subtab" data-sub="ocobs" onclick="switchListadoSub('ocobs')">🔍 Órdenes de compra observadas</button>
     </div>
 
     <!-- SUB: Listado de Stock -->
@@ -3109,6 +3300,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
               <option value="">Todos</option>
               <option value="Cocina Ternium">Cocina Ternium</option>
               <option value="Cocina Comirsa">Cocina Comirsa</option>
+              <option value="Sandwicheria Comirsa">Sandwicheria Comirsa</option>
               <option value="Otros">Otros</option>
             </select>
           </label>
@@ -3165,6 +3357,41 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
       </div>
       <div id="listado-oc-container"></div>
     </div>
+
+    <!-- SUB: Listado de Órdenes de Compra Observadas -->
+    <div id="listado-sub-ocobs" class="listado-subpanel">
+      <div class="section-header">
+        <div class="section-title">Órdenes de compra observadas</div>
+      </div>
+      <p class="hint" style="margin-bottom:12px">Ingresos de materias primas (por Orden de Compra o manuales) que tuvieron alguna observación registrada en la recepción. Uso para sistema de calidad — control de acciones correctivas.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+        <label style="font-size:.78rem;color:var(--muted)">Filtrar por
+          <select id="locobs-modo" onchange="onLOCObsModoChange()" style="width:auto;font-size:.78rem;padding:5px 8px;">
+            <option value="fecha">Rango de fechas</option>
+            <option value="numero">Rango de número de OC</option>
+          </select>
+        </label>
+        <span id="locobs-filtros-fecha" style="display:flex;gap:8px;align-items:center">
+          <label style="font-size:.78rem;color:var(--muted)">Desde
+            <input type="date" id="locobs-desde" style="width:auto;font-size:.78rem;padding:5px 8px;">
+          </label>
+          <label style="font-size:.78rem;color:var(--muted)">Hasta
+            <input type="date" id="locobs-hasta" style="width:auto;font-size:.78rem;padding:5px 8px;">
+          </label>
+        </span>
+        <span id="locobs-filtros-numero" style="display:none;gap:8px;align-items:center">
+          <label style="font-size:.78rem;color:var(--muted)">N° desde
+            <input type="number" min="1" id="locobs-nro-desde" placeholder="1" style="width:90px;font-size:.78rem;padding:5px 8px;">
+          </label>
+          <label style="font-size:.78rem;color:var(--muted)">N° hasta
+            <input type="number" min="1" id="locobs-nro-hasta" placeholder="999" style="width:90px;font-size:.78rem;padding:5px 8px;">
+          </label>
+        </span>
+        <button class="btn btn-secondary btn-sm" onclick="renderListadoOCObs()">🔍 Filtrar</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportarPDF_ListadoOCObs()">📄 PDF</button>
+      </div>
+      <div id="listado-ocobs-container"></div>
+    </div>
   </div>
 
   <!-- INGRESO -->
@@ -3202,13 +3429,17 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
               <input type="hidden" id="ing-producto">
             </div>
           </div>
-          <div id="ing-cantidad-wrap" style="display:none">
+          <div id="ing-cantidad-wrap" style="display:none;max-width:110px">
             <label>Cantidad <span class="req">*</span></label>
             <input type="number" id="ing-cantidad" placeholder="0" min="0.01" step="0.01">
           </div>
-          <div id="ing-unidad-wrap" style="display:none">
+          <div id="ing-unidad-wrap" style="display:none;max-width:90px">
             <label>Unidad</label>
             <input type="text" id="ing-unidad" readonly style="color:var(--muted)">
+          </div>
+          <div id="ing-temp-wrap" style="display:none;max-width:110px">
+            <label>Temp °C</label>
+            <input type="text" id="ing-temp" placeholder="Ej: -18.5" inputmode="decimal" maxlength="6" onblur="validarFormatoTemp('ing-temp')">
           </div>
           <div id="ing-venc-wrap" style="display:none">
             <label>Fecha de vencimiento <span class="req">*</span></label>
@@ -3254,7 +3485,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
           <div class="section-title" style="font-size:.95rem;margin-bottom:8px">Líneas a ingresar</div>
           <p class="hint" style="margin-bottom:10px">Podés ajustar las cantidades, completar fechas de vencimiento, quitar líneas que no llegaron, o agregar productos extra que vinieron en el mismo remito.</p>
           <table class="oc-table" id="ingoc-lineas-tabla">
-            <thead><tr><th>Producto</th><th>Cantidad</th><th>Unidad</th><th>Vencimiento</th><th>Lote/Remito</th><th></th></tr></thead>
+            <thead><tr><th>Producto</th><th>Cantidad</th><th>Unidad</th><th>Temp °C</th><th>Vencimiento</th><th>Lote/Remito</th><th></th></tr></thead>
             <tbody id="ingoc-lineas-tbody"></tbody>
           </table>
 
@@ -3294,6 +3525,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
             <option value="">— Seleccioná —</option>
             <option value="Cocina Ternium">Cocina Ternium</option>
             <option value="Cocina Comirsa">Cocina Comirsa</option>
+            <option value="Sandwicheria Comirsa">Sandwicheria Comirsa</option>
             <option value="Otros">Otros</option>
           </select>
         </div>
