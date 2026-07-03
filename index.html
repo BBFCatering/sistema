@@ -572,6 +572,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 </head>
 <body>
@@ -861,6 +862,29 @@ function stVenc(d){ return d<=0?'danger':d<=3?'danger':d<=7?'warn':'ok'; }
 function ff(iso){ const[y,m,d]=iso.split('-');return`${d}/${m}/${y}`; }
 function fdt(iso){ const d=new Date(iso);return d.toLocaleDateString('es-AR')+' '+d.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}); }
 function toast(msg,t='success'){ const el=document.getElementById('toast');el.textContent=msg;el.className=`toast ${t} show`;setTimeout(()=>el.className='toast',3200); }
+
+// Modal de confirmación con el estilo del sistema, en reemplazo de confirm() nativo del navegador.
+// Devuelve una Promise<boolean> — usar con await.
+function confirmModal(mensaje, titulo){
+  return new Promise(resolve=>{
+    const overlay=document.getElementById('confirm-modal-overlay');
+    document.getElementById('confirm-modal-title').textContent = titulo || 'Confirmar acción';
+    document.getElementById('confirm-modal-msg').textContent = mensaje;
+    overlay.classList.remove('hidden');
+    const okBtn=document.getElementById('confirm-modal-ok');
+    const cancelBtn=document.getElementById('confirm-modal-cancel');
+    function limpiar(resultado){
+      overlay.classList.add('hidden');
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      resolve(resultado);
+    }
+    function onOk(){ limpiar(true); }
+    function onCancel(){ limpiar(false); }
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+  });
+}
 function getProd(id){ return DB.productos.find(p=>p.id===id); }
 function getProv(id){ return DB.proveedores.find(p=>p.id===id); }
 function nomProv(id){ const p=getProv(id);return p?p.nombre:'—'; }
@@ -1167,68 +1191,83 @@ function renderListadoRemitos(){
 }
 
 // ── LISTADO DE ÓRDENES DE COMPRA (por fecha o por número) ──
+// Busca el precio/bonificación negociado de un producto dentro de una OC puntual.
+// Devuelve null si el producto no estaba en las líneas originales de esa OC
+// (ej. fue agregado como "Adicional" durante el ingreso) o si es un ingreso manual.
+function buscarPrecioLineaOC(nro, productoId){
+  if(!nro) return null;
+  const oc = DB.ordenesCompra.find(o=>o.nro===nro);
+  if(!oc) return null;
+  const linea = oc.lineas.find(l=>l.productoId===productoId);
+  return linea ? {precio:linea.precio, bonificacion:linea.bonificacion} : null;
+}
+
 function renderListadoOC(){
   const modo = document.getElementById('loc-modo').value;
   const el = document.getElementById('listado-oc-container');
 
-  let ocs = [...(DB.ordenesCompra||[])];
+  let entradas = (DB.historial||[]).filter(h => h.tipo==='ingreso');
 
   if(modo==='fecha'){
     const desde = document.getElementById('loc-desde').value;
     const hasta = document.getElementById('loc-hasta').value;
-    if(desde) ocs = ocs.filter(o => o.fecha.slice(0,10) >= desde);
-    if(hasta) ocs = ocs.filter(o => o.fecha.slice(0,10) <= hasta);
+    if(desde) entradas = entradas.filter(h => h.fecha.slice(0,10) >= desde);
+    if(hasta) entradas = entradas.filter(h => h.fecha.slice(0,10) <= hasta);
   } else {
     const nDesde = parseInt(document.getElementById('loc-nro-desde').value);
     const nHasta = parseInt(document.getElementById('loc-nro-hasta').value);
-    const estado = document.getElementById('loc-estado').value;
-    ocs = ocs.filter(o=>{
-      const m = o.nro.match(/(\d+)$/);
+    entradas = entradas.filter(h=>{
+      const nro = extraerNroOCDeDetalle(h.detalle);
+      if(nro===null) return true; // los ingresos manuales se muestran siempre
+      const m = nro.match(/(\d+)$/);
       const n = m ? parseInt(m[1]) : null;
       if(n===null) return false;
       if(!isNaN(nDesde) && n < nDesde) return false;
       if(!isNaN(nHasta) && n > nHasta) return false;
-      if(estado==='activas' && o.recibida) return false;
-      if(estado==='inactivas' && !o.recibida) return false;
       return true;
     });
   }
 
-  ocs.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
 
-  if(!ocs.length){
-    el.innerHTML = `<div class="empty-state"><div class="icon">🛒</div><p>No hay órdenes de compra en el rango seleccionado.</p></div>`;
+  if(!entradas.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">🛒</div><p>No hay ingresos de stock en el rango seleccionado.</p></div>`;
     return;
   }
 
   let totalGeneral=0;
   let html = `<div style="overflow-x:auto"><table class="stock-table listado-table">
-    <thead><tr><th class="col-nowrap">N° OC</th><th>Fecha</th><th class="col-wrap" style="min-width:130px">Proveedor</th><th>Estado</th><th class="col-wrap">Producto</th><th>Cant.</th><th>Precio</th><th>Bonif.</th><th>Subtotal</th></tr></thead>
+    <thead><tr><th class="col-nowrap">N° OC</th><th>Fecha</th><th class="col-wrap" style="min-width:130px">Proveedor</th><th class="col-wrap">Producto</th><th>Cant.</th><th>Precio</th><th>Bonif.</th><th>Subtotal</th></tr></thead>
     <tbody>`;
-  ocs.forEach(o=>{
-    o.lineas.forEach((l,i)=>{
-      const prod=getProd(l.productoId);
-      const subtotal = l.cantidad*precioFinal(l.precio,l.bonificacion);
-      if(i===0) totalGeneral += o.total;
-      html += `<tr>
-        <td class="col-nowrap">${i===0?`<strong>${o.nro}</strong>`:''}</td>
-        <td>${i===0?ff(o.fecha.slice(0,10)):''}</td>
-        <td class="col-wrap" style="font-size:.78rem;min-width:130px">${i===0?nomProv(o.proveedorId):''}</td>
-        <td>${i===0?(o.recibida?'<span class="badge badge-noperecedero">Recibida</span>':'<span class="badge badge-perecedero">Activa</span>'):''}</td>
-        <td class="col-wrap">${prod?prod.nombre:'—'}</td>
-        <td>${l.cantidad}</td>
-        <td>${fmtMoney(l.precio)}</td>
-        <td>${l.bonificacion?l.bonificacion+'%':'—'}</td>
-        <td>${fmtMoney(subtotal)}</td>
-      </tr>`;
-    });
+  let lastNro;
+  entradas.forEach(h=>{
+    const nro = extraerNroOCDeDetalle(h.detalle);
+    const prov = extraerProveedorDeDetalle(h.detalle);
+    const inicioGrupo = nro===null || nro!==lastNro;
+    lastNro = nro;
+    const lineaOC = buscarPrecioLineaOC(nro, h.productoId);
+    const precio = lineaOC ? lineaOC.precio : mejorPrecioFinal(h.productoId);
+    const bonif = lineaOC ? lineaOC.bonificacion : null;
+    const subtotal = precio!=null ? h.cantidad*precioFinal(precio,bonif) : 0;
+    if(precio!=null) totalGeneral += subtotal;
+    html += `<tr>
+      <td class="col-nowrap">${inicioGrupo?`<strong>${nro||'Manual'}</strong>`:''}</td>
+      <td>${inicioGrupo?ff(h.fecha.slice(0,10)):''}</td>
+      <td class="col-wrap" style="font-size:.78rem;min-width:130px">${inicioGrupo?prov:''}</td>
+      <td class="col-wrap">${h.nombre}</td>
+      <td>${h.cantidad}</td>
+      <td>${precio!=null?fmtMoney(precio):'<span style="color:var(--muted)">Sin precio</span>'}</td>
+      <td>${bonif?bonif+'%':'—'}</td>
+      <td>${precio!=null?fmtMoney(subtotal):'—'}</td>
+    </tr>`;
   });
   html += `</tbody>
   <tfoot><tr style="border-top:2px solid var(--border)">
-    <td colspan="8" style="text-align:right;font-weight:700">Total general</td>
+    <td colspan="7" style="text-align:right;font-weight:700">Total general</td>
     <td style="font-weight:700">${fmtMoney(totalGeneral)}</td>
   </tr></tfoot>
-  </table></div>`;
+  </table></div>
+  <div style="font-size:.72rem;color:var(--muted);margin-top:6px">* Los ingresos manuales y productos adicionales no pedidos en la OC se valorizan al precio de lista vigente del producto.</div>`;
   el.innerHTML = html;
 }
 
@@ -1374,7 +1413,7 @@ function validarFormatoTemp(inputId){
   el.value=v;
 }
 
-function ingresarStock(){
+async function ingresarStock(){
   const provId=parseInt(document.getElementById('ing-proveedor').value);
   const prodId=parseInt(document.getElementById('ing-producto').value);
   const cant=parseFloat(document.getElementById('ing-cantidad').value);
@@ -1388,7 +1427,7 @@ function ingresarStock(){
   if(!cant||cant<=0){toast('Ingresá una cantidad válida','error');return;}
   const prod=getProd(prodId);
   if(prod.perecedero==='si'&&!venc){toast('La fecha de vencimiento es obligatoria para perecederos','error');return;}
-  if(venc&&dias(venc)<0&&!confirm('La fecha de vencimiento ya pasó. ¿Confirmar igualmente?')) return;
+  if(venc&&dias(venc)<0&&!(await confirmModal('La fecha de vencimiento ya pasó. ¿Confirmar igualmente?'))) return;
   if(tempRaw && !/^-?\d{1,2}(\.\d)?$/.test(tempRaw)){ toast('Temperatura inválida. Formato: hasta 2 dígitos y 1 decimal, ej: -18.5','error'); return; }
   const temp = (prod.perecedero==='si' && tempRaw) ? tempRaw : null;
 
@@ -1870,12 +1909,12 @@ function guardarProducto(){
   save(); cerrarModal('modal-producto'); renderAll();
 }
 
-function toggleActivoProd(id){
+async function toggleActivoProd(id){
   if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés modificar productos','error'); return; }
   const p=getProd(id);
   if(p.activo){
     const en=DB.lotes.filter(l=>l.productoId===id&&l.cantidad>0).length;
-    if(en&&!confirm(`"${p.nombre}" tiene stock activo. ¿Desactivar igualmente?`)) return;
+    if(en&&!(await confirmModal(`"${p.nombre}" tiene stock activo. ¿Desactivar igualmente?`))) return;
   }
   p.activo=!p.activo; save(); renderAll(); toast(`${p.nombre} ${p.activo?'activado':'desactivado'}`);
 }
@@ -2502,61 +2541,103 @@ function exportarPDF_ListadoRemitos(){
   doc.save('listado-remitos.pdf');
 }
 
+function exportarExcel_ListadoRemitos(){
+  if(typeof XLSX === 'undefined'){ toast('Cargando generador de Excel...','error'); return; }
+
+  const desde = document.getElementById('lrem-desde').value;
+  const hasta = document.getElementById('lrem-hasta').value;
+  const destino = document.getElementById('lrem-destino').value;
+  let remitos = [...(DB.remitos||[])];
+  if(desde) remitos = remitos.filter(r => r.fecha >= desde);
+  if(hasta) remitos = remitos.filter(r => r.fecha <= hasta);
+  if(destino) remitos = remitos.filter(r => r.destino === destino);
+  remitos.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+
+  if(!remitos.length){ toast('No hay remitos en el rango seleccionado','error'); return; }
+
+  let totalGeneral = 0;
+  const filas = [['Remito','Fecha','Destino','Producto','Lote','Temp °C','Cantidad','Unidad','Proveedor','Valorización']];
+  remitos.forEach(r=>{
+    r.lineas.forEach((l,i)=>{
+      const precio = mejorPrecioFinal(l.productoId);
+      const subtotal = precio!==null ? l.cantidad*precio : 0;
+      totalGeneral += subtotal;
+      filas.push([
+        i===0?r.nro:'', i===0?ff(r.fecha):'', i===0?(r.destino||'—'):'', l.nombre, l.loteRef||'—',
+        (l.temp!=null&&l.temp!=='')?l.temp+'°C':'—',
+        l.cantidad, l.unidad, l.proveedorId?nomProv(l.proveedorId):'—',
+        precio!==null?subtotal:null
+      ]);
+    });
+  });
+  filas.push([]);
+  filas.push(['','','','','','','','','Valorización total:', totalGeneral]);
+
+  const ws = XLSX.utils.aoa_to_sheet(filas);
+  ws['!cols'] = [{wch:12},{wch:12},{wch:18},{wch:28},{wch:12},{wch:9},{wch:10},{wch:9},{wch:22},{wch:14}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Remitos');
+  XLSX.writeFile(wb, 'listado-remitos.xlsx');
+}
+
 function exportarPDF_ListadoOC(){
   if(typeof window.jspdf === 'undefined'){ toast('Cargando generador de PDF...','error'); return; }
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'landscape' });
-  let y = pdfLogoYTitulo(doc, 'Listado de Órdenes de Compra');
+  let y = pdfLogoYTitulo(doc, 'Ingresos Stock');
 
   const modo = document.getElementById('loc-modo').value;
-  let ocs = [...(DB.ordenesCompra||[])];
+  let entradas = (DB.historial||[]).filter(h => h.tipo==='ingreso');
   if(modo==='fecha'){
     const desde = document.getElementById('loc-desde').value;
     const hasta = document.getElementById('loc-hasta').value;
-    if(desde) ocs = ocs.filter(o => o.fecha.slice(0,10) >= desde);
-    if(hasta) ocs = ocs.filter(o => o.fecha.slice(0,10) <= hasta);
+    if(desde) entradas = entradas.filter(h => h.fecha.slice(0,10) >= desde);
+    if(hasta) entradas = entradas.filter(h => h.fecha.slice(0,10) <= hasta);
   } else {
     const nDesde = parseInt(document.getElementById('loc-nro-desde').value);
     const nHasta = parseInt(document.getElementById('loc-nro-hasta').value);
-    const estado = document.getElementById('loc-estado').value;
-    ocs = ocs.filter(o=>{
-      const m = o.nro.match(/(\d+)$/);
+    entradas = entradas.filter(h=>{
+      const nro = extraerNroOCDeDetalle(h.detalle);
+      if(nro===null) return true;
+      const m = nro.match(/(\d+)$/);
       const n = m ? parseInt(m[1]) : null;
       if(n===null) return false;
       if(!isNaN(nDesde) && n < nDesde) return false;
       if(!isNaN(nHasta) && n > nHasta) return false;
-      if(estado==='activas' && o.recibida) return false;
-      if(estado==='inactivas' && !o.recibida) return false;
       return true;
     });
   }
-  ocs.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
 
-  if(!ocs.length){ toast('No hay órdenes de compra en el rango seleccionado','error'); return; }
+  if(!entradas.length){ toast('No hay ingresos de stock en el rango seleccionado','error'); return; }
 
   let totalGeneral=0;
   const body=[];
-  ocs.forEach(o=>{
-    o.lineas.forEach((l,i)=>{
-      const prod=getProd(l.productoId);
-      const subtotal = l.cantidad*precioFinal(l.precio,l.bonificacion);
-      if(i===0) totalGeneral += o.total;
-      body.push([
-        i===0?o.nro:'', i===0?ff(o.fecha.slice(0,10)):'', i===0?nomProv(o.proveedorId):'',
-        i===0?(o.recibida?'Recibida':'Activa'):'',
-        prod?prod.nombre:'—', String(l.cantidad), fmtMoney(l.precio),
-        l.bonificacion?l.bonificacion+'%':'—', fmtMoney(subtotal)
-      ]);
-    });
+  let lastNro;
+  entradas.forEach(h=>{
+    const nro = extraerNroOCDeDetalle(h.detalle);
+    const prov = extraerProveedorDeDetalle(h.detalle);
+    const inicioGrupo = nro===null || nro!==lastNro;
+    lastNro = nro;
+    const lineaOC = buscarPrecioLineaOC(nro, h.productoId);
+    const precio = lineaOC ? lineaOC.precio : mejorPrecioFinal(h.productoId);
+    const bonif = lineaOC ? lineaOC.bonificacion : null;
+    const subtotal = precio!=null ? h.cantidad*precioFinal(precio,bonif) : 0;
+    if(precio!=null) totalGeneral += subtotal;
+    body.push([
+      inicioGrupo?(nro||'Manual'):'', inicioGrupo?ff(h.fecha.slice(0,10)):'', inicioGrupo?prov:'',
+      h.nombre, String(h.cantidad), precio!=null?fmtMoney(precio):'Sin precio',
+      bonif?bonif+'%':'—', precio!=null?fmtMoney(subtotal):'—'
+    ]);
   });
   doc.autoTable({
     startY:y,
-    head:[['N° OC','Fecha','Proveedor','Estado','Producto','Cant.','Precio','Bonif.','Subtotal']],
+    head:[['N° OC','Fecha','Proveedor','Producto','Cant.','Precio','Bonif.','Subtotal']],
     body,
-    foot:[[{content:'Total general', colSpan:8, styles:{halign:'right',fontStyle:'bold'}}, {content:fmtMoney(totalGeneral), styles:{fontStyle:'bold'}}]],
+    foot:[[{content:'Total general', colSpan:7, styles:{halign:'right',fontStyle:'bold'}}, {content:fmtMoney(totalGeneral), styles:{fontStyle:'bold'}}]],
     theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:8.5}
   });
-  doc.save('listado-ordenes-compra.pdf');
+  doc.save('ingresos-stock.pdf');
 }
 
 function exportarPDF_ListadoOCObs(){
@@ -2760,7 +2841,7 @@ function renderLineasBorrador(){
 
 function quitarLinea(i){ remitoLineas.splice(i,1); renderLineasBorrador(); }
 
-function cerrarRemito(){
+async function cerrarRemito(){
   const destino = document.getElementById('rem-destino').value;
   const nro = document.getElementById('rem-nro').value.trim();
   const fecha = document.getElementById('rem-fecha').value;
@@ -2769,7 +2850,7 @@ function cerrarRemito(){
   if(!nro){ toast('Ingresá el número de remito','error'); return; }
   if(!fecha){ toast('Ingresá la fecha','error'); return; }
   if(!remitoLineas.length){ toast('Agregá al menos una línea','error'); return; }
-  if(!confirm(`¿Cerrar remito ${nro} y descontar stock?\n\n${remitoLineas.length} línea(s) — esta acción no se puede deshacer.`)) return;
+  if(!(await confirmModal(`¿Cerrar remito ${nro} y descontar stock?\n\n${remitoLineas.length} línea(s) — esta acción no se puede deshacer.`))) return;
 
   // Descontar stock
   remitoLineas.forEach(l => {
@@ -2805,8 +2886,8 @@ function cerrarRemito(){
   toast(`✓ Remito ${nro} cerrado — stock descontado`);
 }
 
-function cancelarRemito(){
-  if(remitoLineas.length && !confirm('¿Cancelar el remito? Se perderán las líneas cargadas.')) return;
+async function cancelarRemito(){
+  if(remitoLineas.length && !(await confirmModal('¿Cancelar el remito? Se perderán las líneas cargadas.'))) return;
   remitoLineas=[];
   document.getElementById('rem-destino').value='';
   document.getElementById('rem-nro').value='';
@@ -3011,14 +3092,14 @@ function importarBackup(event){
   const file = event.target.files[0];
   if(!file) return;
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = async e => {
     try {
       const parsed = JSON.parse(e.target.result);
       // Validación básica
       if(!parsed.productos || !parsed.proveedores || !parsed.lotes){
         toast('Archivo inválido — no parece un backup de Stock BBF','error'); return;
       }
-      if(!confirm(`¿Restaurar backup del archivo "${file.name}"?\n\nEsto reemplazará todos los datos actuales.`)) return;
+      if(!(await confirmModal(`¿Restaurar backup del archivo "${file.name}"?\n\nEsto reemplazará todos los datos actuales.`))) return;
       DB = parsed;
       // Recalcular contadores
       idSeq.prod = DB.productos.length ? Math.max(...DB.productos.map(x=>x.id),0)+1 : 1;
@@ -3266,8 +3347,8 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
     <div class="listado-submenu">
       <button class="listado-subtab active" data-sub="stock" onclick="switchListadoSub('stock')">📦 Stock</button>
       <button class="listado-subtab" data-sub="remitos" onclick="switchListadoSub('remitos')">🧾 Remitos</button>
-      <button class="listado-subtab" data-sub="oc" onclick="switchListadoSub('oc')">🛒 Órdenes de compra</button>
-      <button class="listado-subtab" data-sub="ocobs" onclick="switchListadoSub('ocobs')">🔍 Órdenes de compra observadas</button>
+      <button class="listado-subtab" data-sub="oc" onclick="switchListadoSub('oc')">🛒 Ingresos Stock</button>
+      <button class="listado-subtab" data-sub="ocobs" onclick="switchListadoSub('ocobs')">🔍 Ingresos Observados</button>
     </div>
 
     <!-- SUB: Listado de Stock -->
@@ -3312,15 +3393,16 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
           </label>
           <button class="btn btn-secondary btn-sm" onclick="renderListadoRemitos()">🔍 Filtrar</button>
           <button class="btn btn-secondary btn-sm" onclick="exportarPDF_ListadoRemitos()">📄 PDF</button>
+          <button class="btn btn-secondary btn-sm" onclick="exportarExcel_ListadoRemitos()">📊 Excel</button>
         </div>
       </div>
       <div id="listado-remitos-container"></div>
     </div>
 
-    <!-- SUB: Listado de Órdenes de Compra -->
+    <!-- SUB: Ingresos Stock -->
     <div id="listado-sub-oc" class="listado-subpanel">
       <div class="section-header">
-        <div class="section-title">Listado de órdenes de compra</div>
+        <div class="section-title">Ingresos Stock</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
         <label style="font-size:.78rem;color:var(--muted)">Filtrar por
@@ -3344,13 +3426,6 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
           <label style="font-size:.78rem;color:var(--muted)">N° hasta
             <input type="number" min="1" id="loc-nro-hasta" placeholder="999" style="width:90px;font-size:.78rem;padding:5px 8px;">
           </label>
-          <label style="font-size:.78rem;color:var(--muted)">Estado
-            <select id="loc-estado" style="width:auto;font-size:.78rem;padding:5px 8px;">
-              <option value="todas">Todas</option>
-              <option value="activas">Solo activas (pendientes)</option>
-              <option value="inactivas">Solo inactivas (recibidas)</option>
-            </select>
-          </label>
         </span>
         <button class="btn btn-secondary btn-sm" onclick="renderListadoOC()">🔍 Filtrar</button>
         <button class="btn btn-secondary btn-sm" onclick="exportarPDF_ListadoOC()">📄 PDF</button>
@@ -3358,10 +3433,10 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
       <div id="listado-oc-container"></div>
     </div>
 
-    <!-- SUB: Listado de Órdenes de Compra Observadas -->
+    <!-- SUB: Ingresos Observados -->
     <div id="listado-sub-ocobs" class="listado-subpanel">
       <div class="section-header">
-        <div class="section-title">Órdenes de compra observadas</div>
+        <div class="section-title">Ingresos Observados</div>
       </div>
       <p class="hint" style="margin-bottom:12px">Ingresos de materias primas (por Orden de Compra o manuales) que tuvieron alguna observación registrada en la recepción. Uso para sistema de calidad — control de acciones correctivas.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
@@ -4159,8 +4234,8 @@ function bindUsersEvents() {
     };
   });
   document.querySelectorAll('.del-btn').forEach(btn => {
-    btn.onclick = () => {
-      if (confirm('¿Eliminar este usuario?')) {
+    btn.onclick = async () => {
+      if (await confirmModal('¿Eliminar este usuario?')) {
         users = users.filter(u => u.id !== +btn.dataset.id);
         renderMain();
         DB.usuarios = users;
@@ -4416,6 +4491,18 @@ document.addEventListener('DOMContentLoaded', function() {
       Tu sesión se va a cerrar en <strong id="inactividad-segundos">60</strong> segundos por falta de actividad.
     </p>
     <button class="btn-save" style="width:100%;padding:10px;" onclick="seguirTrabajando()">Sigo trabajando</button>
+  </div>
+</div>
+
+<!-- MODAL DE CONFIRMACIÓN GENÉRICO (reemplaza al confirm() nativo del navegador) -->
+<div id="confirm-modal-overlay" class="modal-overlay hidden" style="z-index:9999;">
+  <div class="modal" style="max-width:420px;">
+    <div class="modal-title" id="confirm-modal-title">Confirmar acción</div>
+    <p id="confirm-modal-msg" style="font-size:14px;color:var(--text2,var(--muted));margin-bottom:20px;white-space:pre-line;line-height:1.5;"></p>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="confirm-modal-cancel">Cancelar</button>
+      <button class="btn-save" id="confirm-modal-ok">Aceptar</button>
+    </div>
   </div>
 </div>
 
