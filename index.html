@@ -4489,20 +4489,34 @@ document.addEventListener('DOMContentLoaded', function() {
 
 <script>
 /* ════════════════════════════════════════════════════════════════
-   SCRIPT 2 — MÓDULO PRODUCCIÓN
+   SCRIPT 2 — MÓDULO PRODUCCIÓN (v2)
    Datos 100% independientes del Stock: fila id="produccion" en la
    tabla stockbbf de Supabase, con sus propias funciones de carga y
-   guardado. Nada de lo que ocurre acá toca la fila id="main".
+   guardado. Nada de lo que ocurre acá modifica la fila id="main".
+   (Del Stock solo se LEE el catálogo de productos, para el detalle
+   informativo de materias primas.)
+
+   v2: — Cierre en un solo paso (el registro nace cerrado, con una
+         única confirmación que resume el impacto en stock)
+       — Detalle de materias primas por producto (definido en el
+         catálogo: Detalla MP / Cant. elementos / Dta Stock SE)
+       — Egreso automático de semielaborados al cerrar (consumo)
+       — Pestaña "Ajustes" SOLO ADMIN: modificar / eliminar
+         registros cerrados con ajuste automático del stock SE
 ════════════════════════════════════════════════════════════════ */
 
 // ── DATA PRODUCCIÓN ───────────────────────────────────
 let PDB = JSON.parse(localStorage.getItem('bbf_prod_v1')||'null') || {
   centros: [],       // {id, nombre, activo}
-  productosProd: [], // {id, nombre, tipo:'elaborado'|'semielaborado', unidad, centrosIds:[], activo}
+  productosProd: [], // {id, nombre, tipo:'elaborado'|'semielaborado', unidad, centrosIds:[],
+                     //  detallaMP:bool, cantElementos:0-9, dtaStockSE:bool, activo}
   stockSemi: {},     // {productoId: cantidad} — stock simple SOLO de semielaborados
+                     //  (puede quedar negativo si se consumió más de lo ingresado:
+                     //   se muestra en rojo para que la diferencia sea visible)
   registros: [],     // {id, fecha, centroId, novedades:{bpm,poes,mantenimiento,rrhh},
-                     //  lineas:[{productoId,cantidad,unidad}], estado:'abierto'|'cerrado',
-                     //  usuario, creado, fechaCierre, usuarioCierre}
+                     //  lineas:[{productoId,cantidad,unidad,
+                     //           detalles:[{refTipo:'se'|'mp',refId,nombre,cantidad,unidad}]}],
+                     //  estado:'cerrado', usuario, creado, fechaCierre, usuarioCierre}
   historialProd: []  // {ts, tipo, detalle, usuario}
 };
 
@@ -4513,7 +4527,15 @@ function migrarPDB(){
   if(!PDB.stockSemi)      PDB.stockSemi = {};
   if(!PDB.registros)      PDB.registros = [];
   if(!PDB.historialProd)  PDB.historialProd = [];
-  PDB.productosProd.forEach(p => { if(!p.centrosIds) p.centrosIds = []; });
+  PDB.productosProd.forEach(p => {
+    if(!p.centrosIds) p.centrosIds = [];
+    if(p.detallaMP === undefined)     p.detallaMP = false;
+    if(p.cantElementos === undefined) p.cantElementos = 0;
+    if(p.dtaStockSE === undefined)    p.dtaStockSE = false;
+  });
+  PDB.registros.forEach(r => {
+    (r.lineas || []).forEach(l => { if(!l.detalles) l.detalles = []; });
+  });
 }
 migrarPDB();
 
@@ -4528,8 +4550,14 @@ recalcularPIdSeq();
 let isReadonlyProd = false;
 let prodCargaCompleta = false; // true recién después de leer la fila "produccion" de Supabase
 let prodSyncTimer = null;
-let editPProdId = null;   // producto en edición (null = nuevo)
-let editCentroId = null;  // centro en edición (null = nuevo)
+let editPProdId = null;    // producto en edición (null = nuevo)
+let editCentroId = null;   // centro en edición (null = nuevo)
+let regAdminEditId = null; // registro cerrado en edición por ADMIN (null = flujo normal)
+
+// ¿El usuario logueado es administrador?
+function isAdminProd(){
+  return (typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin');
+}
 
 // ── SYNC SUPABASE (fila id="produccion") ─────────────
 function setSyncStatusProd(estado){
@@ -4572,6 +4600,7 @@ async function cargarProdDesdeSupabase(){
       recalcularPIdSeq();
       localStorage.setItem('bbf_prod_v1', JSON.stringify(PDB));
       renderAllProd();
+      onPRegChange();
     }
     setSyncStatusProd('ok');
   } catch(e){
@@ -4679,8 +4708,52 @@ function centroNombre(id){
 }
 function pprodById(id){ return PDB.productosProd.find(x => x.id === id); }
 
+// Fuente de opciones para los renglones de detalle de materias primas:
+//  'se' → semielaborados del propio módulo (con descuento de stock al cerrar)
+//  'mp' → productos del Stock ya operativo (SOLO LECTURA del catálogo:
+//         nombre y unidad; jamás se toca su stock ni sus datos)
+function opcionesDetalle(fuente){
+  if(fuente === 'se'){
+    return PDB.productosProd
+      .filter(p => p.tipo === 'semielaborado' && p.activo)
+      .map(p => ({ id: p.id, nombre: p.nombre, unidad: p.unidad }));
+  }
+  const prods = (typeof DB !== 'undefined' && DB && Array.isArray(DB.productos)) ? DB.productos : [];
+  return prods
+    .filter(p => p.activo)
+    .map(p => ({ id: p.id, nombre: p.nombre, unidad: p.unidad || '—' }));
+}
+
+// Aplica (signo=+1) o revierte (signo=-1) TODO el impacto de un registro
+// sobre el stock simple de semielaborados, dejando rastro en el historial:
+//   • Producción de semielaborados (líneas de tipo semielaborado) → suma
+//   • Consumo de semielaborados (renglones de detalle con refTipo 'se') → resta
+// Los productos "elaborados" y los detalles informativos de MP no tocan stock.
+// El stock PUEDE quedar negativo (decisión de diseño: la diferencia queda
+// visible en rojo en vez de ocultarse).
+function aplicarImpactoRegistro(r, signo, contexto, usuario){
+  (r.lineas || []).forEach(l => {
+    const p = pprodById(l.productoId);
+    if(p && p.tipo === 'semielaborado'){
+      PDB.stockSemi[l.productoId] = (PDB.stockSemi[l.productoId] || 0) + (signo * l.cantidad);
+      PDB.historialProd.push({ ts: new Date().toISOString(),
+        tipo: signo > 0 ? 'ingreso-semielab' : 'reversion-ingreso-semielab',
+        detalle: (signo > 0 ? 'Ingreso +' : 'Reversión -') + l.cantidad + ' ' + l.unidad + ' de ' + p.nombre + ' — ' + contexto,
+        usuario });
+    }
+    (l.detalles || []).forEach(d => {
+      if(d.refTipo !== 'se') return;
+      PDB.stockSemi[d.refId] = (PDB.stockSemi[d.refId] || 0) - (signo * d.cantidad);
+      PDB.historialProd.push({ ts: new Date().toISOString(),
+        tipo: signo > 0 ? 'egreso-semielab' : 'reversion-egreso-semielab',
+        detalle: (signo > 0 ? 'Consumo -' : 'Reversión +') + d.cantidad + ' ' + d.unidad + ' de ' + d.nombre + ' — ' + contexto,
+        usuario });
+    });
+  });
+}
+
 // ── HTML DEL MÓDULO ──────────────────────────────────
-// ■ IMPORTANTE: este template literal NO debe contener backticks ni ${ .
+// ■ IMPORTANTE: este template NO debe contener backticks ni ${ .
 const prodModuleHTML = '' +
 '<div class="stock-module" id="prod-module-wrap">' +
 '  <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:10px 16px;border-bottom:1px solid #2a3045;background:#181c27;flex-wrap:wrap;">' +
@@ -4701,9 +4774,9 @@ const prodModuleHTML = '' +
 '    <button class="tab" onclick="switchTabProd(\'productos\')">🏷 Productos Elab/Semielab</button>' +
 '    <button class="tab" onclick="switchTabProd(\'destino\')" style="opacity:.45">🚚 Destino</button>' +
 '    <button class="tab" onclick="switchTabProd(\'informes\')" style="opacity:.45">📊 Informes</button>' +
+'    <button class="tab" id="tab-btn-ajustes" onclick="switchTabProd(\'ajustes\')" style="display:none">🔧 Ajustes</button>' +
 '  </div>' +
 
-// ── PANEL REGISTRO DIARIO ──
 '  <div id="panelp-registro" class="panel active">' +
 '    <div class="card" id="preg-form-card">' +
 '      <div class="card-title">Registro diario de producción</div>' +
@@ -4724,8 +4797,9 @@ const prodModuleHTML = '' +
 '      <div class="section-title" style="margin:18px 0 10px">Productos elaborados</div>' +
 '      <div id="preg-lineas"><div style="font-size:.8rem;color:var(--muted);padding:8px 0">Seleccioná un centro de elaboración para ver sus productos asociados.</div></div>' +
 '      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">' +
-'        <button class="btn btn-primary" id="btn-guardar-registro" onclick="guardarRegistroDiario()">💾 Guardar registro</button>' +
+'        <button class="btn btn-primary" id="btn-guardar-registro" onclick="guardarYCerrarRegistro()">💾 Guardar y cerrar registro</button>' +
 '        <button class="btn btn-secondary" id="btn-limpiar-registro" onclick="limpiarFormRegistro()">✨ Limpiar</button>' +
+'        <button class="btn btn-secondary" id="btn-cancelar-admin-edit" onclick="cancelarEdicionAdmin()" style="display:none">✖ Cancelar edición</button>' +
 '      </div>' +
 '    </div>' +
 
@@ -4744,7 +4818,6 @@ const prodModuleHTML = '' +
 '    </div>' +
 '  </div>' +
 
-// ── PANEL PRODUCTOS (catálogo + stock semielab + centros) ──
 '  <div id="panelp-productos" class="panel">' +
 '    <div class="listado-submenu">' +
 '      <button class="listado-subtab active" data-sub="catalogo" onclick="switchProdSub(\'catalogo\')">🏷 Catálogo</button>' +
@@ -4776,6 +4849,22 @@ const prodModuleHTML = '' +
 '              <option value="porciones">Porciones</option>' +
 '              <option value="bandejas">Bandejas</option>' +
 '            </select></div>' +
+'          <div><label>Detalla MP</label>' +
+'            <select id="pprod-detalla" onchange="onPProdDetallaChange()">' +
+'              <option value="no">No</option>' +
+'              <option value="si">Sí</option>' +
+'            </select></div>' +
+'          <div id="pprod-cantelem-wrap" style="display:none"><label>Cant. elementos</label>' +
+'            <select id="pprod-cantelem">' +
+'              <option value="1">1</option><option value="2">2</option><option value="3">3</option>' +
+'              <option value="4">4</option><option value="5">5</option><option value="6">6</option>' +
+'              <option value="7">7</option><option value="8">8</option><option value="9">9</option>' +
+'            </select></div>' +
+'          <div id="pprod-dtase-wrap" style="display:none"><label>Dta Stock SE</label>' +
+'            <select id="pprod-dtase">' +
+'              <option value="no">No — lista de Stock (sin descuento)</option>' +
+'              <option value="si">Sí — descuenta semielaborados</option>' +
+'            </select></div>' +
 '          <div class="col-full"><label>Centros de elaboración asociados <span class="req">*</span></label>' +
 '            <div id="pprod-centros" style="display:flex;gap:14px;flex-wrap:wrap;padding:6px 0"></div></div>' +
 '        </div>' +
@@ -4789,7 +4878,7 @@ const prodModuleHTML = '' +
 
 '    <div id="prodsub-stocksemi" class="listado-subpanel">' +
 '      <div class="section-header"><div class="section-title">Stock simple de semielaborados</div></div>' +
-'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Este stock es exclusivo del módulo Producción y es totalmente independiente del stock de materias primas. Los ingresos se generan automáticamente al cerrar un registro diario. Los egresos (consumos) se desarrollarán en la próxima etapa.</div>' +
+'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Este stock es exclusivo del módulo Producción y es totalmente independiente del stock de materias primas. Se actualiza automáticamente al cerrar cada registro diario: suma lo producido y descuenta lo consumido (renglones de detalle que descuentan Stock SE). Un valor en rojo indica stock negativo: se consumió más de lo que se ingresó — revisar los registros.</div>' +
 '      <div id="stocksemi-lista"></div>' +
 '    </div>' +
 
@@ -4812,7 +4901,6 @@ const prodModuleHTML = '' +
 '    </div>' +
 '  </div>' +
 
-// ── PANELES PRÓXIMAMENTE ──
 '  <div id="panelp-destino" class="panel">' +
 '    <div class="card" style="text-align:center;padding:60px 24px">' +
 '      <div style="font-size:40px;margin-bottom:12px">🚚</div>' +
@@ -4828,13 +4916,31 @@ const prodModuleHTML = '' +
 '    </div>' +
 '  </div>' +
 
-'  </div>' + // .container
+'  <div id="panelp-ajustes" class="panel">' +
+'    <div class="card">' +
+'      <div class="section-header">' +
+'        <div class="section-title">🔧 Ajustes de registros — solo administrador</div>' +
+'        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+'          <label style="font-size:.78rem;color:var(--muted)">Desde' +
+'            <input type="date" id="paj-desde" style="width:auto;font-size:.78rem;padding:5px 8px;"></label>' +
+'          <label style="font-size:.78rem;color:var(--muted)">Hasta' +
+'            <input type="date" id="paj-hasta" style="width:auto;font-size:.78rem;padding:5px 8px;"></label>' +
+'          <button class="btn btn-secondary btn-sm" onclick="renderAjustesProd()">🔍 Filtrar</button>' +
+'        </div>' +
+'      </div>' +
+'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Desde acá podés <strong>modificar</strong> un registro cerrado (cantidades, novedades y detalles de MP) o <strong>eliminarlo</strong>. En ambos casos, el stock de semielaborados se ajusta automáticamente. La fecha y el centro no se pueden cambiar porque identifican al registro: para corregirlos, eliminá el registro y cargalo de nuevo desde Registro Diario.</div>' +
+'      <div id="pajustes-lista"></div>' +
+'    </div>' +
+'  </div>' +
+
+'  </div>' +
 '  <div id="toast-prod" class="toast"></div>' +
 '</div>';
 
 // ── NAVEGACIÓN DE PESTAÑAS ───────────────────────────
 function switchTabProd(tab){
-  const tabs = ['registro','productos','destino','informes'];
+  if(tab === 'ajustes' && !isAdminProd()) return; // exclusivo admin
+  const tabs = ['registro','productos','destino','informes','ajustes'];
   const wrap = document.getElementById('prod-module-wrap');
   if(!wrap) return;
   wrap.querySelectorAll('#prod-tabs .tab').forEach((t,i) => t.classList.toggle('active', tabs[i] === tab));
@@ -4843,6 +4949,7 @@ function switchTabProd(tab){
   if(panel) panel.classList.add('active');
   if(tab === 'registro')  renderRegistrosProd();
   if(tab === 'productos'){ renderCatalogoPProd(); renderStockSemi(); renderCentros(); }
+  if(tab === 'ajustes')   renderAjustesProd();
 }
 
 function switchProdSub(sub){
@@ -4869,229 +4976,468 @@ function renderPRegCentroSelect(){
   const activos = PDB.centros.filter(c => c.activo);
   sel.innerHTML = '<option value="">— Seleccioná —</option>' +
     activos.map(c => `<option value="${c.id}">${escProd(c.nombre)}</option>`).join('');
-  // conservar selección si sigue vigente
   if(valorActual && activos.some(c => String(c.id) === valorActual)) sel.value = valorActual;
 }
 
-// Al cambiar fecha o centro: buscar registro existente y armar la grilla de productos
+// Construye la grilla de líneas del registro: una fila por producto del
+// centro y, para los que "Detalla MP", sus N renglones de detalle debajo
+// (buscador de producto + cantidad + unidad automática).
+function construirGrillaLineas(centroId, fuente, bloqueado){
+  let productos = PDB.productosProd.filter(p => p.activo && p.centrosIds.includes(centroId));
+  // En edición: incluir productos presentes en el registro aunque hoy estén
+  // inactivos o desasociados del centro (para no perder información)
+  if(fuente){
+    (fuente.lineas || []).forEach(l => {
+      if(!productos.some(p => p.id === l.productoId)){
+        const p = pprodById(l.productoId);
+        if(p) productos.push(p);
+      }
+    });
+  }
+  if(productos.length === 0) return null;
+
+  const dis = bloqueado ? 'disabled' : '';
+  let filas = '';
+  productos.forEach(p => {
+    const linea = fuente ? (fuente.lineas || []).find(l => l.productoId === p.id) : null;
+    const val = linea ? linea.cantidad : '';
+    const badge = p.tipo === 'semielaborado'
+      ? '<span class="badge badge-warn">Semielab.</span>'
+      : '<span class="badge badge-neutral">Elaborado</span>';
+    filas += `<tr>
+      <td>${escProd(p.nombre)}${p.activo ? '' : ' <span class="badge badge-danger">Inactivo</span>'}</td>
+      <td>${badge}</td>
+      <td style="width:140px"><input type="number" min="0" step="any" class="preg-cant" data-prodid="${p.id}" value="${val}" placeholder="0" ${dis}></td>
+      <td style="width:110px;color:var(--muted)">${escProd(p.unidad)}</td>
+    </tr>`;
+
+    // Renglones de detalle de materias primas
+    if(p.detallaMP && p.cantElementos > 0){
+      const fuenteDet = p.dtaStockSE ? 'se' : 'mp';
+      const tagFuente = p.dtaStockSE
+        ? '<span class="badge badge-warn" title="Descuenta del stock de semielaborados al cerrar">SE ↓</span>'
+        : '<span class="badge badge-neutral" title="Solo informativo — no descuenta ningún stock">MP</span>';
+      for(let i = 0; i < p.cantElementos; i++){
+        const det = (linea && linea.detalles && linea.detalles[i]) ? linea.detalles[i] : null;
+        const detNombre = det ? det.nombre : '';
+        const detRef    = det ? det.refId : '';
+        const detCant   = det ? det.cantidad : '';
+        const detUnidad = det ? det.unidad : '—';
+        filas += `<tr class="preg-det-row" style="background:rgba(107,116,153,.05)">
+          <td style="padding-left:26px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="color:var(--muted)">↳</span>
+              <div style="position:relative;flex:1;min-width:160px">
+                <input type="text" class="preg-det-buscar" data-parent="${p.id}" data-idx="${i}" data-fuente="${fuenteDet}"
+                  placeholder="Buscar y elegir..." autocomplete="off" value="${escProd(detNombre)}" ${dis}
+                  style="font-size:.78rem;padding:6px 10px">
+                <input type="hidden" class="preg-det-ref" value="${detRef}">
+                <div class="preg-det-drop" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--surface2);border:1px solid var(--border);border-radius:8px;max-height:190px;overflow-y:auto;box-shadow:0 8px 20px rgba(0,0,0,.4)"></div>
+              </div>
+            </div>
+          </td>
+          <td>${tagFuente}</td>
+          <td style="width:140px"><input type="number" min="0" step="any" class="preg-det-cant" value="${detCant}" placeholder="0" ${dis} style="font-size:.78rem;padding:6px 10px"></td>
+          <td style="width:110px;color:var(--muted)"><span class="preg-det-unidad">${escProd(detUnidad)}</span></td>
+        </tr>`;
+      }
+    }
+  });
+
+  return `<table class="stock-table">
+    <thead><tr><th>Producto</th><th>Tipo</th><th>Cantidad</th><th>Unidad</th></tr></thead>
+    <tbody>${filas}</tbody></table>
+    <div style="font-size:.7rem;color:var(--muted);margin-top:8px">Solo se guardan los productos con cantidad mayor a cero (y, de ellos, los renglones de detalle completos: producto elegido + cantidad). Los renglones de detalle son opcionales. Al guardar, el registro queda cerrado.</div>`;
+}
+
+// Conecta los buscadores de los renglones de detalle (filtro en tiempo real)
+function bindBuscadoresDetalle(){
+  document.querySelectorAll('#preg-lineas .preg-det-buscar').forEach(inp => {
+    const cont   = inp.parentElement;                    // div position:relative
+    const hidden = cont.querySelector('.preg-det-ref');
+    const drop   = cont.querySelector('.preg-det-drop');
+    const fila   = inp.closest('tr');
+    const unidadEl = fila.querySelector('.preg-det-unidad');
+    const fuente = inp.dataset.fuente;
+
+    function renderDrop(){
+      const q = inp.value.trim().toLowerCase();
+      const opts = opcionesDetalle(fuente)
+        .filter(o => !q || o.nombre.toLowerCase().includes(q))
+        .slice(0, 30);
+      if(opts.length === 0){
+        drop.innerHTML = '<div style="padding:8px 12px;font-size:.75rem;color:var(--muted)">Sin resultados</div>';
+      } else {
+        drop.innerHTML = opts.map(o =>
+          `<div class="preg-det-opt" data-id="${o.id}" data-nombre="${escProd(o.nombre)}" data-unidad="${escProd(o.unidad)}"
+             style="padding:7px 12px;font-size:.78rem;cursor:pointer;border-bottom:1px solid rgba(42,48,69,.4)">${escProd(o.nombre)} <span style="color:var(--muted);font-size:.68rem">· ${escProd(o.unidad)}</span></div>`
+        ).join('');
+        drop.querySelectorAll('.preg-det-opt').forEach(opt => {
+          opt.addEventListener('mousedown', function(ev){
+            ev.preventDefault(); // que no dispare blur antes de seleccionar
+            hidden.value = opt.dataset.id;
+            inp.value = opt.dataset.nombre;
+            if(unidadEl) unidadEl.textContent = opt.dataset.unidad;
+            drop.style.display = 'none';
+          });
+          opt.addEventListener('mouseenter', function(){ opt.style.background = 'rgba(0,229,160,.08)'; });
+          opt.addEventListener('mouseleave', function(){ opt.style.background = 'transparent'; });
+        });
+      }
+      drop.style.display = 'block';
+    }
+
+    inp.addEventListener('focus', renderDrop);
+    inp.addEventListener('input', function(){
+      // Al tipear se invalida la selección previa hasta elegir de la lista
+      hidden.value = '';
+      if(unidadEl) unidadEl.textContent = '—';
+      renderDrop();
+    });
+    inp.addEventListener('blur', function(){
+      setTimeout(() => { drop.style.display = 'none'; }, 150);
+      // Si quedó texto sin selección válida, limpiar para evitar confusión
+      if(!hidden.value) inp.value = '';
+    });
+  });
+}
+
+// Al cambiar fecha o centro: buscar registro existente y armar la grilla
 function onPRegChange(){
-  const fecha = document.getElementById('preg-fecha').value;
-  const centroId = parseInt(document.getElementById('preg-centro').value) || null;
+  const fechaEl = document.getElementById('preg-fecha');
+  const centroEl = document.getElementById('preg-centro');
+  if(!fechaEl || !centroEl) return;
+  const fecha = fechaEl.value;
+  const centroId = parseInt(centroEl.value) || null;
   const avisoEl = document.getElementById('preg-aviso');
   const lineasEl = document.getElementById('preg-lineas');
   const btnGuardar = document.getElementById('btn-guardar-registro');
   avisoEl.innerHTML = '';
+
+  const enEdicionAdmin = regAdminEditId !== null;
+  const regEdit = enEdicionAdmin ? PDB.registros.find(x => x.id === regAdminEditId) : null;
 
   if(!centroId){
     lineasEl.innerHTML = '<div style="font-size:.8rem;color:var(--muted);padding:8px 0">Seleccioná un centro de elaboración para ver sus productos asociados.</div>';
     return;
   }
 
-  const productos = PDB.productosProd.filter(p => p.activo && p.centrosIds.includes(centroId));
-  const existente = (fecha && centroId) ? buscarRegistro(fecha, centroId) : null;
-  const cerrado = existente && existente.estado === 'cerrado';
+  // Registro ya existente para esa fecha+centro (flujo normal: siempre nace cerrado)
+  const existente = (fecha && centroId && !enEdicionAdmin) ? buscarRegistro(fecha, centroId) : null;
+  const bloqueado = !!existente;
 
-  if(existente){
-    if(cerrado){
-      avisoEl.innerHTML = '<div class="alert-item danger" style="margin:10px 0"><span class="alert-dot"></span>Ya existe un registro CERRADO para este centro y fecha. No se puede modificar — consultalo en la lista de abajo.</div>';
-    } else {
-      avisoEl.innerHTML = '<div class="alert-item warn" style="margin:10px 0"><span class="alert-dot"></span>Ya existe un registro ABIERTO para este centro y fecha — se cargó para que lo edites. Al guardar, se actualiza.</div>';
-    }
+  if(enEdicionAdmin && regEdit){
+    avisoEl.innerHTML = '<div class="alert-item warn" style="margin:10px 0"><span class="alert-dot"></span>MODO ADMINISTRADOR — estás modificando el registro cerrado del ' + fechaBonitaProd(regEdit.fecha) + ' · ' + escProd(centroNombre(regEdit.centroId)) + '. Al guardar, el stock de semielaborados se ajusta automáticamente (se revierte el impacto anterior y se aplica el nuevo).</div>';
+  } else if(existente){
+    avisoEl.innerHTML = '<div class="alert-item danger" style="margin:10px 0"><span class="alert-dot"></span>Ya existe un registro para este centro y fecha. Solo un administrador puede modificarlo o eliminarlo (pestaña Ajustes).</div>';
   }
 
-  // Novedades del existente (o limpiar)
-  document.getElementById('preg-bpm').value  = existente ? (existente.novedades.bpm || '')  : '';
-  document.getElementById('preg-poes').value = existente ? (existente.novedades.poes || '') : '';
-  document.getElementById('preg-mant').value = existente ? (existente.novedades.mantenimiento || '') : '';
-  document.getElementById('preg-rrhh').value = existente ? (existente.novedades.rrhh || '') : '';
+  const fuente = enEdicionAdmin ? regEdit : existente;
 
-  if(productos.length === 0){
+  document.getElementById('preg-bpm').value  = fuente ? (fuente.novedades.bpm || '')  : '';
+  document.getElementById('preg-poes').value = fuente ? (fuente.novedades.poes || '') : '';
+  document.getElementById('preg-mant').value = fuente ? (fuente.novedades.mantenimiento || '') : '';
+  document.getElementById('preg-rrhh').value = fuente ? (fuente.novedades.rrhh || '') : '';
+
+  const grilla = construirGrillaLineas(centroId, fuente, bloqueado || isReadonlyProd);
+  if(grilla === null){
     lineasEl.innerHTML = '<div class="alert-item warn" style="margin:6px 0"><span class="alert-dot"></span>Este centro no tiene productos asociados. Cargalos en la pestaña "Productos Elab/Semielab".</div>';
   } else {
-    const filas = productos.map(p => {
-      const linea = existente ? existente.lineas.find(l => l.productoId === p.id) : null;
-      const val = linea ? linea.cantidad : '';
-      const badge = p.tipo === 'semielaborado'
-        ? '<span class="badge badge-warn">Semielab.</span>'
-        : '<span class="badge badge-neutral">Elaborado</span>';
-      return `<tr>
-        <td>${escProd(p.nombre)}</td>
-        <td>${badge}</td>
-        <td style="width:140px"><input type="number" min="0" step="any" class="preg-cant" data-prodid="${p.id}" value="${val}" placeholder="0" ${cerrado ? 'disabled' : ''}></td>
-        <td style="width:110px;color:var(--muted)">${escProd(p.unidad)}</td>
-      </tr>`;
-    }).join('');
-    lineasEl.innerHTML = `<table class="stock-table">
-      <thead><tr><th>Producto</th><th>Tipo</th><th>Cantidad</th><th>Unidad</th></tr></thead>
-      <tbody>${filas}</tbody></table>
-      <div style="font-size:.7rem;color:var(--muted);margin-top:8px">Solo se guardan los productos con cantidad mayor a cero.</div>`;
+    lineasEl.innerHTML = grilla;
+    if(!bloqueado && !isReadonlyProd) bindBuscadoresDetalle();
   }
 
-  // Habilitar/deshabilitar según estado
-  const bloquear = !!cerrado;
+  const deshabilitar = bloqueado || isReadonlyProd;
   ['preg-bpm','preg-poes','preg-mant','preg-rrhh'].forEach(id => {
     const el = document.getElementById(id);
-    if(el) el.disabled = bloquear || isReadonlyProd;
+    if(el) el.disabled = deshabilitar;
   });
   if(btnGuardar){
-    btnGuardar.disabled = bloquear || isReadonlyProd;
-    btnGuardar.style.opacity = (bloquear || isReadonlyProd) ? '0.4' : '1';
-    btnGuardar.style.cursor  = (bloquear || isReadonlyProd) ? 'not-allowed' : 'pointer';
+    btnGuardar.disabled = deshabilitar;
+    btnGuardar.style.opacity = deshabilitar ? '0.4' : '1';
+    btnGuardar.style.cursor  = deshabilitar ? 'not-allowed' : 'pointer';
+    btnGuardar.textContent = enEdicionAdmin ? '💾 Guardar cambios (admin)' : '💾 Guardar y cerrar registro';
   }
+  // En edición admin, fecha y centro identifican al registro: bloqueados
+  fechaEl.disabled  = enEdicionAdmin;
+  centroEl.disabled = enEdicionAdmin;
+  const btnCancel = document.getElementById('btn-cancelar-admin-edit');
+  if(btnCancel) btnCancel.style.display = enEdicionAdmin ? 'inline-block' : 'none';
 }
 
 function limpiarFormRegistro(){
-  document.getElementById('preg-fecha').value = hoyISOProd();
-  document.getElementById('preg-centro').value = '';
+  regAdminEditId = null;
+  const f = document.getElementById('preg-fecha');
+  const c = document.getElementById('preg-centro');
+  if(f){ f.disabled = false; f.value = hoyISOProd(); }
+  if(c){ c.disabled = false; c.value = ''; }
   ['preg-bpm','preg-poes','preg-mant','preg-rrhh'].forEach(id => {
     const el = document.getElementById(id);
     if(el){ el.value = ''; el.disabled = isReadonlyProd; }
   });
-  document.getElementById('preg-aviso').innerHTML = '';
+  const aviso = document.getElementById('preg-aviso');
+  if(aviso) aviso.innerHTML = '';
   onPRegChange();
 }
 
-function guardarRegistroDiario(){
-  if(isReadonlyProd){ toastProd('Modo solo lectura — no podés registrar', 'error'); return; }
-  const fecha = document.getElementById('preg-fecha').value;
-  const centroId = parseInt(document.getElementById('preg-centro').value) || null;
-  if(!fecha){ toastProd('Ingresá la fecha', 'error'); return; }
-  if(!centroId){ toastProd('Seleccioná el centro de elaboración', 'error'); return; }
+function cancelarEdicionAdmin(){
+  limpiarFormRegistro();
+  toastProd('Edición cancelada — no se guardaron cambios');
+}
 
-  const existente = buscarRegistro(fecha, centroId);
-  if(existente && existente.estado === 'cerrado'){
-    toastProd('Ese registro ya está cerrado — no se puede modificar', 'error');
-    return;
-  }
-
-  // Recolectar líneas (solo cantidades > 0)
+// Recolecta las líneas cargadas en la grilla (solo cantidades > 0) junto con
+// sus renglones de detalle completos (producto elegido + cantidad > 0)
+function recolectarLineasForm(){
   const lineas = [];
+  const detallesPorProducto = {};
+
+  document.querySelectorAll('#preg-lineas .preg-det-buscar').forEach(inp => {
+    const fila = inp.closest('tr');
+    const hidden = inp.parentElement.querySelector('.preg-det-ref');
+    const cantEl = fila.querySelector('.preg-det-cant');
+    const refId = hidden.value !== '' ? (isNaN(hidden.value) ? hidden.value : parseInt(hidden.value)) : null;
+    const cant = parseFloat(cantEl ? cantEl.value : '');
+    if(refId === null || !(cant > 0)) return; // renglón incompleto → se ignora
+    const fuente = inp.dataset.fuente;
+    const opcion = opcionesDetalle(fuente).find(o => String(o.id) === String(refId));
+    if(!opcion) return;
+    const parentId = parseInt(inp.dataset.parent);
+    if(!detallesPorProducto[parentId]) detallesPorProducto[parentId] = [];
+    detallesPorProducto[parentId].push({
+      refTipo: fuente,          // 'se' | 'mp'
+      refId: opcion.id,
+      nombre: opcion.nombre,    // snapshot: el nombre queda fijado en el registro
+      cantidad: cant,
+      unidad: opcion.unidad
+    });
+  });
+
   document.querySelectorAll('#preg-lineas .preg-cant').forEach(inp => {
     const cant = parseFloat(inp.value);
     if(cant > 0){
       const p = pprodById(parseInt(inp.dataset.prodid));
-      if(p) lineas.push({ productoId: p.id, cantidad: cant, unidad: p.unidad });
+      if(p) lineas.push({
+        productoId: p.id,
+        cantidad: cant,
+        unidad: p.unidad,
+        detalles: detallesPorProducto[p.id] || []
+      });
     }
   });
+  return lineas;
+}
 
-  const novedades = {
+function recolectarNovedadesForm(){
+  return {
     bpm:  document.getElementById('preg-bpm').value.trim(),
     poes: document.getElementById('preg-poes').value.trim(),
     mantenimiento: document.getElementById('preg-mant').value.trim(),
     rrhh: document.getElementById('preg-rrhh').value.trim()
   };
+}
 
+// Resumen del impacto en stock SE para el modal de confirmación:
+// ingresos (producción de semielaborados), egresos (consumo) y advertencias
+// si algún semielaborado quedaría con stock negativo.
+function resumenImpactoSemis(lineas){
+  const neto = {}; // seId → {nombre, unidad, ingreso, egreso}
+  lineas.forEach(l => {
+    const p = pprodById(l.productoId);
+    if(p && p.tipo === 'semielaborado'){
+      if(!neto[p.id]) neto[p.id] = { nombre: p.nombre, unidad: p.unidad, ingreso: 0, egreso: 0 };
+      neto[p.id].ingreso += l.cantidad;
+    }
+    (l.detalles || []).forEach(d => {
+      if(d.refTipo !== 'se') return;
+      if(!neto[d.refId]) neto[d.refId] = { nombre: d.nombre, unidad: d.unidad, ingreso: 0, egreso: 0 };
+      neto[d.refId].egreso += d.cantidad;
+    });
+  });
+
+  const ingresos = [], egresos = [], advertencias = [];
+  Object.keys(neto).forEach(id => {
+    const n = neto[id];
+    if(n.ingreso > 0) ingresos.push('• ' + n.nombre + ': +' + n.ingreso + ' ' + n.unidad);
+    if(n.egreso > 0)  egresos.push('• ' + n.nombre + ': -' + n.egreso + ' ' + n.unidad);
+    const final = (PDB.stockSemi[id] || 0) + n.ingreso - n.egreso;
+    if(final < 0) advertencias.push('⚠ ' + n.nombre + ' quedará con stock NEGATIVO (' + final + ' ' + n.unidad + ')');
+  });
+  return { ingresos, egresos, advertencias };
+}
+
+// Guardado ÚNICO: el registro nace CERRADO, con una sola confirmación que
+// resume el impacto en el stock de semielaborados. Si hay una edición de
+// admin en curso (regAdminEditId), en cambio se actualiza ese registro.
+async function guardarYCerrarRegistro(){
+  if(isReadonlyProd){ toastProd('Modo solo lectura — no podés registrar', 'error'); return; }
+
+  // ── Camino B: modificación de un registro cerrado (SOLO ADMIN, vía Ajustes) ──
+  if(regAdminEditId !== null){
+    if(!isAdminProd()){ toastProd('Solo un administrador puede modificar registros cerrados', 'error'); return; }
+    const r = PDB.registros.find(x => x.id === regAdminEditId);
+    if(!r){ limpiarFormRegistro(); return; }
+
+    const lineas = recolectarLineasForm();
+    const novedades = recolectarNovedadesForm();
+    const hayNovedades = novedades.bpm || novedades.poes || novedades.mantenimiento || novedades.rrhh;
+    if(lineas.length === 0 && !hayNovedades){
+      toastProd('El registro quedaría vacío: cargá cantidades o alguna novedad', 'error');
+      return;
+    }
+
+    const ok = await confirmModal(
+      'Vas a modificar el registro CERRADO del ' + fechaBonitaProd(r.fecha) + ' — ' + centroNombre(r.centroId) +
+      '.\n\nEl stock de semielaborados se ajustará automáticamente: se revierte el impacto anterior y se aplica el nuevo.\n\n¿Confirmás los cambios?',
+      'Modificar registro (admin)');
+    if(!ok) return;
+
+    const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+    const contexto = 'modificación admin registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId);
+
+    // Revertir impacto anterior. Nota: los registros "abiertos" heredados de
+    // la primera versión del módulo nunca impactaron stock → nada que revertir.
+    if(r.estado === 'cerrado') aplicarImpactoRegistro(r, -1, contexto, usuario);
+    r.lineas = lineas;
+    r.novedades = novedades;
+    aplicarImpactoRegistro(r, +1, contexto, usuario);
+
+    r.estado = 'cerrado';
+    r.fechaCierre = r.fechaCierre || new Date().toISOString();
+    r.usuarioCierre = r.usuarioCierre || usuario;
+    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'registro-modificado-admin',
+      detalle: 'Registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId) + ' modificado por admin (' + lineas.length + ' líneas)', usuario });
+
+    limpiarFormRegistro();
+    saveProd();
+    renderAllProd();
+    switchTabProd('ajustes'); // volver a la pestaña desde donde se inició la modificación
+    toastProd('✓ Registro modificado — stock de semielaborados ajustado');
+    return;
+  }
+
+  // ── Camino A: registro nuevo (nace cerrado) ──
+  const fecha = document.getElementById('preg-fecha').value;
+  const centroId = parseInt(document.getElementById('preg-centro').value) || null;
+  if(!fecha){ toastProd('Ingresá la fecha', 'error'); return; }
+  if(!centroId){ toastProd('Seleccioná el centro de elaboración', 'error'); return; }
+
+  if(buscarRegistro(fecha, centroId)){
+    toastProd('Ya existe un registro para ese centro y fecha', 'error');
+    return;
+  }
+
+  const lineas = recolectarLineasForm();
+  const novedades = recolectarNovedadesForm();
   const hayNovedades = novedades.bpm || novedades.poes || novedades.mantenimiento || novedades.rrhh;
   if(lineas.length === 0 && !hayNovedades){
     toastProd('El registro está vacío: cargá cantidades o alguna novedad', 'error');
     return;
   }
 
-  const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  // Confirmación ÚNICA con resumen del impacto en stock de semielaborados
+  const imp = resumenImpactoSemis(lineas);
+  let msg = 'Vas a guardar y CERRAR el registro del ' + fechaBonitaProd(fecha) + ' — ' + centroNombre(centroId) +
+            '.\n\nDespués del cierre, solo un administrador puede modificarlo (pestaña Ajustes).';
+  if(imp.ingresos.length) msg += '\n\nSuma al stock de semielaborados:\n' + imp.ingresos.join('\n');
+  if(imp.egresos.length)  msg += '\n\nDescuenta del stock de semielaborados:\n' + imp.egresos.join('\n');
+  if(imp.advertencias.length) msg += '\n\n' + imp.advertencias.join('\n');
+  const ok = await confirmModal(msg, 'Guardar y cerrar registro');
+  if(!ok) return;
 
-  if(existente){
-    existente.novedades = novedades;
-    existente.lineas = lineas;
-    existente.usuario = usuario;
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'registro-editado',
-      detalle: 'Registro ' + fechaBonitaProd(fecha) + ' · ' + centroNombre(centroId) + ' actualizado (' + lineas.length + ' líneas)', usuario });
-    toastProd('✓ Registro actualizado (sigue abierto)');
-  } else {
-    PDB.registros.push({
-      id: pIdSeq.reg++,
-      fecha, centroId, novedades, lineas,
-      estado: 'abierto',
-      usuario,
-      creado: new Date().toISOString(),
-      fechaCierre: null,
-      usuarioCierre: null
-    });
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'registro-creado',
-      detalle: 'Registro ' + fechaBonitaProd(fecha) + ' · ' + centroNombre(centroId) + ' creado (' + lineas.length + ' líneas)', usuario });
-    toastProd('✓ Registro guardado (abierto — cerralo cuando hagas la revisión final)');
-  }
+  const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  const ahora = new Date().toISOString();
+
+  const nuevo = {
+    id: pIdSeq.reg++,
+    fecha, centroId, novedades, lineas,
+    estado: 'cerrado',
+    usuario,
+    creado: ahora,
+    fechaCierre: ahora,
+    usuarioCierre: usuario
+  };
+  PDB.registros.push(nuevo);
+  aplicarImpactoRegistro(nuevo, +1, 'cierre registro ' + fechaBonitaProd(fecha) + ' · ' + centroNombre(centroId), usuario);
+  PDB.historialProd.push({ ts: ahora, tipo: 'registro-cerrado',
+    detalle: 'Registro ' + fechaBonitaProd(fecha) + ' · ' + centroNombre(centroId) + ' guardado y CERRADO (' + lineas.length + ' líneas)', usuario });
+
+  limpiarFormRegistro();
   saveProd();
   renderAllProd();
-  onPRegChange(); // refrescar aviso de "registro abierto cargado"
+  toastProd('✓ Registro guardado y cerrado' + ((imp.ingresos.length || imp.egresos.length) ? ' — stock de semielaborados actualizado' : ''));
 }
 
-function editarRegistroProd(id){
+// ── AJUSTES (SOLO ADMIN): modificar / eliminar registros cerrados ──
+function modificarRegistroAdmin(id){
+  if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
+  if(!isAdminProd()){ toastProd('Solo un administrador puede modificar registros', 'error'); return; }
   const r = PDB.registros.find(x => x.id === id);
   if(!r) return;
-  if(r.estado === 'cerrado'){ toastProd('El registro está cerrado — solo consulta', 'error'); return; }
+  regAdminEditId = id;
+  // Llevar al formulario de Registro Diario en modo admin (misma pantalla
+  // de carga que ya conocen los operadores, con banner de modo administrador)
+  switchTabProd('registro');
   document.getElementById('preg-fecha').value = r.fecha;
   renderPRegCentroSelect();
-  document.getElementById('preg-centro').value = String(r.centroId);
+  const sel = document.getElementById('preg-centro');
+  if(sel && !Array.from(sel.options).some(o => o.value === String(r.centroId))){
+    // El centro del registro está inactivo: agregarlo igual para poder mostrarlo
+    const c = PDB.centros.find(x => x.id === r.centroId);
+    const opt = document.createElement('option');
+    opt.value = String(r.centroId);
+    opt.textContent = (c ? c.nombre : '#' + r.centroId) + ' (inactivo)';
+    sel.appendChild(opt);
+  }
+  sel.value = String(r.centroId);
   onPRegChange();
   const card = document.getElementById('preg-form-card');
   if(card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-async function cerrarRegistroProd(id){
-  if(isReadonlyProd){ toastProd('Modo solo lectura — no podés cerrar registros', 'error'); return; }
-  const r = PDB.registros.find(x => x.id === id);
-  if(!r || r.estado === 'cerrado') return;
-
-  const semis = r.lineas.filter(l => { const p = pprodById(l.productoId); return p && p.tipo === 'semielaborado'; });
-  let msg = 'Vas a cerrar el registro del ' + fechaBonitaProd(r.fecha) + ' — ' + centroNombre(r.centroId) + '.\n\n' +
-            'Después del cierre NO se puede modificar.';
-  if(semis.length){
-    msg += '\n\nSe sumarán al stock de semielaborados:\n' +
-      semis.map(l => { const p = pprodById(l.productoId); return '• ' + p.nombre + ': +' + l.cantidad + ' ' + l.unidad; }).join('\n');
-  }
-  const ok = await confirmModal(msg, 'Cerrar registro diario');
-  if(!ok) return;
-
-  const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
-
-  // Impacto en stock de semielaborados (SOLO acá, al cerrar — nunca antes)
-  semis.forEach(l => {
-    PDB.stockSemi[l.productoId] = (PDB.stockSemi[l.productoId] || 0) + l.cantidad;
-    const p = pprodById(l.productoId);
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'ingreso-semielab',
-      detalle: 'Ingreso +' + l.cantidad + ' ' + l.unidad + ' de ' + (p ? p.nombre : '?') +
-               ' — cierre registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId), usuario });
-  });
-
-  r.estado = 'cerrado';
-  r.fechaCierre = new Date().toISOString();
-  r.usuarioCierre = usuario;
-  PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'registro-cerrado',
-    detalle: 'Registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId) + ' CERRADO', usuario });
-
-  saveProd();
-  renderAllProd();
-  onPRegChange();
-  toastProd('✓ Registro cerrado' + (semis.length ? ' — stock de semielaborados actualizado' : ''));
-}
-
-async function eliminarRegistroProd(id){
-  if(isReadonlyProd){ toastProd('Modo solo lectura — no podés eliminar registros', 'error'); return; }
+async function eliminarRegistroAdmin(id){
+  if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
+  if(!isAdminProd()){ toastProd('Solo un administrador puede eliminar registros', 'error'); return; }
   const r = PDB.registros.find(x => x.id === id);
   if(!r) return;
-  if(r.estado === 'cerrado'){ toastProd('Un registro cerrado no se puede eliminar', 'error'); return; }
-  const ok = await confirmModal('¿Eliminar el registro ABIERTO del ' + fechaBonitaProd(r.fecha) + ' — ' + centroNombre(r.centroId) + '?\n\nEsta acción no afecta el stock (el registro nunca se cerró).', 'Eliminar registro');
+
+  const imp = resumenImpactoSemis(r.lineas || []);
+  let msg = '¿Eliminar el registro del ' + fechaBonitaProd(r.fecha) + ' — ' + centroNombre(r.centroId) + '?\n\nEsta acción no se puede deshacer.';
+  if(r.estado === 'cerrado' && (imp.ingresos.length || imp.egresos.length)){
+    msg += '\n\nSe revertirá su impacto en el stock de semielaborados:';
+    if(imp.ingresos.length) msg += '\n(se descuenta lo que había sumado)\n' + imp.ingresos.join('\n');
+    if(imp.egresos.length)  msg += '\n(se devuelve lo que había consumido)\n' + imp.egresos.join('\n');
+  }
+  const ok = await confirmModal(msg, 'Eliminar registro (admin)');
   if(!ok) return;
+
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  if(r.estado === 'cerrado'){
+    aplicarImpactoRegistro(r, -1, 'eliminación registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId), usuario);
+  }
+  if(regAdminEditId === id) limpiarFormRegistro();
+
   PDB.registros = PDB.registros.filter(x => x.id !== id);
   PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'registro-eliminado',
-    detalle: 'Registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId) + ' eliminado (estaba abierto)', usuario });
+    detalle: 'Registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId) + ' eliminado por admin', usuario });
   saveProd();
   renderAllProd();
+  renderAjustesProd();
   onPRegChange();
-  toastProd('✓ Registro eliminado');
+  toastProd('✓ Registro eliminado — stock de semielaborados ajustado');
 }
 
-function toggleDetalleRegistro(id){
-  const el = document.getElementById('preg-det-' + id);
+function toggleDetalleRegistro(id, pref){
+  const el = document.getElementById((pref || 'preg') + '-det-' + id);
   if(el) el.style.display = (el.style.display === 'none') ? 'block' : 'none';
 }
 
-function renderRegistrosProd(){
-  const cont = document.getElementById('preg-lista');
+// Render compartido de la lista de registros. conAcciones=true agrega los
+// botones Modificar/Eliminar de admin (se usa solo en la pestaña Ajustes).
+function renderListaRegistros(contId, desdeId, hastaId, pref, conAcciones){
+  const cont = document.getElementById(contId);
   if(!cont) return;
-  const desde = document.getElementById('plist-desde') ? document.getElementById('plist-desde').value : '';
-  const hasta = document.getElementById('plist-hasta') ? document.getElementById('plist-hasta').value : '';
+  const desde = document.getElementById(desdeId) ? document.getElementById(desdeId).value : '';
+  const hasta = document.getElementById(hastaId) ? document.getElementById(hastaId).value : '';
 
   let regs = PDB.registros.slice();
   if(desde) regs = regs.filter(r => r.fecha >= desde);
@@ -5106,9 +5452,9 @@ function renderRegistrosProd(){
   }
 
   cont.innerHTML = regs.map(r => {
-    const abierto = r.estado === 'abierto';
-    const pill = abierto
-      ? '<span class="badge badge-warn">Abierto</span>'
+    const abiertoLegacy = r.estado === 'abierto'; // solo posibles restos de la versión anterior
+    const pill = abiertoLegacy
+      ? '<span class="badge badge-warn">Abierto (pendiente)</span>'
       : '<span class="badge badge-ok">Cerrado</span>';
     const novs = [
       r.novedades.bpm  ? `<div><strong style="color:var(--muted)">BPM:</strong> ${escProd(r.novedades.bpm)}</div>` : '',
@@ -5117,23 +5463,29 @@ function renderRegistrosProd(){
       r.novedades.rrhh ? `<div><strong style="color:var(--muted)">RR.HH.:</strong> ${escProd(r.novedades.rrhh)}</div>` : ''
     ].filter(Boolean).join('') || '<div style="color:var(--muted)">Sin novedades registradas.</div>';
 
-    const lineasHTML = r.lineas.length
+    const lineasHTML = (r.lineas && r.lineas.length)
       ? `<table class="stock-table" style="margin-top:8px"><thead><tr><th>Producto</th><th>Tipo</th><th>Cantidad</th><th>Unidad</th></tr></thead><tbody>` +
         r.lineas.map(l => {
           const p = pprodById(l.productoId);
           const nombre = p ? p.nombre : ('#' + l.productoId);
           const tipo = p && p.tipo === 'semielaborado' ? '<span class="badge badge-warn">Semielab.</span>' : '<span class="badge badge-neutral">Elaborado</span>';
-          return `<tr><td>${escProd(nombre)}</td><td>${tipo}</td><td>${l.cantidad}</td><td style="color:var(--muted)">${escProd(l.unidad)}</td></tr>`;
+          let fila = `<tr><td>${escProd(nombre)}</td><td>${tipo}</td><td>${l.cantidad}</td><td style="color:var(--muted)">${escProd(l.unidad)}</td></tr>`;
+          (l.detalles || []).forEach(d => {
+            const tag = d.refTipo === 'se'
+              ? '<span class="badge badge-warn">SE ↓</span>'
+              : '<span class="badge badge-neutral">MP</span>';
+            fila += `<tr style="background:rgba(107,116,153,.05)"><td style="padding-left:26px;color:var(--muted)">↳ ${escProd(d.nombre)}</td><td>${tag}</td><td style="color:var(--muted)">${d.cantidad}</td><td style="color:var(--muted)">${escProd(d.unidad)}</td></tr>`;
+          });
+          return fila;
         }).join('') + '</tbody></table>'
       : '<div style="color:var(--muted);margin-top:8px">Sin líneas de producción.</div>';
 
-    const cierreInfo = !abierto
+    const cierreInfo = r.estado === 'cerrado'
       ? `<div style="font-size:.7rem;color:var(--muted);margin-top:8px">Cerrado por ${escProd(r.usuarioCierre || '—')} el ${r.fechaCierre ? new Date(r.fechaCierre).toLocaleString('es-AR') : '—'}</div>` : '';
 
-    const acciones = abierto
-      ? `<button class="btn btn-secondary btn-sm prod-edit-action" onclick="editarRegistroProd(${r.id})">✏ Editar</button>
-         <button class="btn btn-primary btn-sm prod-edit-action" onclick="cerrarRegistroProd(${r.id})">✅ Cerrar</button>
-         <button class="btn btn-secondary btn-sm prod-edit-action" onclick="eliminarRegistroProd(${r.id})">🗑</button>`
+    const acciones = conAcciones
+      ? `<button class="btn btn-secondary btn-sm prod-edit-action" onclick="modificarRegistroAdmin(${r.id})">✏ Modificar</button>
+         <button class="btn btn-secondary btn-sm prod-edit-action" onclick="eliminarRegistroAdmin(${r.id})">🗑 Eliminar</button>`
       : '';
 
     return `<div class="card" style="padding:14px 18px;margin-bottom:10px">
@@ -5142,14 +5494,14 @@ function renderRegistrosProd(){
           <strong>${fechaBonitaProd(r.fecha)}</strong>
           <span>${escProd(centroNombre(r.centroId))}</span>
           ${pill}
-          <span style="font-size:.72rem;color:var(--muted)">${r.lineas.length} línea${r.lineas.length === 1 ? '' : 's'} · ${escProd(r.usuario || '—')}</span>
+          <span style="font-size:.72rem;color:var(--muted)">${(r.lineas||[]).length} línea${(r.lineas||[]).length === 1 ? '' : 's'} · ${escProd(r.usuario || '—')}</span>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn btn-secondary btn-sm" onclick="toggleDetalleRegistro(${r.id})">🔍 Detalle</button>
+          <button class="btn btn-secondary btn-sm" onclick="toggleDetalleRegistro(${r.id}, '${pref}')">🔍 Detalle</button>
           ${acciones}
         </div>
       </div>
-      <div id="preg-det-${r.id}" style="display:none;margin-top:12px;font-size:.8rem;border-top:1px solid var(--border);padding-top:10px">
+      <div id="${pref}-det-${r.id}" style="display:none;margin-top:12px;font-size:.8rem;border-top:1px solid var(--border);padding-top:10px">
         ${novs}${lineasHTML}${cierreInfo}
       </div>
     </div>`;
@@ -5157,7 +5509,24 @@ function renderRegistrosProd(){
       ? '<div style="font-size:.72rem;color:var(--muted);padding:6px 0">Mostrando los últimos 30 registros — usá el filtro de fechas para ver más.</div>' : '');
 }
 
+function renderRegistrosProd(){
+  // Lista de Registro Diario: SOLO consulta para todos los usuarios.
+  // Las modificaciones se hacen desde la pestaña Ajustes (exclusiva admin).
+  renderListaRegistros('preg-lista', 'plist-desde', 'plist-hasta', 'preg', false);
+}
+
+function renderAjustesProd(){
+  if(!isAdminProd()) return;
+  renderListaRegistros('pajustes-lista', 'paj-desde', 'paj-hasta', 'paj', !isReadonlyProd);
+}
+
 // ── CATÁLOGO DE PRODUCTOS ELAB/SEMIELAB ──────────────
+function onPProdDetallaChange(){
+  const detalla = document.getElementById('pprod-detalla').value === 'si';
+  document.getElementById('pprod-cantelem-wrap').style.display = detalla ? 'block' : 'none';
+  document.getElementById('pprod-dtase-wrap').style.display    = detalla ? 'block' : 'none';
+}
+
 function abrirFormPProd(id){
   if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
   editPProdId = id;
@@ -5166,7 +5535,10 @@ function abrirFormPProd(id){
   document.getElementById('pprod-nombre').value = p ? p.nombre : '';
   document.getElementById('pprod-tipo').value   = p ? p.tipo : '';
   document.getElementById('pprod-unidad').value = p ? p.unidad : '';
-  // checkboxes de centros
+  document.getElementById('pprod-detalla').value = (p && p.detallaMP) ? 'si' : 'no';
+  document.getElementById('pprod-cantelem').value = (p && p.cantElementos > 0) ? String(p.cantElementos) : '1';
+  document.getElementById('pprod-dtase').value = (p && p.dtaStockSE) ? 'si' : 'no';
+  onPProdDetallaChange();
   const box = document.getElementById('pprod-centros');
   const activos = PDB.centros.filter(c => c.activo || (p && p.centrosIds.includes(c.id)));
   box.innerHTML = activos.length
@@ -5190,6 +5562,9 @@ function guardarPProd(){
   const nombre = document.getElementById('pprod-nombre').value.trim();
   const tipo   = document.getElementById('pprod-tipo').value;
   const unidad = document.getElementById('pprod-unidad').value;
+  const detallaMP = document.getElementById('pprod-detalla').value === 'si';
+  const cantElementos = detallaMP ? (parseInt(document.getElementById('pprod-cantelem').value) || 1) : 0;
+  const dtaStockSE = detallaMP && document.getElementById('pprod-dtase').value === 'si';
   const centrosIds = Array.from(document.querySelectorAll('.pprod-centro-chk:checked')).map(c => parseInt(c.value));
 
   if(!nombre){ toastProd('El nombre es obligatorio', 'error'); return; }
@@ -5206,16 +5581,18 @@ function guardarPProd(){
     const p = pprodById(editPProdId);
     if(!p) return;
     p.nombre = nombre; p.tipo = tipo; p.unidad = unidad; p.centrosIds = centrosIds;
+    p.detallaMP = detallaMP; p.cantElementos = cantElementos; p.dtaStockSE = dtaStockSE;
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-editado', detalle: 'Producto "' + nombre + '" editado', usuario });
     toastProd('✓ Producto actualizado');
   } else {
-    PDB.productosProd.push({ id: pIdSeq.pprod++, nombre, tipo, unidad, centrosIds, activo: true });
+    PDB.productosProd.push({ id: pIdSeq.pprod++, nombre, tipo, unidad, centrosIds, detallaMP, cantElementos, dtaStockSE, activo: true });
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-creado', detalle: 'Producto "' + nombre + '" (' + tipo + ') creado', usuario });
     toastProd('✓ Producto creado');
   }
   cerrarFormPProd();
   saveProd();
   renderAllProd();
+  onPRegChange(); // la grilla del registro puede cambiar (detalle MP)
 }
 
 async function toggleActivoPProd(id){
@@ -5228,6 +5605,7 @@ async function toggleActivoPProd(id){
   p.activo = !p.activo;
   saveProd();
   renderAllProd();
+  onPRegChange();
   toastProd('✓ Producto ' + (p.activo ? 'reactivado' : 'desactivado'));
 }
 
@@ -5245,12 +5623,16 @@ function renderCatalogoPProd(){
         ? '<span class="badge badge-warn">Semielaborado</span>'
         : '<span class="badge badge-neutral">Elaborado</span>';
       const centros = p.centrosIds.map(centroNombre).map(escProd).join(', ') || '—';
+      const detalle = p.detallaMP
+        ? 'Sí · ' + p.cantElementos + ' renglón' + (p.cantElementos === 1 ? '' : 'es') + ' · ' + (p.dtaStockSE ? 'desc. SE' : 's/desc.')
+        : '—';
       const estado = p.activo ? '<span class="badge badge-ok">Activo</span>' : '<span class="badge badge-danger">Inactivo</span>';
       const btnToggle = p.activo ? '🚫 Desactivar' : '↩ Reactivar';
       return `<tr style="${p.activo ? '' : 'opacity:.5'}">
         <td>${escProd(p.nombre)}</td>
         <td>${tipoBadge}</td>
         <td style="color:var(--muted)">${escProd(p.unidad)}</td>
+        <td style="font-size:.72rem;color:var(--muted)">${detalle}</td>
         <td style="font-size:.74rem">${centros}</td>
         <td>${estado}</td>
         <td style="white-space:nowrap">
@@ -5260,7 +5642,7 @@ function renderCatalogoPProd(){
       </tr>`;
     }).join('');
   cont.innerHTML = `<table class="stock-table"><thead>
-    <tr><th>Nombre</th><th>Tipo</th><th>Unidad</th><th>Centros asociados</th><th>Estado</th><th>Acciones</th></tr>
+    <tr><th>Nombre</th><th>Tipo</th><th>Unidad</th><th>Detalla MP</th><th>Centros asociados</th><th>Estado</th><th>Acciones</th></tr>
     </thead><tbody>${filas}</tbody></table>`;
 }
 
@@ -5277,10 +5659,11 @@ function renderStockSemi(){
     .slice().sort((a,b) => a.nombre.localeCompare(b.nombre))
     .map(p => {
       const cant = PDB.stockSemi[p.id] || 0;
-      const color = cant > 0 ? 'var(--accent)' : 'var(--muted)';
+      const color = cant < 0 ? 'var(--danger)' : (cant > 0 ? 'var(--accent)' : 'var(--muted)');
+      const alerta = cant < 0 ? ' <span class="badge badge-danger">Negativo</span>' : '';
       return `<tr style="${p.activo ? '' : 'opacity:.5'}">
         <td>${escProd(p.nombre)}${p.activo ? '' : ' <span class="badge badge-danger">Inactivo</span>'}</td>
-        <td style="font-family:'Syne',sans-serif;font-weight:700;color:${color}">${cant}</td>
+        <td style="font-family:'Syne',sans-serif;font-weight:700;color:${color}">${cant}${alerta}</td>
         <td style="color:var(--muted)">${escProd(p.unidad)}</td>
       </tr>`;
     }).join('');
@@ -5405,6 +5788,7 @@ function importarBackupProd(ev){
       recalcularPIdSeq();
       saveProd();
       renderAllProd();
+      onPRegChange();
       toastProd('✓ Backup de Producción restaurado');
     } catch(err){
       console.warn('Error importando backup Producción:', err);
@@ -5420,20 +5804,16 @@ function applyReadonlyModeProd(){
   if(!isReadonlyProd) return;
   const wrap = document.getElementById('prod-module-wrap');
   if(!wrap) return;
-  // Ocultar botones de alta/edición/cierre
-  ['btn-nuevo-pprod','btn-nuevo-centro','btn-guardar-registro','btn-limpiar-registro','btn-restore-prod'].forEach(id => {
+  ['btn-nuevo-pprod','btn-nuevo-centro','btn-guardar-registro','btn-limpiar-registro','btn-cancelar-admin-edit','btn-restore-prod'].forEach(id => {
     const el = document.getElementById(id);
     if(el) el.style.display = 'none';
   });
   wrap.querySelectorAll('.prod-edit-action').forEach(el => { el.style.display = 'none'; });
-  // Deshabilitar inputs del formulario de registro (fecha/centro quedan
-  // habilitados para poder CONSULTAR registros existentes)
   ['preg-bpm','preg-poes','preg-mant','preg-rrhh'].forEach(id => {
     const el = document.getElementById(id);
     if(el) el.disabled = true;
   });
   wrap.querySelectorAll('#preg-lineas input').forEach(el => { el.disabled = true; });
-  // Ocultar formularios de ABM si estaban abiertos
   const f1 = document.getElementById('pprod-form-card');  if(f1) f1.style.display = 'none';
   const f2 = document.getElementById('centro-form-card'); if(f2) f2.style.display = 'none';
 }
@@ -5441,10 +5821,10 @@ function applyReadonlyModeProd(){
 // ── RENDER GENERAL ───────────────────────────────────
 function renderAllProd(){
   const pasos = [renderPRegCentroSelect, renderRegistrosProd, renderCatalogoPProd, renderStockSemi, renderCentros];
+  if(isAdminProd()) pasos.push(renderAjustesProd);
   pasos.forEach(fn => {
     try { fn(); } catch(e){ console.warn('renderAllProd — error en ' + fn.name + ':', e); }
   });
-  // Stats del header
   const sR = document.getElementById('stat-p-regs');    if(sR) sR.textContent = PDB.registros.length;
   const sP = document.getElementById('stat-p-prods');   if(sP) sP.textContent = PDB.productosProd.filter(p=>p.activo).length;
   const sC = document.getElementById('stat-p-centros'); if(sC) sC.textContent = PDB.centros.filter(c=>c.activo).length;
@@ -5479,7 +5859,9 @@ function openFullscreenProduccion(perm){
 
   try {
     isReadonlyProd = (perm === 'read');
-    // Inicializar formulario de registro con la fecha de hoy
+    // Pestaña Ajustes: visible SOLO para administradores
+    const tabAj = document.getElementById('tab-btn-ajustes');
+    if(tabAj) tabAj.style.display = isAdminProd() ? 'inline-block' : 'none';
     const f = document.getElementById('preg-fecha');
     if(f) f.value = hoyISOProd();
     renderAllProd();
