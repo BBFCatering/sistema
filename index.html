@@ -573,7 +573,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 </head>
 <body>
 
@@ -683,7 +682,7 @@ let DB = JSON.parse(localStorage.getItem('sf_v3')||'null') || {
   stockSimple:{}, // {productoId: {cantidad,unidad}}  — para no perecederos
   remitos:[],     // {id,nro,fecha,obs,lineas[],fechaCierre}
   historial:[],
-  ordenesCompra:[],    // {id,nro,fecha,proveedorId,lineas:[{productoId,cantidad,precio,bonificacion,subtotal}],total,enviada}
+  ordenesCompra:[],    // {id,nro,fecha,proveedorId,lineas:[{productoId,cantidad,precio,bonificacion,subtotal}],total,condPago,notasProv,obs}
   historialPrecios:[], // {fecha,productoId,proveedorId,precioAnterior,precioNuevo,bonifAnterior,bonifNueva}
   usuarios:null   // array de usuarios del sistema (login/roles/permisos) — null = usar defaults locales
 };
@@ -711,13 +710,6 @@ const SB_URL = 'https://aeucfekavdptmbccoftu.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFldWNmZWthdmRwdG1iY2NvZnR1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExMDY1NDksImV4cCI6MjA5NjY4MjU0OX0.s7KWmO1RXzNWrJj70tp_UdGYs17BRlxndqQ1b727iAc';
 // Nuevo formato Supabase: sb_publishable va SOLO en apikey, sin Authorization Bearer
 const SB_HEADERS = { 'Content-Type':'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
-
-// ── EMAILJS (para enviar Órdenes de Compra por email) ──
-// Para activar el envío de OC por email: crear cuenta gratis en emailjs.com,
-// configurar un servicio y template, y completar estos 3 valores:
-const EMAILJS_SERVICE_ID  = ''; // ej: 'service_xxxxxxx'
-const EMAILJS_TEMPLATE_ID = ''; // ej: 'template_xxxxxxx'
-const EMAILJS_PUBLIC_KEY  = ''; // ej: 'XXXXXXXXXXXXXXXXX'
 
 let syncTimer = null;
 let syncPendiente = false;
@@ -1943,7 +1935,7 @@ function renderProveedores(){
         <div class="item-detail">
           ${p.cuit?`CUIT: ${p.cuit}<br>`:''}
           ${p.tel?`📞 ${p.tel}  `:''}${p.email?`✉ ${p.email}<br>`:''}
-          ${p.pago?`Pago: ${p.pago}  `:''}
+          ${p.pago?`Pago/Entrega: ${p.pago}  `:''}
           <br>Productos: <em>${prodsAsoc}</em>
           ${p.notas?`<br>${p.notas}`:''}
         </div>
@@ -1981,7 +1973,7 @@ function guardarProveedor(){
   if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés guardar cambios','error'); return; }
   const nombre=document.getElementById('prov-nombre').value.trim();
   if(!nombre){toast('El nombre es obligatorio','error');return;}
-  const datos={nombre,cuit:document.getElementById('prov-cuit').value.trim(),tel:document.getElementById('prov-tel').value.trim(),email:document.getElementById('prov-email').value.trim(),pago:document.getElementById('prov-pago').value,notas:document.getElementById('prov-notas').value.trim()};
+  const datos={nombre,cuit:document.getElementById('prov-cuit').value.trim(),tel:document.getElementById('prov-tel').value.trim(),email:document.getElementById('prov-email').value.trim(),pago:document.getElementById('prov-pago').value.trim(),notas:document.getElementById('prov-notas').value.trim()};
   if(editProvId){ Object.assign(getProv(editProvId),datos); toast(`✓ "${nombre}" actualizado`); }
   else { DB.proveedores.push({id:idSeq.prov++,activo:true,...datos}); toast(`✓ "${nombre}" agregado`); }
   save(); cerrarModal('modal-proveedor'); renderAll();
@@ -2118,6 +2110,12 @@ function abrirNuevaOC(){
   document.getElementById('oc-lineas-wrap').classList.add('hidden');
   document.getElementById('btn-nueva-oc').classList.add('hidden');
   resetProvSearchWidget('oc-prov-wrap');
+  const obsEl = document.getElementById('oc-obs');
+  if(obsEl) obsEl.value = '';
+  const cpEl = document.getElementById('oc-cond-pago');
+  if(cpEl) cpEl.textContent = '—';
+  const npEl = document.getElementById('oc-cond-notas');
+  if(npEl) npEl.textContent = '—';
 }
 
 function cancelarOC(){
@@ -2131,6 +2129,15 @@ function onOCProveedorChange(){
   if(!provId || isNaN(provId)){ document.getElementById('oc-lineas-wrap').classList.add('hidden'); return; }
   ocEnEdicion = { proveedorId: provId, lineas: [] };
   document.getElementById('oc-lineas-wrap').classList.remove('hidden');
+
+  // Mostrar condición de pago y notas del proveedor (solo lectura)
+  const provSel = getProv(provId);
+  const cpEl = document.getElementById('oc-cond-pago');
+  if(cpEl) cpEl.textContent = (provSel && provSel.pago) ? provSel.pago : '—';
+  const npEl = document.getElementById('oc-cond-notas');
+  if(npEl) npEl.textContent = (provSel && provSel.notas) ? provSel.notas : '—';
+  const obsEl = document.getElementById('oc-obs');
+  if(obsEl) obsEl.value = '';
 
   const prods = DB.productos.filter(p=>p.activo && (p.proveedoresIds||[]).includes(provId));
   const el = document.getElementById('oc-productos-list');
@@ -2212,6 +2219,8 @@ function guardarOC(){
   const nroSec = String(idSeq.oc).padStart(5,'0');
   const nro = `OC-${year}-${nroSec}`;
   const total = ocEnEdicion.lineas.reduce((s,l)=>s+l.cantidad*precioFinal(l.precio,l.bonificacion),0);
+  // Snapshot de condición de pago y notas del proveedor al momento de emitir la orden
+  const provOC = getProv(ocEnEdicion.proveedorId);
   const oc = {
     id: idSeq.oc++,
     nro,
@@ -2219,7 +2228,9 @@ function guardarOC(){
     proveedorId: ocEnEdicion.proveedorId,
     lineas: JSON.parse(JSON.stringify(ocEnEdicion.lineas)),
     total,
-    enviada: false
+    condPago: (provOC && provOC.pago) ? provOC.pago : '',
+    notasProv: (provOC && provOC.notas) ? provOC.notas : '',
+    obs: (document.getElementById('oc-obs')?.value || '').trim()
   };
   DB.ordenesCompra.unshift(oc);
 
@@ -2257,7 +2268,6 @@ function renderOCs(){
         <div class="item-name">${oc.nro} — ${nomProv(oc.proveedorId)}</div>
         <div class="item-detail">
           ${fdt(oc.fecha)} · ${oc.lineas.length} ítem${oc.lineas.length>1?'s':''} · Total: <strong>${fmtMoney(oc.total)}</strong>
-          ${oc.enviada?' · <span class="badge badge-perecedero">Enviada</span>':''}
           ${oc.recibida?' · <span class="badge badge-noperecedero">Recibida</span>':''}
         </div>
       </div>
@@ -2295,19 +2305,14 @@ function abrirVerOC(ocId){
       </tbody>
       <tfoot><tr><td colspan="${oc.lineas.some(l=>l.bonificacion)?4:3}" style="text-align:right;font-weight:700">Total</td><td colspan="2" style="font-weight:700">${fmtMoney(oc.total)}</td></tr></tfoot>
     </table>
+    ${(oc.condPago||oc.notasProv||oc.obs)?`
+    <div style="margin-top:14px;font-size:.85rem;border-top:1px solid var(--border);padding-top:10px">
+      ${oc.condPago?`<div style="margin-bottom:4px"><strong>Condición de pago:</strong> ${oc.condPago}</div>`:''}
+      ${oc.notasProv?`<div style="margin-bottom:4px"><strong>Notas:</strong> ${oc.notasProv}</div>`:''}
+      ${oc.obs?`<div><strong>Observación:</strong> ${oc.obs}</div>`:''}
+    </div>`:''}
   `;
   document.getElementById('ver-oc-pdf-btn').onclick = ()=>generarPDF_OC(oc);
-  document.getElementById('ver-oc-email-btn').onclick = ()=>enviarOCPorEmail(oc);
-  if(!prov || !prov.email){
-    const btn = document.getElementById('ver-oc-email-btn');
-    btn.disabled = true;
-    btn.title = 'El proveedor no tiene email configurado';
-    btn.style.opacity='0.5';
-  } else {
-    const btn = document.getElementById('ver-oc-email-btn');
-    btn.disabled = false; btn.style.opacity='';
-    btn.title='';
-  }
   document.getElementById('modal-ver-oc').classList.remove('hidden');
 }
 
@@ -2369,55 +2374,27 @@ function generarPDF_OC(oc){
     styles:{ fontSize:10 }
   });
 
-  doc.save(`${oc.nro}.pdf`);
-}
-
-function enviarOCPorEmail(oc){
-  const prov = getProv(oc.proveedorId);
-  if(!prov || !prov.email){ toast('El proveedor no tiene email configurado','error'); return; }
-
-  if(typeof emailjs === 'undefined'){
-    toast('Servicio de email no configurado todavía. Descargá el PDF y enviálo manualmente.','error');
-    return;
+  // Pie de la orden: condición de pago, notas del proveedor y observación específica
+  const pie = [];
+  if(oc.condPago)  pie.push({ titulo:'Condición de pago:', texto: oc.condPago });
+  if(oc.notasProv) pie.push({ titulo:'Notas:',             texto: oc.notasProv });
+  if(oc.obs)       pie.push({ titulo:'Observación:',       texto: oc.obs });
+  if(pie.length){
+    let fy = doc.lastAutoTable.finalY + 10;
+    doc.setFontSize(10);
+    pie.forEach(item=>{
+      const lineas = doc.splitTextToSize(String(item.texto), 140);
+      const alto = lineas.length * 5 + 3;
+      if(fy + alto > 285){ doc.addPage(); fy = 20; }
+      doc.setFont('helvetica','bold');
+      doc.text(item.titulo, 15, fy);
+      doc.setFont('helvetica','normal');
+      doc.text(lineas, 55, fy);
+      fy += alto;
+    });
   }
 
-  // Generar PDF como base64 para adjuntar
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF();
-  // (reutiliza la misma lógica de generarPDF_OC de forma simplificada)
-  doc.setFontSize(14);
-  doc.text(`Orden de Compra ${oc.nro}`, 15, 15);
-  doc.autoTable({
-    startY: 25,
-    head:[['Item','Descripción','Cant.','Precio','Total']],
-    body: oc.lineas.map((l,i)=>{
-      const prod=getProd(l.productoId);
-      const final = precioFinal(l.precio,l.bonificacion);
-      return [String(i+1), prod?prod.nombre:'—', String(l.cantidad), fmtMoney(l.precio), fmtMoney(l.cantidad*final)];
-    })
-  });
-  const pdfBase64 = doc.output('datauristring');
-
-  const params = {
-    to_email: prov.email,
-    proveedor: prov.nombre,
-    nro_oc: oc.nro,
-    fecha: ff(oc.fecha.slice(0,10)),
-    total: fmtMoney(oc.total),
-    pdf_attachment: pdfBase64
-  };
-
-  // EMAILJS_SERVICE_ID / EMAILJS_TEMPLATE_ID / EMAILJS_PUBLIC_KEY deben configurarse
-  emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, params, EMAILJS_PUBLIC_KEY)
-    .then(()=>{
-      oc.enviada = true;
-      save(); renderOCs();
-      toast(`✓ Orden enviada a ${prov.email}`);
-    })
-    .catch(err=>{
-      console.error(err);
-      toast('Error al enviar el email','error');
-    });
+  doc.save(`${oc.nro}.pdf`);
 }
 
 
@@ -3741,6 +3718,13 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
           <tfoot><tr><td colspan="4" style="text-align:right;font-weight:700">Total</td><td id="oc-total" style="font-weight:700"></td><td></td></tr></tfoot>
         </table>
 
+        <div style="margin-top:14px;font-size:.85rem;border-top:1px solid var(--border);padding-top:12px">
+          <div style="margin-bottom:5px"><strong>Condición de pago:</strong> <span id="oc-cond-pago" style="color:var(--muted)">—</span></div>
+          <div style="margin-bottom:12px"><strong>Notas:</strong> <span id="oc-cond-notas" style="color:var(--muted)">—</span></div>
+          <label style="display:block;margin-bottom:4px">Observación de esta orden (opcional)</label>
+          <textarea id="oc-obs" rows="2" placeholder="Particularidad especial solo de esta orden — se imprime al pie del PDF" style="width:100%;resize:vertical;font-size:.85rem"></textarea>
+        </div>
+
         <div class="modal-footer" style="margin-top:16px">
           <button class="btn btn-secondary" onclick="cancelarOC()">Cancelar</button>
           <button class="btn btn-primary" onclick="guardarOC()">Guardar orden de compra</button>
@@ -3863,14 +3847,8 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
         <input type="email" id="prov-email" placeholder="contacto@proveedor.com">
       </div>
       <div>
-        <label>Condición de pago</label>
-        <select id="prov-pago">
-          <option value="">Sin especificar</option>
-          <option value="Contado">Contado</option>
-          <option value="15 días">15 días</option>
-          <option value="30 días">30 días</option>
-          <option value="60 días">60 días</option>
-        </select>
+        <label>Condición de pago / entrega</label>
+        <input type="text" id="prov-pago" placeholder="Ej: 30 días FF, entrega lunes y jueves">
       </div>
       <div class="col-full">
         <label>Notas (opcional)</label>
@@ -3902,8 +3880,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
     <div id="ver-oc-body" style="max-height:60vh;overflow-y:auto"></div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="cerrarModal('modal-ver-oc')">Cerrar</button>
-      <button class="btn btn-secondary" id="ver-oc-pdf-btn" onclick="">📄 Descargar PDF</button>
-      <button class="btn btn-primary" id="ver-oc-email-btn" onclick="">✉ Enviar por email</button>
+      <button class="btn btn-primary" id="ver-oc-pdf-btn" onclick="">📄 Descargar PDF</button>
     </div>
   </div>
 </div>
