@@ -4911,11 +4911,40 @@ const prodModuleHTML = '' +
 '        <div style="position:relative;min-width:190px"><label style="font-size:.72rem">Hasta (producto)</label>' +
 '          <input type="text" id="pinf-prod-hasta" class="pinf-prod-buscar" placeholder="Todos" autocomplete="off" style="font-size:.78rem;padding:6px 10px">' +
 '          <div class="pinf-prod-drop" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--surface2);border:1px solid var(--border);border-radius:8px;max-height:190px;overflow-y:auto;box-shadow:0 8px 20px rgba(0,0,0,.4)"></div></div>' +
+'        <div style="position:relative;min-width:190px"><label style="font-size:.72rem">Desde (centro elab.)</label>' +
+'          <input type="text" id="pinf-centro-desde" class="pinf-centro-buscar" placeholder="Todos" autocomplete="off" style="font-size:.78rem;padding:6px 10px">' +
+'          <div class="pinf-centro-drop" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--surface2);border:1px solid var(--border);border-radius:8px;max-height:190px;overflow-y:auto;box-shadow:0 8px 20px rgba(0,0,0,.4)"></div></div>' +
+'        <div style="position:relative;min-width:190px"><label style="font-size:.72rem">Hasta (centro elab.)</label>' +
+'          <input type="text" id="pinf-centro-hasta" class="pinf-centro-buscar" placeholder="Todos" autocomplete="off" style="font-size:.78rem;padding:6px 10px">' +
+'          <div class="pinf-centro-drop" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--surface2);border:1px solid var(--border);border-radius:8px;max-height:190px;overflow-y:auto;box-shadow:0 8px 20px rgba(0,0,0,.4)"></div></div>' +
 '        <button class="btn btn-secondary btn-sm" onclick="renderInformesProd()">🔍 Filtrar</button>' +
 '        <button class="btn btn-secondary btn-sm" onclick="limpiarFiltrosInformes()">✨ Todos</button>' +
 '      </div>' +
-'      <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">Producto: elegí el mismo en ambos (o solo uno) para filtrar ese producto; dos distintos para un rango alfabético; vacíos para ver todos. La columna Costo es el costo unitario calculado al cerrar el registro (materias primas al precio vigente de ese momento) — los registros anteriores a esta función muestran "—".</div>' +
+'      <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">Producto y centro de elaboración: elegí el mismo en ambos (o solo uno) para filtrar ese ítem; dos distintos para un rango alfabético; vacíos para ver todos. Los filtros se combinan entre sí. La columna Costo es el costo unitario calculado al cerrar el registro (materias primas al precio vigente de ese momento) — los registros anteriores a esta función muestran "—".</div>' +
 '      <div id="pinf-lista"></div>' +
+'    </div>' +
+
+'    <div class="card">' +
+'      <div class="section-header">' +
+'        <div class="section-title">📰 Novedades</div>' +
+'      </div>' +
+'      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">' +
+'        <div><label style="font-size:.72rem">Desde (fecha)</label>' +
+'          <input type="date" id="pnov-desde" style="width:auto;font-size:.78rem;padding:6px 8px"></div>' +
+'        <div><label style="font-size:.72rem">Hasta (fecha)</label>' +
+'          <input type="date" id="pnov-hasta" style="width:auto;font-size:.78rem;padding:6px 8px"></div>' +
+'        <div style="position:relative;min-width:190px"><label style="font-size:.72rem">Desde (centro elab.)</label>' +
+'          <input type="text" id="pnov-centro-desde" class="pnov-centro-buscar" placeholder="Todos" autocomplete="off" style="font-size:.78rem;padding:6px 10px">' +
+'          <div class="pnov-centro-drop" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--surface2);border:1px solid var(--border);border-radius:8px;max-height:190px;overflow-y:auto;box-shadow:0 8px 20px rgba(0,0,0,.4)"></div></div>' +
+'        <div style="position:relative;min-width:190px"><label style="font-size:.72rem">Hasta (centro elab.)</label>' +
+'          <input type="text" id="pnov-centro-hasta" class="pnov-centro-buscar" placeholder="Todos" autocomplete="off" style="font-size:.78rem;padding:6px 10px">' +
+'          <div class="pnov-centro-drop" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--surface2);border:1px solid var(--border);border-radius:8px;max-height:190px;overflow-y:auto;box-shadow:0 8px 20px rgba(0,0,0,.4)"></div></div>' +
+'        <button class="btn btn-secondary btn-sm" onclick="renderNovedadesProd()">🔍 Filtrar</button>' +
+'        <button class="btn btn-secondary btn-sm" onclick="limpiarFiltrosNovedades()">✨ Todos</button>' +
+'        <button class="btn btn-primary btn-sm" onclick="exportarNovedadesPDF()">📄 PDF</button>' +
+'      </div>' +
+'      <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">Muestra únicamente las novedades cargadas (los renglones en blanco no se listan). Centro: mismo criterio de rango que el informe anterior. El PDF exporta exactamente lo que muestran los filtros.</div>' +
+'      <div id="pnov-lista"></div>' +
 '    </div>' +
 '  </div>' +
 
@@ -4951,7 +4980,7 @@ function switchTabProd(tab){
   const panel = document.getElementById('panelp-' + tab);
   if(panel) panel.classList.add('active');
   if(tab === 'productos'){ renderCatalogoPProd(); renderStockSemi(); renderCentros(); }
-  if(tab === 'informes'){ renderInformesProd(); bindBuscadoresInformes(); }
+  if(tab === 'informes'){ renderInformesProd(); renderNovedadesProd(); bindBuscadoresInformes(); }
   if(tab === 'ajustes')   renderAjustesProd();
 }
 
@@ -5480,6 +5509,7 @@ function renderListaRegistros(contId, desdeId, hastaId, pref, conAcciones, conFi
   // dos distintos → rango; vacíos → todos. El registro entra si contiene
   // al menos una línea de producción dentro del rango.
   let hayFiltroProd = false;
+  let hayFiltroCentro = false;
   if(conFiltroProductos){
     const pdEl = document.getElementById('pinf-prod-desde');
     const phEl = document.getElementById('pinf-prod-hasta');
@@ -5497,10 +5527,28 @@ function renderListaRegistros(contId, desdeId, hastaId, pref, conAcciones, conFi
         return n.localeCompare(pd, 'es') >= 0 && n.localeCompare(ph, 'es') <= 0;
       }));
     }
+
+    // Filtro por rango alfabético de centros de elaboración (mismo criterio),
+    // aplicado sobre el centro del registro ("Elaborado en"). Se combina con
+    // los demás filtros (fechas y productos).
+    const cdEl = document.getElementById('pinf-centro-desde');
+    const chEl = document.getElementById('pinf-centro-hasta');
+    let cd = cdEl ? cdEl.value.trim().toLowerCase() : '';
+    let ch = chEl ? chEl.value.trim().toLowerCase() : '';
+    if(cd || ch){
+      hayFiltroCentro = true;
+      if(!cd) cd = ch;
+      if(!ch) ch = cd;
+      if(cd.localeCompare(ch, 'es') > 0){ const t = cd; cd = ch; ch = t; }
+      regs = regs.filter(r => {
+        const n = centroNombre(r.centroId).toLowerCase();
+        return n.localeCompare(cd, 'es') >= 0 && n.localeCompare(ch, 'es') <= 0;
+      });
+    }
   }
 
   regs.sort((a,b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
-  const sinFiltro = !desde && !hasta && !hayFiltroProd;
+  const sinFiltro = !desde && !hasta && !hayFiltroProd && !hayFiltroCentro;
   if(sinFiltro) regs = regs.slice(0, 30);
 
   if(regs.length === 0){
@@ -5576,46 +5624,170 @@ function renderInformesProd(){
   renderListaRegistros('pinf-lista', 'pinf-desde', 'pinf-hasta', 'pinf', false, true);
 }
 
-// Compatibilidad: los guardados y renders generales refrescan el informe
+// Compatibilidad: los guardados y renders generales refrescan los informes
 function renderRegistrosProd(){
   renderInformesProd();
+  renderNovedadesProd();
+}
+
+// ── INFORME NOVEDADES ────────────────────────────────
+// Devuelve las filas del informe: una por cada novedad NO vacía de los
+// registros que pasan los filtros (fecha + rango de centros). Compartida
+// entre el render en pantalla y la exportación a PDF, para que el PDF
+// refleje exactamente lo filtrado.
+function filasNovedades(){
+  const desde = document.getElementById('pnov-desde') ? document.getElementById('pnov-desde').value : '';
+  const hasta = document.getElementById('pnov-hasta') ? document.getElementById('pnov-hasta').value : '';
+  let regs = PDB.registros.slice();
+  if(desde) regs = regs.filter(r => r.fecha >= desde);
+  if(hasta) regs = regs.filter(r => r.fecha <= hasta);
+
+  // Rango alfabético de centros (mismo criterio que el informe de registros)
+  const cdEl = document.getElementById('pnov-centro-desde');
+  const chEl = document.getElementById('pnov-centro-hasta');
+  let cd = cdEl ? cdEl.value.trim().toLowerCase() : '';
+  let ch = chEl ? chEl.value.trim().toLowerCase() : '';
+  if(cd || ch){
+    if(!cd) cd = ch;
+    if(!ch) ch = cd;
+    if(cd.localeCompare(ch, 'es') > 0){ const t = cd; cd = ch; ch = t; }
+    regs = regs.filter(r => {
+      const n = centroNombre(r.centroId).toLowerCase();
+      return n.localeCompare(cd, 'es') >= 0 && n.localeCompare(ch, 'es') <= 0;
+    });
+  }
+
+  regs.sort((a,b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+
+  const tipos = [['bpm','BPM'], ['poes','POES'], ['mantenimiento','Mantenimiento'], ['rrhh','RR.HH.']];
+  const filas = [];
+  regs.forEach(r => {
+    tipos.forEach(([campo, etiqueta]) => {
+      const texto = (r.novedades && r.novedades[campo]) ? String(r.novedades[campo]).trim() : '';
+      if(texto) filas.push({ fecha: r.fecha, centro: centroNombre(r.centroId), tipo: etiqueta, texto });
+    });
+  });
+  return filas;
+}
+
+function renderNovedadesProd(){
+  const cont = document.getElementById('pnov-lista');
+  if(!cont) return;
+  const filas = filasNovedades();
+  if(filas.length === 0){
+    cont.innerHTML = '<div style="font-size:.8rem;color:var(--muted);padding:12px 0">No hay novedades cargadas en el rango seleccionado.</div>';
+    return;
+  }
+  cont.innerHTML = `<table class="stock-table"><thead>
+    <tr><th style="width:100px">Fecha</th><th>Centro</th><th style="width:130px">Tipo</th><th>Novedad</th></tr>
+    </thead><tbody>` +
+    filas.map(f => `<tr>
+      <td>${fechaBonitaProd(f.fecha)}</td>
+      <td>${escProd(f.centro)}</td>
+      <td><span class="badge badge-neutral">${escProd(f.tipo)}</span></td>
+      <td style="white-space:normal">${escProd(f.texto)}</td>
+    </tr>`).join('') +
+    `</tbody></table>
+    <div style="font-size:.72rem;color:var(--muted);padding:6px 0">${filas.length} novedad${filas.length === 1 ? '' : 'es'} en el rango.</div>`;
+}
+
+function limpiarFiltrosNovedades(){
+  ['pnov-desde','pnov-hasta','pnov-centro-desde','pnov-centro-hasta'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.value = '';
+  });
+  renderNovedadesProd();
+}
+
+function exportarNovedadesPDF(){
+  if(typeof window.jspdf === 'undefined'){
+    toastProd('Cargando generador de PDF, intentá de nuevo en unos segundos...', 'error');
+    return;
+  }
+  const filas = filasNovedades();
+  if(filas.length === 0){
+    toastProd('No hay novedades en el rango para exportar', 'error');
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+
+  // Logo BBF si está disponible en el DOM (mismo criterio que los PDFs de Stock)
+  let y = 15;
+  try {
+    const logoImg = document.querySelector('.sidebar-logo img');
+    if(logoImg && logoImg.src.startsWith('data:image')){
+      doc.addImage(logoImg.src, 'JPEG', 15, y, 28, 22);
+    }
+  } catch(e){ /* sin logo, seguimos */ }
+
+  doc.setFontSize(15);
+  doc.setFont('helvetica','bold');
+  doc.text('Novedades de Producción', 50, 22);
+  doc.setFontSize(9);
+  doc.setFont('helvetica','normal');
+  const desde = document.getElementById('pnov-desde') ? document.getElementById('pnov-desde').value : '';
+  const hasta = document.getElementById('pnov-hasta') ? document.getElementById('pnov-hasta').value : '';
+  const cd = document.getElementById('pnov-centro-desde') ? document.getElementById('pnov-centro-desde').value.trim() : '';
+  const ch = document.getElementById('pnov-centro-hasta') ? document.getElementById('pnov-centro-hasta').value.trim() : '';
+  const partes = [];
+  partes.push('Fechas: ' + (desde ? fechaBonitaProd(desde) : 'inicio') + ' a ' + (hasta ? fechaBonitaProd(hasta) : 'hoy'));
+  if(cd || ch) partes.push('Centros: ' + (cd || ch) + ((ch && cd && ch !== cd) ? ' a ' + ch : ''));
+  partes.push('Emitido: ' + new Date().toLocaleString('es-AR'));
+  doc.text(partes.join('   ·   '), 50, 28);
+
+  doc.autoTable({
+    startY: 42,
+    head: [['Fecha','Centro','Tipo','Novedad']],
+    body: filas.map(f => [fechaBonitaProd(f.fecha), f.centro, f.tipo, f.texto]),
+    theme: 'grid',
+    headStyles: { fillColor: [29,158,117], textColor: 255 },
+    styles: { fontSize: 9, cellWidth: 'wrap' },
+    columnStyles: { 0: { cellWidth: 24 }, 1: { cellWidth: 45 }, 2: { cellWidth: 30 }, 3: { cellWidth: 'auto' } }
+  });
+
+  const hoy = new Date().toISOString().split('T')[0];
+  doc.save('novedades-produccion-' + hoy + '.pdf');
+  toastProd('✓ PDF de novedades descargado');
 }
 
 function limpiarFiltrosInformes(){
-  ['pinf-desde','pinf-hasta','pinf-prod-desde','pinf-prod-hasta'].forEach(id => {
+  ['pinf-desde','pinf-hasta','pinf-prod-desde','pinf-prod-hasta','pinf-centro-desde','pinf-centro-hasta'].forEach(id => {
     const el = document.getElementById(id);
     if(el) el.value = '';
   });
   renderInformesProd();
 }
 
-// Buscadores de producto (desde/hasta) del informe: filtro en tiempo real
-// sobre el catálogo de Producción, ordenado alfabéticamente
+// Buscadores de producto y centro (desde/hasta) del informe: filtro en
+// tiempo real, ordenados alfabéticamente
 function bindBuscadoresInformes(){
-  document.querySelectorAll('#panelp-informes .pinf-prod-buscar').forEach(inp => {
+  // helper genérico: conecta un input con su desplegable y su lista de opciones;
+  // alRefrescar = qué informe re-renderizar al elegir una opción
+  function bindUno(inp, dropClass, obtenerOpciones, alRefrescar){
     if(inp.dataset.bound === '1') return; // no duplicar listeners
     inp.dataset.bound = '1';
-    const drop = inp.parentElement.querySelector('.pinf-prod-drop');
+    const refrescar = alRefrescar || renderInformesProd;
+    const drop = inp.parentElement.querySelector(dropClass);
 
     function renderDrop(){
       const q = inp.value.trim().toLowerCase();
-      const opts = PDB.productosProd
-        .slice().sort((a,b) => a.nombre.localeCompare(b.nombre, 'es'))
-        .filter(p => !q || p.nombre.toLowerCase().includes(q))
+      const opts = obtenerOpciones()
+        .filter(o => !q || o.nombre.toLowerCase().includes(q))
         .slice(0, 30);
       if(opts.length === 0){
         drop.innerHTML = '<div style="padding:8px 12px;font-size:.75rem;color:var(--muted)">Sin resultados</div>';
       } else {
-        drop.innerHTML = opts.map(p =>
-          `<div class="pinf-prod-opt" data-nombre="${escProd(p.nombre)}"
-             style="padding:7px 12px;font-size:.78rem;cursor:pointer;border-bottom:1px solid rgba(42,48,69,.4)">${escProd(p.nombre)}${p.activo ? '' : ' <span style="color:var(--muted);font-size:.68rem">· inactivo</span>'}</div>`
+        drop.innerHTML = opts.map(o =>
+          `<div class="pinf-opt" data-nombre="${escProd(o.nombre)}"
+             style="padding:7px 12px;font-size:.78rem;cursor:pointer;border-bottom:1px solid rgba(42,48,69,.4)">${escProd(o.nombre)}${o.activo ? '' : ' <span style="color:var(--muted);font-size:.68rem">· inactivo</span>'}</div>`
         ).join('');
-        drop.querySelectorAll('.pinf-prod-opt').forEach(opt => {
+        drop.querySelectorAll('.pinf-opt').forEach(opt => {
           opt.addEventListener('mousedown', function(ev){
             ev.preventDefault();
             inp.value = opt.dataset.nombre;
             drop.style.display = 'none';
-            renderInformesProd();
+            refrescar();
           });
           opt.addEventListener('mouseenter', function(){ opt.style.background = 'rgba(0,229,160,.08)'; });
           opt.addEventListener('mouseleave', function(){ opt.style.background = 'transparent'; });
@@ -5629,6 +5801,19 @@ function bindBuscadoresInformes(){
     inp.addEventListener('blur', function(){
       setTimeout(() => { drop.style.display = 'none'; }, 150);
     });
+  }
+
+  document.querySelectorAll('#panelp-informes .pinf-prod-buscar').forEach(inp => {
+    bindUno(inp, '.pinf-prod-drop', () =>
+      PDB.productosProd.slice().sort((a,b) => a.nombre.localeCompare(b.nombre, 'es')));
+  });
+  document.querySelectorAll('#panelp-informes .pinf-centro-buscar').forEach(inp => {
+    bindUno(inp, '.pinf-centro-drop', () =>
+      PDB.centros.slice().sort((a,b) => a.nombre.localeCompare(b.nombre, 'es')));
+  });
+  document.querySelectorAll('#panelp-informes .pnov-centro-buscar').forEach(inp => {
+    bindUno(inp, '.pnov-centro-drop', () =>
+      PDB.centros.slice().sort((a,b) => a.nombre.localeCompare(b.nombre, 'es')), renderNovedadesProd);
   });
 }
 
