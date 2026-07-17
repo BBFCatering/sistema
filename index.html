@@ -1691,11 +1691,19 @@ function egresoSimple(prodId){
 }
 
 // ── PRODUCTOS ─────────────────────────────────────────
+// ¿El usuario logueado es administrador? (para acciones sensibles como la baja)
+function esAdminStock(){
+  return (typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin');
+}
+
 function renderProductos(){
   const el=document.getElementById('productos-list');
   const q=(document.getElementById('search-productos')?.value||'').toLowerCase();
-  const lista=DB.productos.filter(p=>!q||p.nombre.toLowerCase().includes(q));
-  if(!DB.productos.length){
+  // Los productos dados de baja (p.baja) no se muestran: quedan archivados
+  // internamente solo para que el historial siga resolviendo sus nombres.
+  const catalogo=DB.productos.filter(p=>!p.baja);
+  const lista=catalogo.filter(p=>!q||p.nombre.toLowerCase().includes(q));
+  if(!catalogo.length){
     el.innerHTML=`<div class="empty-state"><div class="icon">🏷</div><p>No hay productos cargados.<br>Creá tu primer producto con el botón de arriba.</p></div>`;
     return;
   }
@@ -1727,6 +1735,7 @@ function renderProductos(){
         <button class="btn btn-secondary btn-sm" onclick="abrirModalProducto(${p.id})">Editar</button>
         <button class="btn btn-secondary btn-sm" onclick="abrirHistorialPrecios(${p.id})" title="Historial de precios">🕓 Precios</button>
         <button class="btn btn-sm ${p.activo?'btn-warn':'btn-secondary'}" onclick="toggleActivoProd(${p.id})">${p.activo?'Desactivar':'Activar'}</button>
+        ${(!p.activo && esAdminStock()) ? `<button class="btn btn-danger btn-sm" onclick="darDeBajaProd(${p.id})" title="Eliminar definitivamente del catálogo">🗑 Dar de baja</button>` : ''}
       </div>
     </div>`;
   }).join('');
@@ -1764,7 +1773,7 @@ function updateHistPProductoSelect(){
   const sel = document.getElementById('histp-producto');
   if(!sel) return;
   const val = sel.value;
-  const prods = [...DB.productos].sort((a,b)=>a.nombre.localeCompare(b.nombre));
+  const prods = DB.productos.filter(p=>!p.baja).sort((a,b)=>a.nombre.localeCompare(b.nombre));
   sel.innerHTML = '<option value="">Todos los productos</option>' +
     prods.map(p=>`<option value="${p.id}">${p.nombre}</option>`).join('');
   sel.value = val;
@@ -1909,6 +1918,36 @@ async function toggleActivoProd(id){
     if(en&&!(await confirmModal(`"${p.nombre}" tiene stock activo. ¿Desactivar igualmente?`))) return;
   }
   p.activo=!p.activo; save(); renderAll(); toast(`${p.nombre} ${p.activo?'activado':'desactivado'}`);
+}
+
+// Baja definitiva de un producto INACTIVO (solo admin). El producto desaparece
+// del catálogo y de todos los selectores del sistema, pero el registro queda
+// archivado internamente (p.baja=true) para que remitos, OCs, movimientos e
+// historiales antiguos sigan mostrando su nombre correctamente. No se puede
+// dar de baja un producto con stock remanente.
+async function darDeBajaProd(id){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés modificar productos','error'); return; }
+  if (!esAdminStock()) { toast('Solo un administrador puede dar de baja productos','error'); return; }
+  const p=getProd(id);
+  if(!p || p.baja) return;
+  if(p.activo){ toast('Primero desactivá el producto; la baja es solo para inactivos','error'); return; }
+  const stockLotes = DB.lotes.filter(l=>l.productoId===id && l.cantidad>0)
+                             .reduce((s,l)=>s+l.cantidad,0);
+  const stockSimpleCant = (DB.stockSimple && DB.stockSimple[id] && DB.stockSimple[id].cantidad) ? DB.stockSimple[id].cantidad : 0;
+  if(stockLotes > 0 || stockSimpleCant > 0){
+    toast(`"${p.nombre}" todavía tiene stock (${stockLotes || stockSimpleCant} ${p.unidad}). Consumilo o ajustalo antes de darlo de baja.`,'error');
+    return;
+  }
+  const ok = await confirmModal(
+    `Vas a dar de BAJA DEFINITIVA el producto:\n\n"${p.nombre}"\n\nDesaparece del catálogo y de todos los selectores del sistema, y NO se puede revertir desde la aplicación. Los remitos, órdenes de compra y movimientos históricos donde aparece se conservan intactos.\n\n¿Confirmás la baja?`,
+    'Dar de baja producto');
+  if(!ok) return;
+  p.baja = true;
+  DB.historial.push({ fecha:new Date().toISOString(), tipo:'producto-baja',
+    detalle:`Producto "${p.nombre}" dado de BAJA definitiva del catálogo`,
+    usuario:(typeof currentUser!=='undefined'&&currentUser)?currentUser.name:'—' });
+  save(); renderAll();
+  toast(`"${p.nombre}" dado de baja`);
 }
 
 // ── PROVEEDORES ───────────────────────────────────────
@@ -4533,6 +4572,8 @@ function migrarPDB(){
     if(p.detallaMP === undefined)     p.detallaMP = false;
     if(p.cantElementos === undefined) p.cantElementos = 0;
     if(p.dtaStockSE === undefined)    p.dtaStockSE = false;
+    if(p.comparteConId === undefined) p.comparteConId = null; // producto principal al que se asocia (1 a 1)
+    if(p.proporcion === undefined)    p.proporcion = null;    // % de MP respecto del principal
   });
   PDB.registros.forEach(r => {
     (r.lineas || []).forEach(l => { if(!l.detalles) l.detalles = []; });
@@ -4735,7 +4776,7 @@ function opcionesDetalle(fuente){
 function aplicarImpactoRegistro(r, signo, contexto, usuario){
   (r.lineas || []).forEach(l => {
     const p = pprodById(l.productoId);
-    if(p && p.tipo === 'semielaborado'){
+    if(p && p.tipo === 'semielaborado' && l.cantidad > 0){
       PDB.stockSemi[l.productoId] = (PDB.stockSemi[l.productoId] || 0) + (signo * l.cantidad);
       PDB.historialProd.push({ ts: new Date().toISOString(),
         tipo: signo > 0 ? 'ingreso-semielab' : 'reversion-ingreso-semielab',
@@ -4847,11 +4888,17 @@ const prodModuleHTML = '' +
 '              <option value="4">4</option><option value="5">5</option><option value="6">6</option>' +
 '              <option value="7">7</option><option value="8">8</option><option value="9">9</option>' +
 '            </select></div>' +
-'          <div id="pprod-dtase-wrap" style="display:none"><label>Dta Stock SE</label>' +
+'          <div id="pprod-dtase-wrap" style="display:none"><label>Fuente por defecto de renglones</label>' +
 '            <select id="pprod-dtase">' +
-'              <option value="no">No — lista de Stock (sin descuento)</option>' +
-'              <option value="si">Sí — descuenta semielaborados</option>' +
+'              <option value="no">MP — lista de Stock (sin descuento)</option>' +
+'              <option value="si">SE — descuenta semielaborados</option>' +
 '            </select></div>' +
+'          <div><label>Comparte MP con</label>' +
+'            <select id="pprod-compartecon" onchange="onPProdComparteChange()">' +
+'              <option value="">— No comparte —</option>' +
+'            </select></div>' +
+'          <div id="pprod-prop-wrap" style="display:none"><label>Proporción (%) <span class="req">*</span></label>' +
+'            <input type="number" id="pprod-proporcion" min="1" max="100" step="1" placeholder="Ej: 60"></div>' +
 '          <div class="col-full"><label>Centros de elaboración asociados <span class="req">*</span></label>' +
 '            <div id="pprod-centros" style="display:flex;gap:14px;flex-wrap:wrap;padding:6px 0"></div></div>' +
 '        </div>' +
@@ -4896,6 +4943,11 @@ const prodModuleHTML = '' +
 '    </div>' +
 '  </div>' +
 '  <div id="panelp-informes" class="panel">' +
+'    <div class="listado-submenu">' +
+'      <button class="listado-subtab active" data-sub="registros" onclick="switchInformesSub(\'registros\')">📋 Registros cargados</button>' +
+'      <button class="listado-subtab" data-sub="novedades" onclick="switchInformesSub(\'novedades\')">📰 Novedades</button>' +
+'    </div>' +
+'    <div id="infsub-registros" class="listado-subpanel active">' +
 '    <div class="card">' +
 '      <div class="section-header">' +
 '        <div class="section-title">📋 Registros cargados</div>' +
@@ -4923,7 +4975,9 @@ const prodModuleHTML = '' +
 '      <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">Producto y centro de elaboración: elegí el mismo en ambos (o solo uno) para filtrar ese ítem; dos distintos para un rango alfabético; vacíos para ver todos. Los filtros se combinan entre sí. La columna Costo es el costo unitario calculado al cerrar el registro (materias primas al precio vigente de ese momento) — los registros anteriores a esta función muestran "—".</div>' +
 '      <div id="pinf-lista"></div>' +
 '    </div>' +
+'    </div>' +
 
+'    <div id="infsub-novedades" class="listado-subpanel">' +
 '    <div class="card">' +
 '      <div class="section-header">' +
 '        <div class="section-title">📰 Novedades</div>' +
@@ -4945,6 +4999,7 @@ const prodModuleHTML = '' +
 '      </div>' +
 '      <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">Muestra únicamente las novedades cargadas (los renglones en blanco no se listan). Centro: mismo criterio de rango que el informe anterior. El PDF exporta exactamente lo que muestran los filtros.</div>' +
 '      <div id="pnov-lista"></div>' +
+'    </div>' +
 '    </div>' +
 '  </div>' +
 
@@ -4982,6 +5037,18 @@ function switchTabProd(tab){
   if(tab === 'productos'){ renderCatalogoPProd(); renderStockSemi(); renderCentros(); }
   if(tab === 'informes'){ renderInformesProd(); renderNovedadesProd(); bindBuscadoresInformes(); }
   if(tab === 'ajustes')   renderAjustesProd();
+}
+
+// Sub-solapas de la pestaña Informes: se muestra solo el informe elegido
+function switchInformesSub(sub){
+  const wrap = document.getElementById('panelp-informes');
+  if(!wrap) return;
+  wrap.querySelectorAll('.listado-subtab').forEach(t => t.classList.toggle('active', t.dataset.sub === sub));
+  wrap.querySelectorAll('.listado-subpanel').forEach(p => p.classList.remove('active'));
+  const panel = document.getElementById('infsub-' + sub);
+  if(panel) panel.classList.add('active');
+  if(sub === 'registros') renderInformesProd();
+  if(sub === 'novedades') renderNovedadesProd();
 }
 
 function switchProdSub(sub){
@@ -5043,24 +5110,24 @@ function construirGrillaLineas(centroId, fuente, bloqueado){
       <td style="width:110px;color:var(--muted)">${escProd(p.unidad)}</td>
     </tr>`;
 
-    // Renglones de detalle de materias primas
+    // Renglones de detalle de materias primas. Cada renglón tiene su propio
+    // selector de fuente (MP del Stock / SE semielaborados); el campo del
+    // catálogo define solo el valor POR DEFECTO de los renglones vacíos.
     if(p.detallaMP && p.cantElementos > 0){
-      const fuenteDet = p.dtaStockSE ? 'se' : 'mp';
-      const tagFuente = p.dtaStockSE
-        ? '<span class="badge badge-warn" title="Descuenta del stock de semielaborados al cerrar">SE ↓</span>'
-        : '<span class="badge badge-neutral" title="Solo informativo — no descuenta ningún stock">MP</span>';
+      const fuenteDefault = p.dtaStockSE ? 'se' : 'mp';
       for(let i = 0; i < p.cantElementos; i++){
         const det = (linea && linea.detalles && linea.detalles[i]) ? linea.detalles[i] : null;
         const detNombre = det ? det.nombre : '';
         const detRef    = det ? det.refId : '';
         const detCant   = det ? det.cantidad : '';
         const detUnidad = det ? det.unidad : '—';
+        const fuenteRow = det ? det.refTipo : fuenteDefault;
         filas += `<tr class="preg-det-row" style="background:rgba(107,116,153,.05)">
           <td style="padding-left:26px">
             <div style="display:flex;align-items:center;gap:8px">
               <span style="color:var(--muted)">↳</span>
               <div style="position:relative;flex:1;min-width:160px">
-                <input type="text" class="preg-det-buscar" data-parent="${p.id}" data-idx="${i}" data-fuente="${fuenteDet}"
+                <input type="text" class="preg-det-buscar" data-parent="${p.id}" data-idx="${i}"
                   placeholder="Buscar y elegir..." autocomplete="off" value="${escProd(detNombre)}" ${dis}
                   style="font-size:.78rem;padding:6px 10px">
                 <input type="hidden" class="preg-det-ref" value="${detRef}">
@@ -5068,7 +5135,11 @@ function construirGrillaLineas(centroId, fuente, bloqueado){
               </div>
             </div>
           </td>
-          <td>${tagFuente}</td>
+          <td><select class="preg-det-fuente" ${dis} title="MP: lista del Stock, solo informativo · SE ↓: semielaborados, descuenta stock al cerrar"
+                style="width:auto;font-size:.72rem;padding:4px 8px">
+                <option value="mp" ${fuenteRow === 'mp' ? 'selected' : ''}>MP</option>
+                <option value="se" ${fuenteRow === 'se' ? 'selected' : ''}>SE ↓</option>
+              </select></td>
           <td style="width:140px"><input type="number" min="0" step="any" class="preg-det-cant" value="${detCant}" placeholder="0" ${dis} style="font-size:.78rem;padding:6px 10px"></td>
           <td style="width:110px;color:var(--muted)"><span class="preg-det-unidad">${escProd(detUnidad)}</span></td>
         </tr>`;
@@ -5079,10 +5150,12 @@ function construirGrillaLineas(centroId, fuente, bloqueado){
   return `<table class="stock-table">
     <thead><tr><th>Producto</th><th>Tipo</th><th>Cantidad</th><th>Unidad</th></tr></thead>
     <tbody>${filas}</tbody></table>
-    <div style="font-size:.7rem;color:var(--muted);margin-top:8px">Solo se guardan los productos con cantidad mayor a cero (y, de ellos, los renglones de detalle completos: producto elegido + cantidad). Los renglones de detalle son opcionales. Al guardar, el registro queda cerrado.</div>`;
+    <div style="font-size:.7rem;color:var(--muted);margin-top:8px">Se guardan los productos con cantidad mayor a cero o con renglones de detalle completos (esto último permite cargar las MP en el producto principal con cantidad 0 para repartir el costo hacia su producto asociado). Cada renglón de detalle elige su fuente: MP (lista del Stock, informativo) o SE ↓ (semielaborados, descuenta al cerrar). Al guardar, el registro queda cerrado.</div>`;
 }
 
-// Conecta los buscadores de los renglones de detalle (filtro en tiempo real)
+// Conecta los buscadores de los renglones de detalle (filtro en tiempo real).
+// La fuente de cada renglón se lee de SU selector MP/SE; al cambiarla se
+// limpia lo elegido para no mezclar productos de un catálogo con el otro.
 function bindBuscadoresDetalle(){
   document.querySelectorAll('#preg-lineas .preg-det-buscar').forEach(inp => {
     const cont   = inp.parentElement;                    // div position:relative
@@ -5090,11 +5163,12 @@ function bindBuscadoresDetalle(){
     const drop   = cont.querySelector('.preg-det-drop');
     const fila   = inp.closest('tr');
     const unidadEl = fila.querySelector('.preg-det-unidad');
-    const fuente = inp.dataset.fuente;
+    const fuenteSel = fila.querySelector('.preg-det-fuente');
+    const fuenteActual = () => fuenteSel ? fuenteSel.value : 'mp';
 
     function renderDrop(){
       const q = inp.value.trim().toLowerCase();
-      const opts = opcionesDetalle(fuente)
+      const opts = opcionesDetalle(fuenteActual())
         .filter(o => !q || o.nombre.toLowerCase().includes(q))
         .slice(0, 30);
       if(opts.length === 0){
@@ -5131,6 +5205,17 @@ function bindBuscadoresDetalle(){
       // Si quedó texto sin selección válida, limpiar para evitar confusión
       if(!hidden.value) inp.value = '';
     });
+
+    // Cambio de fuente MP↔SE: limpiar la selección del renglón
+    if(fuenteSel && fuenteSel.dataset.bound !== '1'){
+      fuenteSel.dataset.bound = '1';
+      fuenteSel.addEventListener('change', function(){
+        hidden.value = '';
+        inp.value = '';
+        if(unidadEl) unidadEl.textContent = '—';
+        drop.style.display = 'none';
+      });
+    }
   });
 }
 
@@ -5217,8 +5302,11 @@ function cancelarEdicionAdmin(){
   toastProd('Edición cancelada — no se guardaron cambios');
 }
 
-// Recolecta las líneas cargadas en la grilla (solo cantidades > 0) junto con
-// sus renglones de detalle completos (producto elegido + cantidad > 0)
+// Recolecta las líneas cargadas en la grilla junto con sus renglones de
+// detalle completos (producto elegido + cantidad > 0). Regla de guardado:
+// una línea se guarda si su cantidad es > 0 O si tiene renglones de detalle
+// completos — esto permite cargar las MP en el producto principal con
+// cantidad 0 para que el costo se reparta hacia su producto asociado.
 function recolectarLineasForm(){
   const lineas = [];
   const detallesPorProducto = {};
@@ -5230,7 +5318,8 @@ function recolectarLineasForm(){
     const refId = hidden.value !== '' ? (isNaN(hidden.value) ? hidden.value : parseInt(hidden.value)) : null;
     const cant = parseFloat(cantEl ? cantEl.value : '');
     if(refId === null || !(cant > 0)) return; // renglón incompleto → se ignora
-    const fuente = inp.dataset.fuente;
+    const fuenteSel = fila.querySelector('.preg-det-fuente');
+    const fuente = fuenteSel ? fuenteSel.value : 'mp';
     const opcion = opcionesDetalle(fuente).find(o => String(o.id) === String(refId));
     if(!opcion) return;
     const parentId = parseInt(inp.dataset.parent);
@@ -5246,13 +5335,15 @@ function recolectarLineasForm(){
 
   document.querySelectorAll('#preg-lineas .preg-cant').forEach(inp => {
     const cant = parseFloat(inp.value);
-    if(cant > 0){
-      const p = pprodById(parseInt(inp.dataset.prodid));
+    const pid = parseInt(inp.dataset.prodid);
+    const dets = detallesPorProducto[pid] || [];
+    if(cant > 0 || dets.length > 0){
+      const p = pprodById(pid);
       if(p) lineas.push({
         productoId: p.id,
-        cantidad: cant,
+        cantidad: cant > 0 ? cant : 0,
         unidad: p.unidad,
-        detalles: detallesPorProducto[p.id] || []
+        detalles: dets
       });
     }
   });
@@ -5271,10 +5362,19 @@ function recolectarNovedadesForm(){
 // Calcula y FIJA el costo de cada línea al momento del cierre (snapshot):
 // por cada renglón de detalle MP → precio vigente más conveniente del Stock
 // (con bonificación aplicada: mismo criterio que la valorización) × cantidad
-// empleada. La suma de subtotales ÷ unidades producidas = costo unitario de
-// la línea. Aunque mañana cambie el precio, el registro conserva su costo.
-// Los renglones SE quedan excluidos del cálculo (por ahora no tienen precio).
+// empleada. Los renglones SE quedan excluidos del cálculo (sin precio aún).
+//
+// PRODUCTOS ASOCIADOS: si en el mismo registro están el producto principal
+// y su asociado (asociado.comparteConId = principal.id, proporción P%), el
+// costo total de MP de AMBAS líneas se reparte por unidades equivalentes:
+//   equivalentes = cant.principal + cant.asociado × P
+//   costo unit. principal = total MP ÷ equivalentes
+//   costo unit. asociado  = costo unit. principal × P
+// Una línea con cantidad 0 (solo portadora de MP) muestra costo "—" y todo
+// el costo fluye al otro producto por la misma fórmula.
+// Aunque mañana cambie el precio, el registro conserva su costo.
 function calcularCostosLineas(lineas){
+  // 1) Subtotales por renglón MP y suma por línea
   lineas.forEach(l => {
     let suma = 0;
     let hayCosto = false;
@@ -5289,7 +5389,38 @@ function calcularCostosLineas(lineas){
         d.costo = null;                  // la MP no tiene precio cargado en Stock
       }
     });
-    l.costoUnit = (hayCosto && l.cantidad > 0) ? (suma / l.cantidad) : null;
+    l._sumaMP = hayCosto ? suma : 0;
+    l.costoUnit = null;
+  });
+
+  // 2) Pares principal-asociado presentes en el mismo registro
+  const enPar = new Set();
+  lineas.forEach(lp => {
+    if(enPar.has(lp.productoId)) return;
+    const la = lineas.find(x => {
+      const px = pprodById(x.productoId);
+      return px && px.comparteConId === lp.productoId;
+    });
+    if(!la) return;
+    enPar.add(lp.productoId);
+    enPar.add(la.productoId);
+    const pa = pprodById(la.productoId);
+    const prop = (pa && pa.proporcion) ? pa.proporcion / 100 : 0;
+    const total = (lp._sumaMP || 0) + (la._sumaMP || 0);
+    const equivalentes = lp.cantidad + la.cantidad * prop;
+    if(total > 0 && equivalentes > 0 && prop > 0){
+      const unitPrincipal = total / equivalentes;
+      lp.costoUnit = lp.cantidad > 0 ? unitPrincipal : null;
+      la.costoUnit = la.cantidad > 0 ? unitPrincipal * prop : null;
+    }
+  });
+
+  // 3) Líneas sin par: cálculo estándar (sus propias MP ÷ sus unidades)
+  lineas.forEach(l => {
+    if(!enPar.has(l.productoId) && l._sumaMP > 0 && l.cantidad > 0){
+      l.costoUnit = l._sumaMP / l.cantidad;
+    }
+    delete l._sumaMP; // campo temporal, no se persiste
   });
 }
 
@@ -5300,7 +5431,7 @@ function resumenImpactoSemis(lineas){
   const neto = {}; // seId → {nombre, unidad, ingreso, egreso}
   lineas.forEach(l => {
     const p = pprodById(l.productoId);
-    if(p && p.tipo === 'semielaborado'){
+    if(p && p.tipo === 'semielaborado' && l.cantidad > 0){
       if(!neto[p.id]) neto[p.id] = { nombre: p.nombre, unidad: p.unidad, ingreso: 0, egreso: 0 };
       neto[p.id].ingreso += l.cantidad;
     }
@@ -5829,6 +5960,11 @@ function onPProdDetallaChange(){
   document.getElementById('pprod-dtase-wrap').style.display    = detalla ? 'block' : 'none';
 }
 
+function onPProdComparteChange(){
+  const tiene = document.getElementById('pprod-compartecon').value !== '';
+  document.getElementById('pprod-prop-wrap').style.display = tiene ? 'block' : 'none';
+}
+
 function abrirFormPProd(id){
   if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
   editPProdId = id;
@@ -5841,6 +5977,25 @@ function abrirFormPProd(id){
   document.getElementById('pprod-cantelem').value = (p && p.cantElementos > 0) ? String(p.cantElementos) : '1';
   document.getElementById('pprod-dtase').value = (p && p.dtaStockSE) ? 'si' : 'no';
   onPProdDetallaChange();
+
+  // "Comparte MP con": candidatos válidos = otros productos que no sean a su
+  // vez asociados de alguien (sin cadenas) y que no tengan ya otro asociado
+  // (1 a 1). El principal actual del producto en edición siempre se incluye.
+  const selComp = document.getElementById('pprod-compartecon');
+  const candidatos = PDB.productosProd.filter(c => {
+    if(id && c.id === id) return false;                       // no a sí mismo
+    if(p && p.comparteConId === c.id) return true;            // su principal actual, siempre visible
+    if(c.comparteConId) return false;                          // c ya es asociado de otro → sin cadenas
+    const ocupado = PDB.productosProd.some(z => z.comparteConId === c.id && (!id || z.id !== id));
+    if(ocupado) return false;                                  // c ya tiene su asociado → 1 a 1
+    return c.activo;
+  }).sort((a,b) => a.nombre.localeCompare(b.nombre, 'es'));
+  selComp.innerHTML = '<option value="">— No comparte —</option>' +
+    candidatos.map(c => `<option value="${c.id}">${escProd(c.nombre)}</option>`).join('');
+  selComp.value = (p && p.comparteConId) ? String(p.comparteConId) : '';
+  document.getElementById('pprod-proporcion').value = (p && p.proporcion) ? p.proporcion : '';
+  onPProdComparteChange();
+
   const box = document.getElementById('pprod-centros');
   const activos = PDB.centros.filter(c => c.activo || (p && p.centrosIds.includes(c.id)));
   box.innerHTML = activos.length
@@ -5877,6 +6032,31 @@ function guardarPProd(){
   const duplicado = PDB.productosProd.find(p => p.nombre.toLowerCase() === nombre.toLowerCase() && p.id !== editPProdId);
   if(duplicado){ toastProd('Ya existe un producto con ese nombre', 'error'); return; }
 
+  // ── Asociación "Comparte MP con" (1 a 1, sin cadenas) ──
+  const compVal = document.getElementById('pprod-compartecon').value;
+  const comparteConId = compVal ? parseInt(compVal) : null;
+  let proporcion = null;
+  if(comparteConId){
+    proporcion = parseInt(document.getElementById('pprod-proporcion').value);
+    if(!(proporcion >= 1 && proporcion <= 100)){
+      toastProd('Ingresá la proporción (1 a 100%)', 'error'); return;
+    }
+    if(comparteConId === editPProdId){ toastProd('Un producto no puede asociarse a sí mismo', 'error'); return; }
+    const principal = pprodById(comparteConId);
+    if(!principal){ toastProd('El producto principal elegido no existe', 'error'); return; }
+    if(principal.comparteConId){
+      toastProd('"' + principal.nombre + '" ya es asociado de otro producto — no se permiten cadenas', 'error'); return;
+    }
+    const ocupado = PDB.productosProd.find(z => z.comparteConId === comparteConId && z.id !== editPProdId);
+    if(ocupado){
+      toastProd('"' + principal.nombre + '" ya tiene a "' + ocupado.nombre + '" como asociado (la relación es 1 a 1)', 'error'); return;
+    }
+    const esPrincipal = PDB.productosProd.find(z => z.comparteConId === editPProdId);
+    if(esPrincipal){
+      toastProd('Este producto es principal de "' + esPrincipal.nombre + '" — no puede a la vez ser asociado de otro', 'error'); return;
+    }
+  }
+
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
 
   if(editPProdId){
@@ -5884,10 +6064,11 @@ function guardarPProd(){
     if(!p) return;
     p.nombre = nombre; p.tipo = tipo; p.unidad = unidad; p.centrosIds = centrosIds;
     p.detallaMP = detallaMP; p.cantElementos = cantElementos; p.dtaStockSE = dtaStockSE;
+    p.comparteConId = comparteConId; p.proporcion = proporcion;
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-editado', detalle: 'Producto "' + nombre + '" editado', usuario });
     toastProd('✓ Producto actualizado');
   } else {
-    PDB.productosProd.push({ id: pIdSeq.pprod++, nombre, tipo, unidad, centrosIds, detallaMP, cantElementos, dtaStockSE, activo: true });
+    PDB.productosProd.push({ id: pIdSeq.pprod++, nombre, tipo, unidad, centrosIds, detallaMP, cantElementos, dtaStockSE, comparteConId, proporcion, activo: true });
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-creado', detalle: 'Producto "' + nombre + '" (' + tipo + ') creado', usuario });
     toastProd('✓ Producto creado');
   }
@@ -5926,15 +6107,18 @@ function renderCatalogoPProd(){
         : '<span class="badge badge-neutral">Elaborado</span>';
       const centros = p.centrosIds.map(centroNombre).map(escProd).join(', ') || '—';
       const detalle = p.detallaMP
-        ? 'Sí · ' + p.cantElementos + ' renglón' + (p.cantElementos === 1 ? '' : 'es') + ' · ' + (p.dtaStockSE ? 'desc. SE' : 's/desc.')
+        ? 'Sí · ' + p.cantElementos + ' renglón' + (p.cantElementos === 1 ? '' : 'es') + ' · def. ' + (p.dtaStockSE ? 'SE' : 'MP')
         : '—';
+      const asoc = p.comparteConId
+        ? '<br><span style="font-size:.68rem">↔ asoc. a ' + escProd((pprodById(p.comparteConId) || {nombre:'?'}).nombre) + ' (' + p.proporcion + '%)</span>'
+        : '';
       const estado = p.activo ? '<span class="badge badge-ok">Activo</span>' : '<span class="badge badge-danger">Inactivo</span>';
       const btnToggle = p.activo ? '🚫 Desactivar' : '↩ Reactivar';
       return `<tr style="${p.activo ? '' : 'opacity:.5'}">
         <td>${escProd(p.nombre)}</td>
         <td>${tipoBadge}</td>
         <td style="color:var(--muted)">${escProd(p.unidad)}</td>
-        <td style="font-size:.72rem;color:var(--muted)">${detalle}</td>
+        <td style="font-size:.72rem;color:var(--muted)">${detalle}${asoc}</td>
         <td style="font-size:.74rem">${centros}</td>
         <td>${estado}</td>
         <td style="white-space:nowrap">
