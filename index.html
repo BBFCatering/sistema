@@ -4549,7 +4549,8 @@ document.addEventListener('DOMContentLoaded', function() {
 let PDB = JSON.parse(localStorage.getItem('bbf_prod_v1')||'null') || {
   centros: [],       // {id, nombre, activo}
   productosProd: [], // {id, nombre, tipo:'elaborado'|'semielaborado', unidad, centrosIds:[],
-                     //  detallaMP:bool, cantElementos:0-9, dtaStockSE:bool, activo}
+                     //  detallaMP:bool, cantElementos:0-9, orden:0-99|null, costoSE:num|null,
+                     //  dtaStockSE:bool (LEGADO, sin uso), activo}
   stockSemi: {},     // {productoId: cantidad} — stock simple SOLO de semielaborados
                      //  (puede quedar negativo si se consumió más de lo ingresado:
                      //   se muestra en rojo para que la diferencia sea visible)
@@ -4571,7 +4572,9 @@ function migrarPDB(){
     if(!p.centrosIds) p.centrosIds = [];
     if(p.detallaMP === undefined)     p.detallaMP = false;
     if(p.cantElementos === undefined) p.cantElementos = 0;
-    if(p.dtaStockSE === undefined)    p.dtaStockSE = false;
+    if(p.dtaStockSE === undefined)    p.dtaStockSE = false;   // LEGADO: ya no se usa (los renglones arrancan siempre en MP)
+    if(p.orden === undefined)         p.orden = null;         // orden de presentación en el Registro Diario (0-99, menor primero)
+    if(p.costoSE === undefined)       p.costoSE = null;       // costo unitario (solo semielaborados)
     if(p.comparteConId === undefined) p.comparteConId = null; // producto principal al que se asocia (1 a 1)
     if(p.proporcion === undefined)    p.proporcion = null;    // % de MP respecto del principal
   });
@@ -4863,7 +4866,7 @@ const prodModuleHTML = '' +
 '        <div class="form-grid">' +
 '          <div><label>Nombre <span class="req">*</span></label><input type="text" id="pprod-nombre" placeholder="Ej: Vianda milanesa c/ puré" maxlength="120"></div>' +
 '          <div><label>Tipo <span class="req">*</span></label>' +
-'            <select id="pprod-tipo">' +
+'            <select id="pprod-tipo" onchange="onPProdTipoChange()">' +
 '              <option value="">— Seleccioná —</option>' +
 '              <option value="elaborado">Elaborado</option>' +
 '              <option value="semielaborado">Semielaborado</option>' +
@@ -4888,11 +4891,10 @@ const prodModuleHTML = '' +
 '              <option value="4">4</option><option value="5">5</option><option value="6">6</option>' +
 '              <option value="7">7</option><option value="8">8</option><option value="9">9</option>' +
 '            </select></div>' +
-'          <div id="pprod-dtase-wrap" style="display:none"><label>Fuente por defecto de renglones</label>' +
-'            <select id="pprod-dtase">' +
-'              <option value="no">MP — lista de Stock (sin descuento)</option>' +
-'              <option value="si">SE — descuenta semielaborados</option>' +
-'            </select></div>' +
+'          <div><label>Orden</label>' +
+'            <input type="number" id="pprod-orden" min="0" max="99" step="1" placeholder="0-99" title="Orden de aparici\u00F3n en el Registro Diario (menor primero; sin orden van al final)"></div>' +
+'          <div id="pprod-costo-wrap" style="display:none"><label>Costo unitario ($)</label>' +
+'            <input type="number" id="pprod-costo" min="0" step="any" placeholder="Ej: 350.50" title="Costo unitario del semielaborado, usado para calcular el costo de los productos que lo consumen"></div>' +
 '          <div><label>Comparte MP con</label>' +
 '            <select id="pprod-compartecon" onchange="onPProdComparteChange()">' +
 '              <option value="">— No comparte —</option>' +
@@ -4912,7 +4914,7 @@ const prodModuleHTML = '' +
 
 '    <div id="prodsub-stocksemi" class="listado-subpanel">' +
 '      <div class="section-header"><div class="section-title">Stock simple de semielaborados</div></div>' +
-'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Este stock es exclusivo del módulo Producción y es totalmente independiente del stock de materias primas. Se actualiza automáticamente al cerrar cada registro diario: suma lo producido y descuenta lo consumido (renglones de detalle que descuentan Stock SE). Un valor en rojo indica stock negativo: se consumió más de lo que se ingresó — revisar los registros.</div>' +
+'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Este stock es exclusivo del módulo Producción y es totalmente independiente del stock de materias primas. Se actualiza automáticamente al cerrar cada registro diario: suma lo producido y descuenta lo consumido (renglones de detalle que descuentan Stock SE). Un valor en rojo indica stock negativo: se consumió más de lo que se ingresó — revisar los registros. El costo unitario se carga en la ficha de cada semielaborado del catálogo; Valorizado = stock × costo unitario.</div>' +
 '      <div id="stocksemi-lista"></div>' +
 '    </div>' +
 
@@ -4972,7 +4974,7 @@ const prodModuleHTML = '' +
 '        <button class="btn btn-secondary btn-sm" onclick="renderInformesProd()">🔍 Filtrar</button>' +
 '        <button class="btn btn-secondary btn-sm" onclick="limpiarFiltrosInformes()">✨ Todos</button>' +
 '      </div>' +
-'      <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">Producto y centro de elaboración: elegí el mismo en ambos (o solo uno) para filtrar ese ítem; dos distintos para un rango alfabético; vacíos para ver todos. Los filtros se combinan entre sí. La columna Costo es el costo unitario calculado al cerrar el registro (materias primas al precio vigente de ese momento) — los registros anteriores a esta función muestran "—".</div>' +
+'      <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">Producto y centro de elaboración: elegí el mismo en ambos (o solo uno) para filtrar ese ítem; dos distintos para un rango alfabético; vacíos para ver todos. Los filtros se combinan entre sí. La columna Costo es el costo unitario calculado al cerrar el registro (materias primas al precio vigente del Stock y semielaborados al costo unitario del catálogo en ese momento) — los registros anteriores a esta función muestran "—".</div>' +
 '      <div id="pinf-lista"></div>' +
 '    </div>' +
 '    </div>' +
@@ -5095,6 +5097,15 @@ function construirGrillaLineas(centroId, fuente, bloqueado){
   }
   if(productos.length === 0) return null;
 
+  // Presentación: orden ascendente según el campo "Orden" del catálogo;
+  // los productos sin orden van al final; empates se resuelven por nombre.
+  productos.sort((a, b) => {
+    const oa = (a.orden === null || a.orden === undefined) ? 100 : a.orden;
+    const ob = (b.orden === null || b.orden === undefined) ? 100 : b.orden;
+    if(oa !== ob) return oa - ob;
+    return a.nombre.localeCompare(b.nombre, 'es');
+  });
+
   const dis = bloqueado ? 'disabled' : '';
   let filas = '';
   productos.forEach(p => {
@@ -5111,10 +5122,10 @@ function construirGrillaLineas(centroId, fuente, bloqueado){
     </tr>`;
 
     // Renglones de detalle de materias primas. Cada renglón tiene su propio
-    // selector de fuente (MP del Stock / SE semielaborados); el campo del
-    // catálogo define solo el valor POR DEFECTO de los renglones vacíos.
+    // selector de fuente (MP del Stock / SE semielaborados); los renglones
+    // nuevos arrancan SIEMPRE en MP (los guardados conservan su fuente).
     if(p.detallaMP && p.cantElementos > 0){
-      const fuenteDefault = p.dtaStockSE ? 'se' : 'mp';
+      const fuenteDefault = 'mp';
       for(let i = 0; i < p.cantElementos; i++){
         const det = (linea && linea.detalles && linea.detalles[i]) ? linea.detalles[i] : null;
         const detNombre = det ? det.nombre : '';
@@ -5362,7 +5373,9 @@ function recolectarNovedadesForm(){
 // Calcula y FIJA el costo de cada línea al momento del cierre (snapshot):
 // por cada renglón de detalle MP → precio vigente más conveniente del Stock
 // (con bonificación aplicada: mismo criterio que la valorización) × cantidad
-// empleada. Los renglones SE quedan excluidos del cálculo (sin precio aún).
+// empleada. Los renglones SE usan el Costo unitario cargado en el catálogo
+// del semielaborado × cantidad (misma regla de snapshot: si el costo cambia
+// después, los registros cerrados no se modifican). SE sin costo cargado: "—".
 //
 // PRODUCTOS ASOCIADOS: si en el mismo registro están el producto principal
 // y su asociado (asociado.comparteConId = principal.id, proporción P%), el
@@ -5379,8 +5392,13 @@ function calcularCostosLineas(lineas){
     let suma = 0;
     let hayCosto = false;
     (l.detalles || []).forEach(d => {
-      if(d.refTipo !== 'mp'){ d.costo = null; return; }
-      const precio = (typeof mejorPrecioFinal === 'function') ? mejorPrecioFinal(d.refId) : null;
+      let precio = null;
+      if(d.refTipo === 'mp'){
+        precio = (typeof mejorPrecioFinal === 'function') ? mejorPrecioFinal(d.refId) : null;
+      } else if(d.refTipo === 'se'){
+        const ps = pprodById(d.refId);
+        precio = (ps && ps.costoSE !== null && ps.costoSE !== undefined && ps.costoSE > 0) ? ps.costoSE : null;
+      }
       if(precio !== null && precio > 0){
         d.costo = precio * d.cantidad;   // subtotal de esa materia prima
         suma += d.costo;
@@ -5957,7 +5975,12 @@ function renderAjustesProd(){
 function onPProdDetallaChange(){
   const detalla = document.getElementById('pprod-detalla').value === 'si';
   document.getElementById('pprod-cantelem-wrap').style.display = detalla ? 'block' : 'none';
-  document.getElementById('pprod-dtase-wrap').style.display    = detalla ? 'block' : 'none';
+}
+
+// El campo Costo unitario solo aplica a productos semielaborados
+function onPProdTipoChange(){
+  const esSemi = document.getElementById('pprod-tipo').value === 'semielaborado';
+  document.getElementById('pprod-costo-wrap').style.display = esSemi ? 'block' : 'none';
 }
 
 function onPProdComparteChange(){
@@ -5975,8 +5998,10 @@ function abrirFormPProd(id){
   document.getElementById('pprod-unidad').value = p ? p.unidad : '';
   document.getElementById('pprod-detalla').value = (p && p.detallaMP) ? 'si' : 'no';
   document.getElementById('pprod-cantelem').value = (p && p.cantElementos > 0) ? String(p.cantElementos) : '1';
-  document.getElementById('pprod-dtase').value = (p && p.dtaStockSE) ? 'si' : 'no';
+  document.getElementById('pprod-orden').value = (p && p.orden !== null && p.orden !== undefined) ? String(p.orden) : '';
+  document.getElementById('pprod-costo').value = (p && p.costoSE !== null && p.costoSE !== undefined) ? String(p.costoSE) : '';
   onPProdDetallaChange();
+  onPProdTipoChange();
 
   // "Comparte MP con": candidatos válidos = otros productos que no sean a su
   // vez asociados de alguien (sin cadenas) y que no tengan ya otro asociado
@@ -6021,12 +6046,28 @@ function guardarPProd(){
   const unidad = document.getElementById('pprod-unidad').value;
   const detallaMP = document.getElementById('pprod-detalla').value === 'si';
   const cantElementos = detallaMP ? (parseInt(document.getElementById('pprod-cantelem').value) || 1) : 0;
-  const dtaStockSE = detallaMP && document.getElementById('pprod-dtase').value === 'si';
   const centrosIds = Array.from(document.querySelectorAll('.pprod-centro-chk:checked')).map(c => parseInt(c.value));
 
   if(!nombre){ toastProd('El nombre es obligatorio', 'error'); return; }
   if(!tipo){ toastProd('Seleccioná el tipo (elaborado / semielaborado)', 'error'); return; }
   if(!unidad){ toastProd('Seleccioná la unidad', 'error'); return; }
+
+  // Orden de presentación en el Registro Diario (opcional, 0-99)
+  const ordenRaw = document.getElementById('pprod-orden').value;
+  const orden = ordenRaw === '' ? null : parseInt(ordenRaw);
+  if(orden !== null && !(orden >= 0 && orden <= 99)){
+    toastProd('El orden debe ser un número entre 0 y 99', 'error'); return;
+  }
+
+  // Costo unitario (solo semielaborados, opcional)
+  let costoSE = null;
+  if(tipo === 'semielaborado'){
+    const costoRaw = document.getElementById('pprod-costo').value;
+    costoSE = costoRaw === '' ? null : parseFloat(costoRaw);
+    if(costoSE !== null && !(costoSE >= 0)){
+      toastProd('El costo unitario no puede ser negativo', 'error'); return;
+    }
+  }
   if(centrosIds.length === 0){ toastProd('Asociá el producto a al menos un centro de elaboración', 'error'); return; }
 
   const duplicado = PDB.productosProd.find(p => p.nombre.toLowerCase() === nombre.toLowerCase() && p.id !== editPProdId);
@@ -6063,12 +6104,13 @@ function guardarPProd(){
     const p = pprodById(editPProdId);
     if(!p) return;
     p.nombre = nombre; p.tipo = tipo; p.unidad = unidad; p.centrosIds = centrosIds;
-    p.detallaMP = detallaMP; p.cantElementos = cantElementos; p.dtaStockSE = dtaStockSE;
+    p.detallaMP = detallaMP; p.cantElementos = cantElementos;
+    p.orden = orden; p.costoSE = costoSE;
     p.comparteConId = comparteConId; p.proporcion = proporcion;
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-editado', detalle: 'Producto "' + nombre + '" editado', usuario });
     toastProd('✓ Producto actualizado');
   } else {
-    PDB.productosProd.push({ id: pIdSeq.pprod++, nombre, tipo, unidad, centrosIds, detallaMP, cantElementos, dtaStockSE, comparteConId, proporcion, activo: true });
+    PDB.productosProd.push({ id: pIdSeq.pprod++, nombre, tipo, unidad, centrosIds, detallaMP, cantElementos, orden, costoSE, comparteConId, proporcion, activo: true });
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-creado', detalle: 'Producto "' + nombre + '" (' + tipo + ') creado', usuario });
     toastProd('✓ Producto creado');
   }
@@ -6099,6 +6141,7 @@ function renderCatalogoPProd(){
     cont.innerHTML = '<div style="font-size:.8rem;color:var(--muted);padding:12px 0">No hay productos cargados todavía. Empezá creando los centros de elaboración y después los productos.</div>';
     return;
   }
+  const fmt = (typeof fmtMoney === 'function') ? fmtMoney : (n => '$' + n);
   const filas = PDB.productosProd
     .slice().sort((a,b) => a.nombre.localeCompare(b.nombre))
     .map(p => {
@@ -6107,28 +6150,40 @@ function renderCatalogoPProd(){
         : '<span class="badge badge-neutral">Elaborado</span>';
       const centros = p.centrosIds.map(centroNombre).map(escProd).join(', ') || '—';
       const detalle = p.detallaMP
-        ? 'Sí · ' + p.cantElementos + ' renglón' + (p.cantElementos === 1 ? '' : 'es') + ' · def. ' + (p.dtaStockSE ? 'SE' : 'MP')
+        ? 'Sí · ' + p.cantElementos + ' renglón' + (p.cantElementos === 1 ? '' : 'es')
         : '—';
-      const asoc = p.comparteConId
-        ? '<br><span style="font-size:.68rem">↔ asoc. a ' + escProd((pprodById(p.comparteConId) || {nombre:'?'}).nombre) + ' (' + p.proporcion + '%)</span>'
-        : '';
       const estado = p.activo ? '<span class="badge badge-ok">Activo</span>' : '<span class="badge badge-danger">Inactivo</span>';
       const btnToggle = p.activo ? '🚫 Desactivar' : '↩ Reactivar';
+
+      // Segundo renglón: toda la información complementaria del producto
+      const infoPartes = ['🏭 Centros: ' + centros];
+      if(p.comparteConId){
+        infoPartes.push('↔ Comparte MP con ' + escProd((pprodById(p.comparteConId) || {nombre:'?'}).nombre) + ' (' + p.proporcion + '%)');
+      }
+      if(p.orden !== null && p.orden !== undefined){
+        infoPartes.push('# Orden: ' + p.orden);
+      }
+      if(p.tipo === 'semielaborado'){
+        infoPartes.push('💲 Costo unit.: ' + ((p.costoSE !== null && p.costoSE !== undefined && p.costoSE > 0) ? fmt(p.costoSE) : '—'));
+      }
+      const filaInfo = `<tr style="${p.activo ? '' : 'opacity:.5'};background:rgba(107,116,153,.05)">
+        <td colspan="6" style="font-size:.72rem;color:var(--muted);padding:4px 12px 8px 26px;border-top:none">${infoPartes.join(' &nbsp;·&nbsp; ')}</td>
+      </tr>`;
+
       return `<tr style="${p.activo ? '' : 'opacity:.5'}">
         <td>${escProd(p.nombre)}</td>
         <td>${tipoBadge}</td>
         <td style="color:var(--muted)">${escProd(p.unidad)}</td>
-        <td style="font-size:.72rem;color:var(--muted)">${detalle}${asoc}</td>
-        <td style="font-size:.74rem">${centros}</td>
+        <td style="font-size:.72rem;color:var(--muted)">${detalle}</td>
         <td>${estado}</td>
         <td style="white-space:nowrap">
           <button class="btn btn-secondary btn-sm prod-edit-action" onclick="abrirFormPProd(${p.id})">✏</button>
           <button class="btn btn-secondary btn-sm prod-edit-action" onclick="toggleActivoPProd(${p.id})">${btnToggle}</button>
         </td>
-      </tr>`;
+      </tr>` + filaInfo;
     }).join('');
   cont.innerHTML = `<table class="stock-table"><thead>
-    <tr><th>Nombre</th><th>Tipo</th><th>Unidad</th><th>Detalla MP</th><th>Centros asociados</th><th>Estado</th><th>Acciones</th></tr>
+    <tr><th>Nombre</th><th>Tipo</th><th>Unidad</th><th>Detalla MP</th><th>Estado</th><th>Acciones</th></tr>
     </thead><tbody>${filas}</tbody></table>`;
 }
 
@@ -6141,21 +6196,35 @@ function renderStockSemi(){
     cont.innerHTML = '<div style="font-size:.8rem;color:var(--muted);padding:12px 0">No hay productos semielaborados en el catálogo todavía.</div>';
     return;
   }
+  const fmt = (typeof fmtMoney === 'function') ? fmtMoney : (n => '$' + n);
+  let totalValorizado = 0;
   const filas = semis
     .slice().sort((a,b) => a.nombre.localeCompare(b.nombre))
     .map(p => {
       const cant = PDB.stockSemi[p.id] || 0;
       const color = cant < 0 ? 'var(--danger)' : (cant > 0 ? 'var(--accent)' : 'var(--muted)');
       const alerta = cant < 0 ? ' <span class="badge badge-danger">Negativo</span>' : '';
+      const tieneCosto = p.costoSE !== null && p.costoSE !== undefined && p.costoSE > 0;
+      const costoTxt = tieneCosto ? fmt(p.costoSE) : '—';
+      const valorizado = tieneCosto ? cant * p.costoSE : null;
+      if(valorizado !== null) totalValorizado += valorizado;
+      const valorTxt = valorizado !== null
+        ? `<span style="color:${valorizado < 0 ? 'var(--danger)' : 'var(--text)'}">${fmt(valorizado)}</span>` : '—';
       return `<tr style="${p.activo ? '' : 'opacity:.5'}">
         <td>${escProd(p.nombre)}${p.activo ? '' : ' <span class="badge badge-danger">Inactivo</span>'}</td>
         <td style="font-family:'Syne',sans-serif;font-weight:700;color:${color}">${cant}${alerta}</td>
         <td style="color:var(--muted)">${escProd(p.unidad)}</td>
+        <td>${costoTxt}</td>
+        <td style="font-weight:600">${valorTxt}</td>
       </tr>`;
     }).join('');
   cont.innerHTML = `<table class="stock-table"><thead>
-    <tr><th>Semielaborado</th><th>Stock</th><th>Unidad</th></tr>
-    </thead><tbody>${filas}</tbody></table>`;
+    <tr><th>Semielaborado</th><th>Stock</th><th>Unidad</th><th>Costo unitario</th><th>Valorizado</th></tr>
+    </thead><tbody>${filas}</tbody>
+    <tfoot><tr>
+      <td colspan="4" style="text-align:right;font-weight:700;padding-top:10px">Total valorizado:</td>
+      <td style="font-family:'Syne',sans-serif;font-weight:700;padding-top:10px;color:${totalValorizado < 0 ? 'var(--danger)' : 'var(--accent)'}">${fmt(totalValorizado)}</td>
+    </tr></tfoot></table>`;
 }
 
 // ── CENTROS DE ELABORACIÓN ───────────────────────────
