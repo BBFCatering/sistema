@@ -4550,7 +4550,7 @@ let PDB = JSON.parse(localStorage.getItem('bbf_prod_v1')||'null') || {
   centros: [],       // {id, nombre, activo}
   productosProd: [], // {id, nombre, tipo:'elaborado'|'semielaborado', unidad, centrosIds:[],
                      //  detallaMP:bool, cantElementos:0-9, dtaStockSE:bool (fuente def. renglones),
-                     //  orden:0-99|null, costoSE:num|null, activo}
+                     //  orden:0-99|null, costoSE:num|null, detallaMenu:bool, activo}
   stockSemi: {},     // {productoId: cantidad} — stock simple SOLO de semielaborados
                      //  (puede quedar negativo si se consumió más de lo ingresado:
                      //   se muestra en rojo para que la diferencia sea visible)
@@ -4577,6 +4577,7 @@ function migrarPDB(){
     if(p.dtaStockSE === undefined)    p.dtaStockSE = false;   // fuente por defecto de renglones nuevos (true = SE)
     if(p.orden === undefined)         p.orden = null;         // orden de presentación en el Registro Diario (0-99, menor primero)
     if(p.costoSE === undefined)       p.costoSE = null;       // costo unitario (solo semielaborados)
+    if(p.detallaMenu === undefined)   p.detallaMenu = (p.tipo === 'elaborado'); // muestra selector de menú en el registro
     if(p.comparteConId === undefined) p.comparteConId = null; // producto principal al que se asocia (1 a 1)
     if(p.proporcion === undefined)    p.proporcion = null;    // % de MP respecto del principal
   });
@@ -4906,6 +4907,11 @@ const prodModuleHTML = '' +
 '            </select></div>' +
 '          <div><label>Orden</label>' +
 '            <input type="number" id="pprod-orden" min="0" max="99" step="1" placeholder="0-99" title="Orden de aparici\u00F3n en el Registro Diario (menor primero; sin orden van al final)"></div>' +
+'          <div id="pprod-dtmenu-wrap"><label>Detalla men\u00FA</label>' +
+'            <select id="pprod-dtmenu" title="S\u00ED: en el Registro Diario la l\u00EDnea muestra el selector de men\u00FA. No: la l\u00EDnea se muestra sin men\u00FA.">' +
+'              <option value="si">S\u00ED</option>' +
+'              <option value="no">No</option>' +
+'            </select></div>' +
 '          <div id="pprod-costo-wrap" style="display:none"><label>Costo unitario ($)</label>' +
 '            <input type="number" id="pprod-costo" min="0" step="any" placeholder="Ej: 350.50" title="Costo unitario del semielaborado, usado para calcular el costo de los productos que lo consumen"></div>' +
 '          <div><label>Comparte MP con</label>' +
@@ -5057,8 +5063,10 @@ const prodModuleHTML = '' +
 '        <div style="min-width:180px"><label style="font-size:.72rem">Men\u00FA</label>' +
 '          <select id="pcp-menu" onchange="pcpMenuSelChange(this)" style="font-size:.78rem;padding:6px 8px"></select></div>' +
 '        <button class="btn btn-secondary btn-sm" onclick="limpiarFiltrosCostoProm()">\u2728 Limpiar</button>' +
-'        <button class="btn btn-primary btn-sm" onclick="exportarCostoPromPDF()">\uD83D\uDCC4 PDF</button>' +
-'        <button class="btn btn-primary btn-sm" onclick="exportarCostoPromExcel()">\uD83D\uDCC8 Excel</button>' +
+'      </div>' +
+'      <div style="display:flex;gap:10px;margin-bottom:14px">' +
+'        <button class="btn btn-primary btn-sm" style="flex:1" onclick="exportarCostoPromPDF()">\uD83D\uDCC4 PDF</button>' +
+'        <button class="btn btn-primary btn-sm" style="flex:1" onclick="exportarCostoPromExcel()">\uD83D\uDCC8 Excel</button>' +
 '      </div>' +
 '      <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">Los tres filtros admiten "Todos": el informe agrupa jer\u00E1rquicamente Centro \u2192 Producto \u2192 Men\u00FA con el detalle fecha por fecha y subtotales con promedio ponderado en cada nivel. Los men\u00FAs se ordenan por n\u00FAmero ascendente y las l\u00EDneas sin men\u00FA asignado van al final de cada grupo. El costo unitario es el fijado al cerrar cada registro diario. Los registros sin costo calculado se listan con "\u2014" pero quedan excluidos de los totales y del promedio ponderado.</div>' +
 '      <div id="pcp-lista"></div>' +
@@ -5177,7 +5185,10 @@ function construirGrillaLineas(centroId, fuente, bloqueado){
     const badge = p.tipo === 'semielaborado'
       ? '<span class="badge badge-warn">Semielab.</span>'
       : '<span class="badge badge-neutral">Elaborado</span>';
-    const menuUI = p.tipo === 'elaborado' ? construirMenuUI(p.id, linea ? linea.menuId : null, dis) : '';
+    // UI de menú: solo elaborados que detallan menú y NO son asociados —
+    // el asociado hereda el menú de su producto principal al cerrar.
+    const menuUI = (p.tipo === 'elaborado' && !p.comparteConId && p.detallaMenu !== false)
+      ? construirMenuUI(p.id, linea ? linea.menuId : null, dis) : '';
     filas += `<tr>
       <td><span style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap">${escProd(p.nombre)}${p.activo ? '' : ' <span class="badge badge-danger">Inactivo</span>'}${menuUI}</span></td>
       <td>${badge}</td>
@@ -5249,7 +5260,7 @@ function construirMenuUI(prodId, menuId, dis){
       title="Número de menú (2 dígitos) — atajo del desplegable"
       style="width:46px;font-size:.74rem;padding:4px 6px;text-align:center">
     <select class="preg-menu-sel" data-prodid="${prodId}" ${dis} onchange="pregMenuSelChange(this)"
-      style="width:auto;max-width:220px;font-size:.72rem;padding:4px 8px">${opts}</select>
+      style="width:auto;max-width:340px;min-width:200px;font-size:.72rem;padding:4px 8px">${opts}</select>
   </span>`;
 }
 
@@ -5486,6 +5497,15 @@ function recolectarLineasForm(){
         menuId: menuId,
         detalles: dets
       });
+    }
+  });
+  // Producto asociado: hereda el menú de su producto principal (es el mismo
+  // menú por definición; el asociado no tiene selector propio en la grilla).
+  lineas.forEach(l => {
+    const p = pprodById(l.productoId);
+    if(p && p.comparteConId){
+      const lp = lineas.find(x => x.productoId === p.comparteConId);
+      l.menuId = (lp && lp.menuId !== undefined) ? lp.menuId : null;
     }
   });
   return lineas;
@@ -6403,6 +6423,7 @@ function exportarCostoPromExcel(){
   }
   const jq = jerarquiaCostoProm(rows);
   const ft = pcpFiltrosTexto();
+  const r2 = n => Math.round(n * 100) / 100;   // todos los importes a 2 decimales
   const aoa = [
     ['Costo promedio ponderado'],
     ['Fechas: ' + ft.fechas, 'Centro: ' + ft.centro, 'Producto: ' + ft.producto, 'Menú: ' + ft.menu],
@@ -6415,20 +6436,20 @@ function exportarCostoPromExcel(){
       p.menus.forEach(m => {
         m.filas.forEach(f => {
           aoa.push([c.nombre, p.nombre, m.etiqueta, fechaBonitaProd(f.fecha), f.cantidad,
-            f.costoUnit !== null ? f.costoUnit : '—',
-            f.subtotal !== null ? f.subtotal : '—', '']);
+            f.costoUnit !== null ? r2(f.costoUnit) : '—',
+            f.subtotal !== null ? r2(f.subtotal) : '—', '']);
         });
-        aoa.push([c.nombre, p.nombre, m.etiqueta, 'SUBTOTAL MENÚ', m.tot.unid, '', m.tot.costo,
-          totPond(m.tot) !== null ? totPond(m.tot) : '—']);
+        aoa.push([c.nombre, p.nombre, m.etiqueta, 'SUBTOTAL MENÚ', m.tot.unid, '', r2(m.tot.costo),
+          totPond(m.tot) !== null ? r2(totPond(m.tot)) : '—']);
       });
-      aoa.push([c.nombre, p.nombre, '', 'SUBTOTAL PRODUCTO', p.tot.unid, '', p.tot.costo,
-        totPond(p.tot) !== null ? totPond(p.tot) : '—']);
+      aoa.push([c.nombre, p.nombre, '', 'SUBTOTAL PRODUCTO', p.tot.unid, '', r2(p.tot.costo),
+        totPond(p.tot) !== null ? r2(totPond(p.tot)) : '—']);
     });
-    aoa.push([c.nombre, '', '', 'TOTAL CENTRO', c.tot.unid, '', c.tot.costo,
-      totPond(c.tot) !== null ? totPond(c.tot) : '—']);
+    aoa.push([c.nombre, '', '', 'TOTAL CENTRO', c.tot.unid, '', r2(c.tot.costo),
+      totPond(c.tot) !== null ? r2(totPond(c.tot)) : '—']);
   });
-  aoa.push(['', '', '', 'TOTAL GENERAL', jq.total.unid, '', jq.total.costo,
-    totPond(jq.total) !== null ? totPond(jq.total) : '—']);
+  aoa.push(['', '', '', 'TOTAL GENERAL', jq.total.unid, '', r2(jq.total.costo),
+    totPond(jq.total) !== null ? r2(totPond(jq.total)) : '—']);
   if(jq.total.excl > 0){
     aoa.push([]);
     aoa.push([jq.total.excl + ' registro' + (jq.total.excl === 1 ? '' : 's') + ' sin costo calculado — excluido' + (jq.total.excl === 1 ? '' : 's') + ' de los totales y del promedio.']);
@@ -6520,10 +6541,11 @@ function onPProdDetallaChange(){
   document.getElementById('pprod-dtase-wrap').style.display    = detalla ? 'block' : 'none';
 }
 
-// El campo Costo unitario solo aplica a productos semielaborados
+// Costo unitario solo aplica a semielaborados; Detalla menú solo a elaborados
 function onPProdTipoChange(){
   const esSemi = document.getElementById('pprod-tipo').value === 'semielaborado';
-  document.getElementById('pprod-costo-wrap').style.display = esSemi ? 'block' : 'none';
+  document.getElementById('pprod-costo-wrap').style.display  = esSemi ? 'block' : 'none';
+  document.getElementById('pprod-dtmenu-wrap').style.display = esSemi ? 'none' : 'block';
 }
 
 function onPProdComparteChange(){
@@ -6544,6 +6566,7 @@ function abrirFormPProd(id){
   document.getElementById('pprod-dtase').value = (p && p.dtaStockSE) ? 'si' : 'no';
   document.getElementById('pprod-orden').value = (p && p.orden !== null && p.orden !== undefined) ? String(p.orden) : '';
   document.getElementById('pprod-costo').value = (p && p.costoSE !== null && p.costoSE !== undefined) ? String(p.costoSE) : '';
+  document.getElementById('pprod-dtmenu').value = (p && p.detallaMenu === false) ? 'no' : 'si';
   onPProdDetallaChange();
   onPProdTipoChange();
 
@@ -6604,6 +6627,10 @@ function guardarPProd(){
     toastProd('El orden debe ser un número entre 0 y 99', 'error'); return;
   }
 
+  // Detalla menú: solo elaborados muestran selector de menú en el registro
+  const detallaMenu = tipo === 'elaborado'
+    ? (document.getElementById('pprod-dtmenu').value === 'si') : false;
+
   // Costo unitario (solo semielaborados, opcional)
   let costoSE = null;
   if(tipo === 'semielaborado'){
@@ -6650,12 +6677,12 @@ function guardarPProd(){
     if(!p) return;
     p.nombre = nombre; p.tipo = tipo; p.unidad = unidad; p.centrosIds = centrosIds;
     p.detallaMP = detallaMP; p.cantElementos = cantElementos; p.dtaStockSE = dtaStockSE;
-    p.orden = orden; p.costoSE = costoSE;
+    p.orden = orden; p.costoSE = costoSE; p.detallaMenu = detallaMenu;
     p.comparteConId = comparteConId; p.proporcion = proporcion;
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-editado', detalle: 'Producto "' + nombre + '" editado', usuario });
     toastProd('✓ Producto actualizado');
   } else {
-    PDB.productosProd.push({ id: pIdSeq.pprod++, nombre, tipo, unidad, centrosIds, detallaMP, cantElementos, dtaStockSE, orden, costoSE, comparteConId, proporcion, activo: true });
+    PDB.productosProd.push({ id: pIdSeq.pprod++, nombre, tipo, unidad, centrosIds, detallaMP, cantElementos, dtaStockSE, orden, costoSE, detallaMenu, comparteConId, proporcion, activo: true });
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-creado', detalle: 'Producto "' + nombre + '" (' + tipo + ') creado', usuario });
     toastProd('✓ Producto creado');
   }
@@ -6713,6 +6740,9 @@ function renderCatalogoPProd(){
       }
       if(p.tipo === 'semielaborado'){
         infoPartes.push('💲 Costo unit.: ' + ((p.costoSE !== null && p.costoSE !== undefined && p.costoSE > 0) ? fmt(p.costoSE) : '—'));
+      }
+      if(p.tipo === 'elaborado'){
+        infoPartes.push('🍽 Menú: ' + (p.detallaMenu === false ? 'No' : 'Sí'));
       }
       const filaInfo = `<tr style="${p.activo ? '' : 'opacity:.5'};background:rgba(107,116,153,.05)">
         <td colspan="6" style="font-size:.72rem;color:var(--muted);padding:4px 12px 8px 26px;border-top:none">${infoPartes.join(' &nbsp;·&nbsp; ')}</td>
