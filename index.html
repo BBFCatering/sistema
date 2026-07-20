@@ -334,6 +334,9 @@
   .section-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;}
   .section-title{font-family:'Syne',sans-serif;font-weight:700;font-size:.9rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);}
   .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px;}
+  .form-readonly-box{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:.85rem;color:var(--text);display:flex;align-items:center;justify-content:space-between;gap:8px;transition:border-color .15s;}
+  .form-readonly-box:hover{border-color:var(--accent);}
+  .form-readonly-box .link{color:var(--accent);font-size:.74rem;white-space:nowrap;}
   .col-full{grid-column:1/-1;}
   label{display:block;font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:5px;}
   label .req{color:var(--danger);margin-left:2px;}
@@ -4550,7 +4553,9 @@ let PDB = JSON.parse(localStorage.getItem('bbf_prod_v1')||'null') || {
   centros: [],       // {id, nombre, activo}
   productosProd: [], // {id, nombre, tipo:'elaborado'|'semielaborado', unidad, centrosIds:[],
                      //  detallaMP:bool, cantElementos:0-9, dtaStockSE:bool (fuente def. renglones),
-                     //  orden:0-99|null, costoSE:num|null, detallaMenu:bool, activo}
+                     //  orden:0-99|null, detallaMenu:bool, activo,
+                     //  recetaSE:[{tipo:'stock',refId,cantidad} | {tipo:'manual',nombre,precio,cantidad}]
+                     //    (solo semielaborados; costo se CALCULA siempre en vivo desde acá — no se guarda un número suelto)}
   stockSemi: {},     // {productoId: cantidad} — stock simple SOLO de semielaborados
                      //  (puede quedar negativo si se consumió más de lo ingresado:
                      //   se muestra en rojo para que la diferencia sea visible)
@@ -4559,6 +4564,11 @@ let PDB = JSON.parse(localStorage.getItem('bbf_prod_v1')||'null') || {
                      //           detalles:[{refTipo:'se'|'mp',refId,nombre,cantidad,unidad}]}],
                      //  estado:'cerrado', usuario, creado, fechaCierre, usuarioCierre}
   menus: [],         // {id, numero:0-99 (único), descripcion, activo}
+  destinatarios: [], // {id, nombre, domicilio, cuit, observacion, activo}
+  remitosDestino: [],// {id (= Nº de remito, correlativo), fecha, destinatarioId,
+                     //  destinatario, domicilio, cuit (snapshot editable al emitir),
+                     //  observacion, lineas:[{productoId,nombre,cantidad,unidad}],
+                     //  usuario, creado} — documental, no descuenta stock
   historialProd: []  // {ts, tipo, detalle, usuario}
 };
 
@@ -4569,6 +4579,8 @@ function migrarPDB(){
   if(!PDB.stockSemi)      PDB.stockSemi = {};
   if(!PDB.registros)      PDB.registros = [];
   if(!PDB.menus)          PDB.menus = [];
+  if(!PDB.destinatarios)    PDB.destinatarios = [];
+  if(!PDB.remitosDestino)   PDB.remitosDestino = [];
   if(!PDB.historialProd)  PDB.historialProd = [];
   PDB.productosProd.forEach(p => {
     if(!p.centrosIds) p.centrosIds = [];
@@ -4576,7 +4588,15 @@ function migrarPDB(){
     if(p.cantElementos === undefined) p.cantElementos = 0;
     if(p.dtaStockSE === undefined)    p.dtaStockSE = false;   // fuente por defecto de renglones nuevos (true = SE)
     if(p.orden === undefined)         p.orden = null;         // orden de presentación en el Registro Diario (0-99, menor primero)
-    if(p.costoSE === undefined)       p.costoSE = null;       // costo unitario (solo semielaborados)
+    if(p.recetaSE === undefined){
+      // Migración: los semielaborados que tenían un costo tipeado a mano
+      // pasan a una receta de 1 fila "Ajuste manual" con ese mismo valor,
+      // para no perder nada de lo ya cargado.
+      p.recetaSE = (p.costoSE !== null && p.costoSE !== undefined && p.costoSE > 0)
+        ? [{ tipo: 'manual', nombre: 'Costo cargado manualmente', precio: p.costoSE, cantidad: 1 }]
+        : [];
+    }
+    delete p.costoSE; // el costo ya no se guarda: se calcula siempre desde recetaSE
     if(p.detallaMenu === undefined)   p.detallaMenu = (p.tipo === 'elaborado'); // muestra selector de menú en el registro
     if(p.comparteConId === undefined) p.comparteConId = null; // producto principal al que se asocia (1 a 1)
     if(p.proporcion === undefined)    p.proporcion = null;    // % de MP respecto del principal
@@ -4590,12 +4610,14 @@ function migrarPDB(){
 }
 migrarPDB();
 
-let pIdSeq = { centro: 1, pprod: 1, reg: 1, menu: 1 };
+let pIdSeq = { centro: 1, pprod: 1, reg: 1, menu: 1, destinatario: 1, remitoDestino: 1 };
 function recalcularPIdSeq(){
   pIdSeq.centro = PDB.centros.length       ? Math.max(...PDB.centros.map(x=>x.id),0)+1       : 1;
   pIdSeq.pprod  = PDB.productosProd.length ? Math.max(...PDB.productosProd.map(x=>x.id),0)+1 : 1;
   pIdSeq.reg    = PDB.registros.length     ? Math.max(...PDB.registros.map(x=>x.id),0)+1     : 1;
   pIdSeq.menu   = PDB.menus.length         ? Math.max(...PDB.menus.map(x=>x.id),0)+1         : 1;
+  pIdSeq.destinatario  = PDB.destinatarios.length  ? Math.max(...PDB.destinatarios.map(x=>x.id),0)+1  : 1;
+  pIdSeq.remitoDestino = PDB.remitosDestino.length ? Math.max(...PDB.remitosDestino.map(x=>x.id),0)+1 : 1;
 }
 recalcularPIdSeq();
 
@@ -4605,6 +4627,9 @@ let prodSyncTimer = null;
 let editPProdId = null;    // producto en edición (null = nuevo)
 let editCentroId = null;   // centro en edición (null = nuevo)
 let editMenuId = null;     // menú en edición (null = nuevo)
+let formRecetaSE = [];      // receta del semielaborado EN EDICIÓN dentro del form de catálogo
+                            // (se persiste en p.recetaSE recién al guardar el producto)
+let editDestinatarioId = null; // destinatario en edición (null = nuevo)
 let regAdminEditId = null; // registro cerrado en edición por ADMIN (null = flujo normal)
 
 // ¿El usuario logueado es administrador?
@@ -4825,7 +4850,7 @@ const prodModuleHTML = '' +
 '  <div class="tabs" id="prod-tabs">' +
 '    <button class="tab active" onclick="switchTabProd(\'registro\')">📝 Registro Diario</button>' +
 '    <button class="tab" onclick="switchTabProd(\'productos\')">🏷 Productos Elab/Semielab</button>' +
-'    <button class="tab" onclick="switchTabProd(\'destino\')" style="opacity:.45">🚚 Destino</button>' +
+'    <button class="tab" onclick="switchTabProd(\'destino\')">🚚 Destino</button>' +
 '    <button class="tab" onclick="switchTabProd(\'informes\')">📊 Informes</button>' +
 '    <button class="tab" id="tab-btn-ajustes" onclick="switchTabProd(\'ajustes\')" style="display:none">🔧 Ajustes</button>' +
 '  </div>' +
@@ -4912,8 +4937,8 @@ const prodModuleHTML = '' +
 '              <option value="si">S\u00ED</option>' +
 '              <option value="no">No</option>' +
 '            </select></div>' +
-'          <div id="pprod-costo-wrap" style="display:none"><label>Costo unitario ($)</label>' +
-'            <input type="number" id="pprod-costo" min="0" step="any" placeholder="Ej: 350.50" title="Costo unitario del semielaborado, usado para calcular el costo de los productos que lo consumen"></div>' +
+'          <div id="pprod-costo-wrap" style="display:none"><label>Costo unitario</label>' +
+'            <div id="pprod-costo-display" class="form-readonly-box" style="cursor:pointer" onclick="abrirModalReceta()"></div></div>' +
 '          <div><label>Comparte MP con</label>' +
 '            <select id="pprod-compartecon" onchange="onPProdComparteChange()">' +
 '              <option value="">— No comparte —</option>' +
@@ -4977,10 +5002,74 @@ const prodModuleHTML = '' +
 '  </div>' +
 
 '  <div id="panelp-destino" class="panel">' +
-'    <div class="card" style="text-align:center;padding:60px 24px">' +
-'      <div style="font-size:40px;margin-bottom:12px">🚚</div>' +
-'      <div class="card-title" style="margin-bottom:8px">Destino</div>' +
-'      <div style="font-size:.85rem;color:var(--muted)">Próximamente — este módulo se desarrollará en una etapa posterior.</div>' +
+'    <div class="listado-submenu">' +
+'      <button class="listado-subtab active" data-sub="remitos" onclick="switchDestinoSub(\'remitos\')">🧾 Remitos</button>' +
+'      <button class="listado-subtab" data-sub="destinatarios" onclick="switchDestinoSub(\'destinatarios\')">📇 Destinatarios</button>' +
+'    </div>' +
+
+'    <div id="destsub-destinatarios" class="listado-subpanel">' +
+'      <div class="section-header">' +
+'        <div class="section-title">Destinatarios</div>' +
+'        <button class="btn btn-primary btn-sm" onclick="abrirFormDestinatario(null)">➕ Nuevo destinatario</button>' +
+'      </div>' +
+'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">No siempre el destino de un remito es un cliente — puede ser una entrega interna, una donación, etc. Cargá acá cada destinatario una sola vez; el remito toma sus datos y los podés ajustar puntualmente al emitir.</div>' +
+'      <div class="card" id="destinatario-form-card" style="display:none">' +
+'        <div class="card-title" id="destinatario-form-title">Nuevo destinatario</div>' +
+'        <div class="form-grid">' +
+'          <div><label>Nombre <span class="req">*</span></label><input type="text" id="dest-nombre" placeholder="Ej: Pame C." maxlength="120"></div>' +
+'          <div><label>Domicilio de entrega</label><input type="text" id="dest-domicilio" placeholder="Calle, número, piso..." maxlength="200"></div>' +
+'          <div><label>CUIT</label><input type="text" id="dest-cuit" placeholder="20-12345678-9" maxlength="20"></div>' +
+'        </div>' +
+'        <div style="margin-bottom:16px"><label>Observación</label><input type="text" id="dest-obs" placeholder="Notas internas..." maxlength="300"></div>' +
+'        <div style="display:flex;gap:10px;flex-wrap:wrap">' +
+'          <button class="btn btn-primary" onclick="guardarDestinatario()">💾 Guardar destinatario</button>' +
+'          <button class="btn btn-secondary" onclick="cerrarFormDestinatario()">Cancelar</button>' +
+'        </div>' +
+'      </div>' +
+'      <div id="destinatarios-lista"></div>' +
+'    </div>' +
+
+'    <div id="destsub-remitos" class="listado-subpanel active">' +
+'      <div class="section-header">' +
+'        <div class="section-title">Remitos de entrega</div>' +
+'        <button class="btn btn-primary btn-sm" id="btn-nuevo-remito" onclick="abrirFormRemitoDestino()">➕ Nuevo remito</button>' +
+'      </div>' +
+'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Documento interno de entrega — no descuenta stock. Registra qué productos elaborados se entregaron, a quién y cuándo.</div>' +
+
+'      <div class="card" id="remdest-form-card" style="display:none">' +
+'        <div class="card-title">Nuevo remito</div>' +
+'        <div class="form-grid">' +
+'          <div><label>Fecha <span class="req">*</span></label><input type="date" id="remdest-fecha"></div>' +
+'          <div class="col-full" style="grid-column:span 2;position:relative"><label>Destinatario <span class="req">*</span></label>' +
+'            <input type="text" id="remdest-dest-buscar" autocomplete="off" placeholder="Buscar destinatario..." oninput="filterRemDestBuscador()" onfocus="filterRemDestBuscador()" onblur="setTimeout(()=>{const d=document.getElementById(\'remdest-dest-drop\'); if(d) d.style.display=\'none\';},200)">' +
+'            <input type="hidden" id="remdest-dest-id">' +
+'            <div id="remdest-dest-drop" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:var(--surface2);border:1px solid var(--border);border-radius:8px;max-height:190px;overflow-y:auto;box-shadow:0 8px 20px rgba(0,0,0,.4)"></div>' +
+'          </div>' +
+'        </div>' +
+'        <div class="form-grid">' +
+'          <div><label>Domicilio de entrega</label><input type="text" id="remdest-domicilio" maxlength="200"></div>' +
+'          <div><label>CUIT</label><input type="text" id="remdest-cuit" maxlength="20"></div>' +
+'        </div>' +
+'        <div style="margin-bottom:16px"><label>Observación (de este remito)</label><input type="text" id="remdest-obs" placeholder="Notas para esta entrega..." maxlength="300"></div>' +
+'        <div class="card-title" style="margin-bottom:8px">Productos elaborados</div>' +
+'        <div id="remdest-lineas"></div>' +
+'        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">' +
+'          <button class="btn btn-primary" onclick="cerrarRemitoDestino()">✔ Cerrar y emitir remito</button>' +
+'          <button class="btn btn-secondary" onclick="cerrarFormRemitoDestino()">Cancelar</button>' +
+'        </div>' +
+'      </div>' +
+
+'      <div id="remdest-emitido-card" class="card" style="display:none;text-align:center">' +
+'        <div style="font-size:34px;margin-bottom:8px">✅</div>' +
+'        <div class="card-title" id="remdest-emitido-titulo" style="margin-bottom:14px">Remito emitido</div>' +
+'        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">' +
+'          <button class="btn btn-primary" id="btn-remdest-imprimir">🖨 Imprimir (original + copia)</button>' +
+'          <button class="btn btn-primary" id="btn-remdest-pdf">📄 PDF (original)</button>' +
+'          <button class="btn btn-secondary" onclick="document.getElementById(\'remdest-emitido-card\').style.display=\'none\'">Cerrar</button>' +
+'        </div>' +
+'      </div>' +
+
+'      <div id="remitos-destino-lista"></div>' +
 '    </div>' +
 '  </div>' +
 '  <div id="panelp-informes" class="panel">' +
@@ -5092,6 +5181,24 @@ const prodModuleHTML = '' +
 '  </div>' +
 
 '  </div>' +
+'  <div id=\"receta-modal-overlay\" style=\"display:none;position:fixed;inset:0;background:rgba(10,12,20,.7);z-index:400;align-items:center;justify-content:center;padding:20px\">' +
+'    <div class=\"card\" style=\"max-width:720px;width:100%;max-height:85vh;overflow-y:auto\">' +
+'      <div class=\"section-header\">' +
+'        <div class=\"section-title\">🧮 Receta del semielaborado</div>' +
+'      </div>' +
+'      <div style=\"font-size:.72rem;color:var(--muted);margin-bottom:14px\">El costo unitario se calcula solo, siempre con el precio vigente de cada materia prima. Agregá los ingredientes de Stock que la componen y, si hace falta ajustar algo (ej. un costo adicional), sumalo como \"ajuste manual\" — es la \u00FAnica forma de tocar el n\u00FAmero, y queda visible como una fila m\u00E1s de la receta.</div>' +
+'      <div id=\"receta-modal-body\"></div>' +
+'      <div style=\"display:flex;gap:10px;margin:14px 0\">' +
+'        <button class=\"btn btn-secondary btn-sm\" onclick=\"agregarFilaRecetaStock()\">➕ Agregar de Stock</button>' +
+'        <button class=\"btn btn-secondary btn-sm\" onclick=\"agregarFilaRecetaManual()\">➕ Agregar ajuste manual</button>' +
+'      </div>' +
+'      <div style=\"text-align:right;font-size:.95rem;font-weight:700;margin-bottom:16px\">Total: <span id=\"receta-total-display\" style=\"font-family:Syne,sans-serif;color:var(--accent)\">$0</span></div>' +
+'      <div style=\"display:flex;gap:10px\">' +
+'        <button class=\"btn btn-primary\" style=\"flex:1\" onclick=\"cerrarModalReceta(false)\">✔ Confirmar</button>' +
+'        <button class=\"btn btn-secondary\" style=\"flex:1\" onclick=\"cerrarModalReceta(true)\">Cancelar</button>' +
+'      </div>' +
+'    </div>' +
+'  </div>' +
 '  <div id="toast-prod" class="toast"></div>' +
 '</div>';
 
@@ -5106,6 +5213,7 @@ function switchTabProd(tab){
   const panel = document.getElementById('panelp-' + tab);
   if(panel) panel.classList.add('active');
   if(tab === 'productos'){ renderCatalogoPProd(); renderStockSemi(); renderCentros(); renderMenus(); }
+  if(tab === 'destino'){ switchDestinoSub('remitos'); }
   if(tab === 'informes'){ renderInformesProd(); renderNovedadesProd(); bindBuscadoresInformes(); }
   if(tab === 'ajustes')   renderAjustesProd();
 }
@@ -5134,6 +5242,17 @@ function switchProdSub(sub){
   if(sub === 'stocksemi') renderStockSemi();
   if(sub === 'centros')   renderCentros();
   if(sub === 'menus')     renderMenus();
+}
+
+function switchDestinoSub(sub){
+  const wrap = document.getElementById('panelp-destino');
+  if(!wrap) return;
+  wrap.querySelectorAll('.listado-subtab').forEach(t => t.classList.toggle('active', t.dataset.sub === sub));
+  wrap.querySelectorAll('.listado-subpanel').forEach(p => p.classList.remove('active'));
+  const panel = document.getElementById('destsub-' + sub);
+  if(panel) panel.classList.add('active');
+  if(sub === 'destinatarios') renderDestinatarios();
+  if(sub === 'remitos')       renderRemitosDestinoLista();
 }
 
 // ── REGISTRO DIARIO ──────────────────────────────────
@@ -5523,10 +5642,23 @@ function recolectarNovedadesForm(){
 // Calcula y FIJA el costo de cada línea al momento del cierre (snapshot):
 // por cada renglón de detalle MP → precio vigente más conveniente del Stock
 // (con bonificación aplicada: mismo criterio que la valorización) × cantidad
-// empleada. Los renglones SE usan el Costo unitario cargado en el catálogo
-// del semielaborado × cantidad (misma regla de snapshot: si el costo cambia
-// después, los registros cerrados no se modifican). SE sin costo cargado: "—".
+// empleada. Los renglones SE usan el costo del semielaborado calculado en
+// vivo desde su receta (costoRecetaSE) × cantidad (misma regla de snapshot:
+// si la receta cambia después, los registros cerrados no se modifican).
+// SE sin receta cargada o sin precio válido: "—".
 //
+// Calcula el costo unitario de un semielaborado a partir de su receta,
+// SIEMPRE en vivo (nunca se guarda un número suelto). Cada fila 'stock'
+// usa el precio vigente más conveniente del Stock (mejorPrecioFinal); cada
+// fila 'manual' (ajuste/ingrediente ficticio) usa el precio que se tipeó
+// ahí mismo. Filas sin precio válido no bloquean el cálculo: se excluyen
+// del total (mismo criterio que las líneas MP del registro diario).
+// Devuelve null si el producto no tiene receta cargada.
+function costoRecetaSE(p){
+  if(!p || !Array.isArray(p.recetaSE) || p.recetaSE.length === 0) return null;
+  return costoRecetaArray(p.recetaSE);
+}
+
 // PRODUCTOS ASOCIADOS: si en el mismo registro están el producto principal
 // y su asociado (asociado.comparteConId = principal.id, proporción P%), el
 // costo total de MP de AMBAS líneas se reparte por unidades equivalentes:
@@ -5547,7 +5679,8 @@ function calcularCostosLineas(lineas){
         precio = (typeof mejorPrecioFinal === 'function') ? mejorPrecioFinal(d.refId) : null;
       } else if(d.refTipo === 'se'){
         const ps = pprodById(d.refId);
-        precio = (ps && ps.costoSE !== null && ps.costoSE !== undefined && ps.costoSE > 0) ? ps.costoSE : null;
+        const cSE = ps ? costoRecetaSE(ps) : null;
+        precio = (cSE !== null && cSE > 0) ? cSE : null;
       }
       if(precio !== null && precio > 0){
         d.costo = precio * d.cantidad;   // subtotal de esa materia prima
@@ -6546,6 +6679,7 @@ function onPProdTipoChange(){
   const esSemi = document.getElementById('pprod-tipo').value === 'semielaborado';
   document.getElementById('pprod-costo-wrap').style.display  = esSemi ? 'block' : 'none';
   document.getElementById('pprod-dtmenu-wrap').style.display = esSemi ? 'none' : 'block';
+  if(esSemi) renderCostoDisplay();
 }
 
 function onPProdComparteChange(){
@@ -6565,10 +6699,11 @@ function abrirFormPProd(id){
   document.getElementById('pprod-cantelem').value = (p && p.cantElementos > 0) ? String(p.cantElementos) : '1';
   document.getElementById('pprod-dtase').value = (p && p.dtaStockSE) ? 'si' : 'no';
   document.getElementById('pprod-orden').value = (p && p.orden !== null && p.orden !== undefined) ? String(p.orden) : '';
-  document.getElementById('pprod-costo').value = (p && p.costoSE !== null && p.costoSE !== undefined) ? String(p.costoSE) : '';
+  formRecetaSE = (p && Array.isArray(p.recetaSE)) ? JSON.parse(JSON.stringify(p.recetaSE)) : [];
   document.getElementById('pprod-dtmenu').value = (p && p.detallaMenu === false) ? 'no' : 'si';
   onPProdDetallaChange();
   onPProdTipoChange();
+  renderCostoDisplay();
 
   // "Comparte MP con": candidatos válidos = otros productos que no sean a su
   // vez asociados de alguien (sin cadenas) y que no tengan ya otro asociado
@@ -6603,6 +6738,7 @@ function abrirFormPProd(id){
 
 function cerrarFormPProd(){
   editPProdId = null;
+  formRecetaSE = [];
   document.getElementById('pprod-form-card').style.display = 'none';
 }
 
@@ -6631,15 +6767,10 @@ function guardarPProd(){
   const detallaMenu = tipo === 'elaborado'
     ? (document.getElementById('pprod-dtmenu').value === 'si') : false;
 
-  // Costo unitario (solo semielaborados, opcional)
-  let costoSE = null;
-  if(tipo === 'semielaborado'){
-    const costoRaw = document.getElementById('pprod-costo').value;
-    costoSE = costoRaw === '' ? null : parseFloat(costoRaw);
-    if(costoSE !== null && !(costoSE >= 0)){
-      toastProd('El costo unitario no puede ser negativo', 'error'); return;
-    }
-  }
+  // Costo unitario (solo semielaborados): NO se tipea — se calcula siempre
+  // desde la receta (formRecetaSE), armada en el modal "Editar receta".
+  const recetaSE = (tipo === 'semielaborado') ? JSON.parse(JSON.stringify(formRecetaSE)) : [];
+
   if(centrosIds.length === 0){ toastProd('Asociá el producto a al menos un centro de elaboración', 'error'); return; }
 
   const duplicado = PDB.productosProd.find(p => p.nombre.toLowerCase() === nombre.toLowerCase() && p.id !== editPProdId);
@@ -6677,12 +6808,12 @@ function guardarPProd(){
     if(!p) return;
     p.nombre = nombre; p.tipo = tipo; p.unidad = unidad; p.centrosIds = centrosIds;
     p.detallaMP = detallaMP; p.cantElementos = cantElementos; p.dtaStockSE = dtaStockSE;
-    p.orden = orden; p.costoSE = costoSE; p.detallaMenu = detallaMenu;
+    p.orden = orden; p.recetaSE = recetaSE; p.detallaMenu = detallaMenu;
     p.comparteConId = comparteConId; p.proporcion = proporcion;
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-editado', detalle: 'Producto "' + nombre + '" editado', usuario });
     toastProd('✓ Producto actualizado');
   } else {
-    PDB.productosProd.push({ id: pIdSeq.pprod++, nombre, tipo, unidad, centrosIds, detallaMP, cantElementos, dtaStockSE, orden, costoSE, detallaMenu, comparteConId, proporcion, activo: true });
+    PDB.productosProd.push({ id: pIdSeq.pprod++, nombre, tipo, unidad, centrosIds, detallaMP, cantElementos, dtaStockSE, orden, recetaSE, detallaMenu, comparteConId, proporcion, activo: true });
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-creado', detalle: 'Producto "' + nombre + '" (' + tipo + ') creado', usuario });
     toastProd('✓ Producto creado');
   }
@@ -6739,7 +6870,7 @@ function renderCatalogoPProd(){
         infoPartes.push('# Orden: ' + p.orden);
       }
       if(p.tipo === 'semielaborado'){
-        infoPartes.push('💲 Costo unit.: ' + ((p.costoSE !== null && p.costoSE !== undefined && p.costoSE > 0) ? fmt(p.costoSE) : '—'));
+        infoPartes.push('💲 Costo unit.: ' + (() => { const c = costoRecetaSE(p); return (c !== null && c > 0) ? fmt(c) : '—'; })());
       }
       if(p.tipo === 'elaborado'){
         infoPartes.push('🍽 Menú: ' + (p.detallaMenu === false ? 'No' : 'Sí'));
@@ -6784,6 +6915,530 @@ function abrirFormMenu(id){
 function cerrarFormMenu(){
   editMenuId = null;
   document.getElementById('menu-form-card').style.display = 'none';
+}
+
+// ── RECETA DE SEMIELABORADOS (costo 100% calculado, sin campo manual) ────
+// formRecetaSE vive en memoria mientras se edita el formulario del
+// catálogo; recién se persiste en p.recetaSE al guardar el producto.
+
+// Refresca la caja de solo lectura "Costo unitario" del formulario según
+// el estado actual de formRecetaSE (se llama al abrir el form, al cambiar
+// de tipo, y cada vez que se guarda/cierra el modal de receta).
+function renderCostoDisplay(){
+  const cont = document.getElementById('pprod-costo-display');
+  if(!cont) return;
+  const fmt = (typeof fmtMoney === 'function') ? fmtMoney : (n => '$' + n);
+  if(!formRecetaSE.length){
+    cont.innerHTML = '<span style="color:var(--muted)">Sin receta cargada</span><span class="link">➕ Crear receta</span>';
+    return;
+  }
+  const total = costoRecetaArray(formRecetaSE);
+  cont.innerHTML = '<strong>' + fmt(total) + '</strong> <span style="color:var(--muted);font-size:.72rem">(según receta)</span><span class="link">✏ Editar receta</span>';
+}
+
+// Núcleo de cálculo sobre un array de receta (lo usa costoRecetaSE del
+// catálogo YA guardado, y también el modal mientras se está editando).
+function costoRecetaArray(receta){
+  let total = 0;
+  (receta || []).forEach(row => {
+    let precio = null;
+    if(row.tipo === 'stock'){
+      precio = (typeof mejorPrecioFinal === 'function') ? mejorPrecioFinal(row.refId) : null;
+    } else if(row.tipo === 'manual'){
+      precio = (row.precio !== null && row.precio !== undefined && row.precio >= 0) ? row.precio : null;
+    }
+    if(precio !== null && precio > 0) total += precio * (row.cantidad || 0);
+  });
+  return total;
+}
+
+let recetaModalBackup = null; // copia de formRecetaSE al abrir, para poder Cancelar
+
+function abrirModalReceta(){
+  if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
+  recetaModalBackup = JSON.parse(JSON.stringify(formRecetaSE));
+  document.getElementById('receta-modal-overlay').style.display = 'flex';
+  renderModalReceta();
+}
+
+function cerrarModalReceta(cancelar){
+  if(cancelar) formRecetaSE = recetaModalBackup || [];
+  document.getElementById('receta-modal-overlay').style.display = 'none';
+  renderCostoDisplay();
+}
+
+function agregarFilaRecetaStock(){
+  formRecetaSE.push({ tipo: 'stock', refId: null, cantidad: 1 });
+  renderModalReceta();
+}
+
+function agregarFilaRecetaManual(){
+  formRecetaSE.push({ tipo: 'manual', nombre: '', precio: null, cantidad: 1 });
+  renderModalReceta();
+}
+
+function quitarFilaReceta(idx){
+  formRecetaSE.splice(idx, 1);
+  renderModalReceta();
+}
+
+// Recalcula subtotal de una fila + total general SIN reconstruir todo el
+// DOM (evita perder el foco mientras se tipea cantidad/precio).
+function actualizarFilaReceta(idx){
+  const fmt = (typeof fmtMoney === 'function') ? fmtMoney : (n => '$' + n);
+  const row = formRecetaSE[idx];
+  if(!row) return;
+  let precio = null;
+  if(row.tipo === 'stock'){
+    precio = (typeof mejorPrecioFinal === 'function') ? mejorPrecioFinal(row.refId) : null;
+  } else if(row.tipo === 'manual'){
+    precio = (row.precio !== null && row.precio !== undefined && row.precio >= 0) ? row.precio : null;
+  }
+  const valido = precio !== null && precio > 0;
+  const subtotal = valido ? precio * (row.cantidad || 0) : null;
+  const subCel = document.querySelector('.receta-subtotal[data-idx="' + idx + '"]');
+  if(subCel) subCel.innerHTML = valido ? fmt(subtotal) : '<span style="color:var(--danger)">Sin precio</span>';
+  const totalEl = document.getElementById('receta-total-display');
+  if(totalEl) totalEl.textContent = fmt(costoRecetaArray(formRecetaSE));
+}
+
+function onRecetaCantChange(idx, val){
+  formRecetaSE[idx].cantidad = parseFloat(val) || 0;
+  actualizarFilaReceta(idx);
+}
+
+function onRecetaManualNombreChange(idx, val){
+  formRecetaSE[idx].nombre = val;
+}
+
+function onRecetaManualPrecioChange(idx, val){
+  formRecetaSE[idx].precio = val === '' ? null : parseFloat(val);
+  actualizarFilaReceta(idx);
+}
+
+function renderModalReceta(){
+  const cont = document.getElementById('receta-modal-body');
+  if(!cont) return;
+  const fmt = (typeof fmtMoney === 'function') ? fmtMoney : (n => '$' + n);
+  if(formRecetaSE.length === 0){
+    cont.innerHTML = '<div style="color:var(--muted);font-size:.82rem;padding:16px 0;text-align:center">Sin ingredientes cargados — agregá materias primas del Stock o un ajuste manual.</div>';
+  } else {
+    const filas = formRecetaSE.map((row, i) => {
+      let precio = null;
+      let colNombre;
+      if(row.tipo === 'stock'){
+        precio = (typeof mejorPrecioFinal === 'function') ? mejorPrecioFinal(row.refId) : null;
+        const opciones = (typeof opcionesDetalle === 'function') ? opcionesDetalle('mp') : [];
+        const actual = row.refId ? opciones.find(o => o.id === row.refId) : null;
+        const nombreActual = actual ? actual.nombre : (row.refId ? '(producto no encontrado)' : '');
+        colNombre = `<div style="position:relative">
+          <input type="text" class="receta-buscar" data-idx="${i}" autocomplete="off"
+            placeholder="Buscar materia prima..." value="${escProd(nombreActual)}"
+            style="font-size:.8rem;padding:7px 10px">
+          <input type="hidden" class="receta-ref" data-idx="${i}" value="${row.refId || ''}">
+          <div class="receta-drop" data-idx="${i}" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:var(--surface2);border:1px solid var(--border);border-radius:8px;max-height:190px;overflow-y:auto;box-shadow:0 8px 20px rgba(0,0,0,.4)"></div>
+        </div>`;
+      } else {
+        colNombre = `<input type="text" class="receta-manual-nombre" data-idx="${i}" value="${escProd(row.nombre)}"
+          placeholder="Ej: Ajuste flete" oninput="onRecetaManualNombreChange(${i}, this.value)" style="font-size:.8rem;padding:7px 10px">`;
+      }
+      const valido = precio !== null && precio > 0;
+      const subtotal = valido ? precio * (row.cantidad || 0) : null;
+      const colPrecio = row.tipo === 'stock'
+        ? `<div style="font-size:.8rem;padding:7px 4px;color:${valido ? 'var(--text)' : 'var(--danger)'}">${valido ? fmt(precio) : 'Sin precio en Stock'}</div>`
+        : `<input type="number" class="receta-manual-precio" data-idx="${i}" min="0" step="any" value="${row.precio !== null && row.precio !== undefined ? row.precio : ''}"
+            placeholder="$" oninput="onRecetaManualPrecioChange(${i}, this.value)" style="font-size:.8rem;padding:7px 10px">`;
+      return `<tr>
+        <td style="min-width:220px">${colNombre}</td>
+        <td style="width:140px">${colPrecio}</td>
+        <td style="width:100px"><input type="number" class="receta-cant" data-idx="${i}" min="0" step="any" value="${row.cantidad}"
+          oninput="onRecetaCantChange(${i}, this.value)" style="font-size:.8rem;padding:7px 10px"></td>
+        <td class="receta-subtotal" data-idx="${i}" style="width:120px;font-weight:600">${valido ? fmt(subtotal) : '<span style="color:var(--danger)">Sin precio</span>'}</td>
+        <td style="width:36px"><button class="btn btn-secondary btn-sm" onclick="quitarFilaReceta(${i})" title="Quitar ingrediente">✕</button></td>
+      </tr>`;
+    }).join('');
+    cont.innerHTML = `<table class="stock-table"><thead>
+      <tr><th>Materia prima / Ajuste</th><th>Precio unitario</th><th>Cantidad</th><th>Subtotal</th><th></th></tr>
+      </thead><tbody>${filas}</tbody></table>`;
+  }
+  const totalEl = document.getElementById('receta-total-display');
+  if(totalEl) totalEl.textContent = fmt(costoRecetaArray(formRecetaSE));
+  bindBuscadoresReceta();
+}
+
+// Buscador de materia prima de cada fila 'stock' — mismo patrón autocontenido
+// que bindBuscadoresDetalle del registro diario (lista completa de Stock,
+// sin filtrar por stock disponible: es una receta, no un egreso real).
+function bindBuscadoresReceta(){
+  document.querySelectorAll('#receta-modal-body .receta-buscar').forEach(inp => {
+    const idx = parseInt(inp.dataset.idx);
+    const cont = inp.parentElement;
+    const hidden = cont.querySelector('.receta-ref');
+    const drop = cont.querySelector('.receta-drop');
+
+    function renderDrop(){
+      const q = inp.value.trim().toLowerCase();
+      const opts = (typeof opcionesDetalle === 'function' ? opcionesDetalle('mp') : [])
+        .filter(o => !q || o.nombre.toLowerCase().includes(q))
+        .slice(0, 30);
+      if(opts.length === 0){
+        drop.innerHTML = '<div style="padding:8px 12px;font-size:.75rem;color:var(--muted)">Sin resultados</div>';
+      } else {
+        drop.innerHTML = opts.map(o =>
+          `<div class="receta-opt" data-id="${o.id}" data-nombre="${escProd(o.nombre)}"
+             style="padding:7px 12px;font-size:.78rem;cursor:pointer;border-bottom:1px solid rgba(42,48,69,.4)">${escProd(o.nombre)}</div>`
+        ).join('');
+        drop.querySelectorAll('.receta-opt').forEach(opt => {
+          opt.addEventListener('mousedown', function(ev){
+            ev.preventDefault();
+            hidden.value = opt.dataset.id;
+            inp.value = opt.dataset.nombre;
+            formRecetaSE[idx].refId = parseInt(opt.dataset.id);
+            drop.style.display = 'none';
+            actualizarFilaReceta(idx);
+            // el precio depende del producto elegido: re-render de esa celda
+            renderModalReceta();
+          });
+          opt.addEventListener('mouseenter', function(){ opt.style.background = 'rgba(0,229,160,.08)'; });
+          opt.addEventListener('mouseleave', function(){ opt.style.background = 'transparent'; });
+        });
+      }
+      drop.style.display = 'block';
+    }
+
+    inp.addEventListener('focus', renderDrop);
+    inp.addEventListener('input', function(){
+      hidden.value = '';
+      formRecetaSE[idx].refId = null;
+      renderDrop();
+    });
+    inp.addEventListener('blur', function(){ setTimeout(() => { drop.style.display = 'none'; }, 200); });
+  });
+}
+
+// ── REMITOS DE DESTINO (documental — no descuenta stock) ──────────────
+function remitoDestinoById(id){ return PDB.remitosDestino.find(r => r.id === id); }
+function numRemDest(id){ return String(id).padStart(4, '0'); }
+
+function abrirFormRemitoDestino(){
+  if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
+  document.getElementById('remdest-fecha').value = new Date().toISOString().split('T')[0];
+  document.getElementById('remdest-dest-buscar').value = '';
+  document.getElementById('remdest-dest-id').value = '';
+  document.getElementById('remdest-domicilio').value = '';
+  document.getElementById('remdest-cuit').value = '';
+  document.getElementById('remdest-obs').value = '';
+  document.getElementById('remdest-emitido-card').style.display = 'none';
+  renderRemDestLineas();
+  document.getElementById('remdest-form-card').style.display = 'block';
+}
+
+async function cerrarFormRemitoDestino(){
+  const hayDatos = document.getElementById('remdest-dest-id').value !== '' ||
+    Array.from(document.querySelectorAll('.remdest-cant')).some(inp => parseFloat(inp.value) > 0);
+  if(hayDatos && !(await confirmModal('¿Cancelar el remito? Se perderán los datos cargados.'))) return;
+  document.getElementById('remdest-form-card').style.display = 'none';
+}
+
+// Buscador de destinatario (activos), autocompletando domicilio/CUIT editables
+function filterRemDestBuscador(){
+  const inp = document.getElementById('remdest-dest-buscar');
+  const drop = document.getElementById('remdest-dest-drop');
+  const q = inp.value.trim().toLowerCase();
+  const matches = PDB.destinatarios.filter(d => d.activo && (!q || d.nombre.toLowerCase().includes(q)));
+  if(matches.length === 0){
+    drop.innerHTML = '<div style="padding:8px 12px;font-size:.75rem;color:var(--muted)">Sin resultados — cargalo primero en la solapa Destinatarios</div>';
+  } else {
+    drop.innerHTML = matches.map(d =>
+      `<div class="rd-opt" data-id="${d.id}" style="padding:7px 12px;font-size:.8rem;cursor:pointer;border-bottom:1px solid rgba(42,48,69,.4)">${escProd(d.nombre)}</div>`
+    ).join('');
+    drop.querySelectorAll('.rd-opt').forEach(opt => {
+      opt.addEventListener('mousedown', function(ev){
+        ev.preventDefault();
+        selectRemDestinatario(parseInt(opt.dataset.id));
+      });
+      opt.addEventListener('mouseenter', function(){ opt.style.background = 'rgba(0,229,160,.08)'; });
+      opt.addEventListener('mouseleave', function(){ opt.style.background = 'transparent'; });
+    });
+  }
+  drop.style.display = 'block';
+}
+
+function selectRemDestinatario(id){
+  const d = destinatarioById(id);
+  if(!d) return;
+  document.getElementById('remdest-dest-buscar').value = d.nombre;
+  document.getElementById('remdest-dest-id').value = d.id;
+  document.getElementById('remdest-domicilio').value = d.domicilio || '';
+  document.getElementById('remdest-cuit').value = d.cuit || '';
+  document.getElementById('remdest-dest-drop').style.display = 'none';
+}
+
+// Tabla de productos elaborados (no semielaborados) — mismo orden de
+// presentación del Registro Diario: campo Orden asc, luego alfabético.
+function renderRemDestLineas(){
+  const cont = document.getElementById('remdest-lineas');
+  if(!cont) return;
+  const productos = PDB.productosProd
+    .filter(p => p.tipo === 'elaborado' && p.activo)
+    .sort((a, b) => {
+      const oa = (a.orden === null || a.orden === undefined) ? 100 : a.orden;
+      const ob = (b.orden === null || b.orden === undefined) ? 100 : b.orden;
+      if(oa !== ob) return oa - ob;
+      return a.nombre.localeCompare(b.nombre, 'es');
+    });
+  if(productos.length === 0){
+    cont.innerHTML = '<div style="color:var(--muted);font-size:.8rem;padding:12px 0">No hay productos elaborados cargados en el catálogo.</div>';
+    return;
+  }
+  const filas = productos.map(p => `<tr>
+    <td>${escProd(p.nombre)}</td>
+    <td style="width:110px;color:var(--muted)">${escProd(p.unidad)}</td>
+    <td style="width:140px"><input type="number" min="0" step="any" class="remdest-cant" data-prodid="${p.id}" placeholder="0"></td>
+  </tr>`).join('');
+  cont.innerHTML = `<table class="stock-table"><thead>
+    <tr><th>Producto</th><th>Unidad</th><th>Cantidad</th></tr>
+    </thead><tbody>${filas}</tbody></table>`;
+}
+
+async function cerrarRemitoDestino(){
+  if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
+  const fecha = document.getElementById('remdest-fecha').value;
+  const destId = parseInt(document.getElementById('remdest-dest-id').value) || null;
+  if(!fecha){ toastProd('La fecha es obligatoria', 'error'); return; }
+  if(!destId){ toastProd('Elegí un destinatario', 'error'); return; }
+  const d = destinatarioById(destId);
+  if(!d){ toastProd('El destinatario elegido no existe', 'error'); return; }
+
+  const lineas = Array.from(document.querySelectorAll('.remdest-cant'))
+    .map(inp => ({ productoId: parseInt(inp.dataset.prodid), cantidad: parseFloat(inp.value) || 0 }))
+    .filter(l => l.cantidad > 0)
+    .map(l => { const p = pprodById(l.productoId); return { productoId: l.productoId, nombre: p ? p.nombre : '#'+l.productoId, unidad: p ? p.unidad : '—', cantidad: l.cantidad }; });
+
+  if(lineas.length === 0){ toastProd('Cargá al menos una cantidad mayor a cero', 'error'); return; }
+
+  const ok = await confirmModal('¿Cerrar y emitir el remito para "' + d.nombre + '" con ' + lineas.length + ' línea(s)? No se puede deshacer.', 'Emitir remito');
+  if(!ok) return;
+
+  const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  const remito = {
+    id: pIdSeq.remitoDestino++,
+    fecha,
+    destinatarioId: destId,
+    destinatario: d.nombre, // snapshot: si después cambian el destinatario, el remito emitido no se altera
+    domicilio: document.getElementById('remdest-domicilio').value.trim(),
+    cuit: document.getElementById('remdest-cuit').value.trim(),
+    observacion: document.getElementById('remdest-obs').value.trim(),
+    lineas,
+    usuario,
+    creado: new Date().toISOString()
+  };
+  PDB.remitosDestino.push(remito);
+  PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'remito-emitido', detalle: 'Remito Nº ' + numRemDest(remito.id) + ' emitido para "' + d.nombre + '" (' + lineas.length + ' línea(s))', usuario });
+  saveProd();
+
+  document.getElementById('remdest-form-card').style.display = 'none';
+  mostrarAccionesRemito(remito.id);
+  renderRemitosDestinoLista();
+  toastProd('✓ Remito Nº ' + numRemDest(remito.id) + ' emitido');
+}
+
+// Muestra la card de acciones (Imprimir/PDF) para un remito ya emitido —
+// se usa tanto justo después de cerrar como al reabrir uno del listado.
+function mostrarAccionesRemito(id){
+  const r = remitoDestinoById(id);
+  if(!r) return;
+  document.getElementById('remdest-emitido-titulo').textContent = 'Remito Nº ' + numRemDest(r.id) + ' — ' + r.destinatario;
+  document.getElementById('btn-remdest-imprimir').onclick = () => imprimirRemitoDestino(r.id);
+  document.getElementById('btn-remdest-pdf').onclick = () => exportarRemitoDestinoPDF(r.id);
+  document.getElementById('remdest-emitido-card').style.display = 'block';
+  document.getElementById('remdest-emitido-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function renderRemitosDestinoLista(){
+  const cont = document.getElementById('remitos-destino-lista');
+  if(!cont) return;
+  if(PDB.remitosDestino.length === 0){
+    cont.innerHTML = '<div style="color:var(--muted);font-size:.8rem;padding:12px 0">Sin remitos emitidos todavía.</div>';
+    return;
+  }
+  const filas = PDB.remitosDestino.slice().sort((a,b) => b.id - a.id).map(r => `<tr>
+    <td style="font-family:'Syne',sans-serif;font-weight:700">${numRemDest(r.id)}</td>
+    <td>${fechaBonitaProd(r.fecha)}</td>
+    <td>${escProd(r.destinatario)}</td>
+    <td style="color:var(--muted)">${r.lineas.length} línea${r.lineas.length === 1 ? '' : 's'}</td>
+    <td><button class="btn btn-secondary btn-sm" onclick="mostrarAccionesRemito(${r.id})">👁 Ver / Reimprimir</button></td>
+  </tr>`).join('');
+  cont.innerHTML = `<div class="card-title" style="margin-top:22px;margin-bottom:10px">Remitos emitidos</div>
+    <table class="stock-table"><thead>
+    <tr><th>Nº</th><th>Fecha</th><th>Destinatario</th><th>Líneas</th><th>Acciones</th></tr>
+    </thead><tbody>${filas}</tbody></table>`;
+}
+
+// Impresión apaisada: ORIGINAL (para el destinatario) + DUPLICADO (acuse de
+// recibo para BBF) en la misma hoja A4, separados por una línea de corte.
+function imprimirRemitoDestino(id){
+  const r = remitoDestinoById(id);
+  if(!r){ toastProd('Remito no encontrado', 'error'); return; }
+
+  const logoImg = document.querySelector('.sidebar-logo img');
+  const logoSrc = (logoImg && logoImg.src.startsWith('data:image')) ? logoImg.src : '';
+  const totalUnid = r.lineas.reduce((s,l) => s + l.cantidad, 0);
+
+  const copia = (etiqueta) => `
+    <div class="rd-copia">
+      <div class="rd-etiqueta">${etiqueta}</div>
+      <div class="rd-header">
+        ${logoSrc ? '<img src="'+logoSrc+'" class="rd-logo">' : ''}
+        <div>
+          <h1>Remito Interno de Entrega</h1>
+          <div class="rd-sub">BBF Catering — Producción</div>
+        </div>
+        <div class="rd-nrofecha">
+          <div><label>Nº</label><strong>${numRemDest(r.id)}</strong></div>
+          <div><label>Fecha</label><strong>${fechaBonitaProd(r.fecha)}</strong></div>
+        </div>
+      </div>
+      <div class="rd-datos">
+        <div><label>Destinatario</label><strong>${escProd(r.destinatario)}</strong></div>
+        <div><label>Domicilio</label><strong>${escProd(r.domicilio) || '—'}</strong></div>
+        <div><label>CUIT</label><strong>${escProd(r.cuit) || '—'}</strong></div>
+        ${r.observacion ? '<div class="rd-obs"><label>Observación</label><strong>'+escProd(r.observacion)+'</strong></div>' : ''}
+      </div>
+      <table class="rd-tabla">
+        <thead><tr><th>Cantidad</th><th>Producto</th></tr></thead>
+        <tbody>${r.lineas.map(l => `<tr><td>${l.cantidad}</td><td>${escProd(l.nombre)} <span class="rd-unid">(${escProd(l.unidad)})</span></td></tr>`).join('')}</tbody>
+        <tfoot><tr><td colspan="2">Total unidades: ${totalUnid}</td></tr></tfoot>
+      </table>
+      <div class="rd-firma">
+        <div class="rd-firma-box">Entregado por<br><br>Firma y aclaración</div>
+        <div class="rd-firma-box">Recibido por<br><br>Firma, aclaración y fecha</div>
+      </div>
+    </div>`;
+
+  const contenido = `
+    <div id="rd-print-area">
+      <style>
+        @page{ size:A4 landscape; margin:8mm; }
+        #rd-print-area{font-family:Arial,sans-serif;color:#111;}
+        #rd-print-area .rd-grid{display:grid;grid-template-columns:1fr 1fr;gap:0;height:100%;}
+        #rd-print-area .rd-copia{padding:10px 14px;border-right:1px dashed #999;font-size:11px;}
+        #rd-print-area .rd-copia:last-child{border-right:none;}
+        #rd-print-area .rd-etiqueta{font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;background:#eee;padding:4px 8px;border-radius:4px;display:inline-block;margin-bottom:8px;}
+        #rd-print-area .rd-header{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+        #rd-print-area .rd-logo{height:36px;}
+        #rd-print-area h1{font-size:15px;font-weight:800;margin:0;}
+        #rd-print-area .rd-sub{font-size:9px;color:#666;}
+        #rd-print-area .rd-nrofecha{margin-left:auto;text-align:right;font-size:9px;}
+        #rd-print-area .rd-nrofecha strong{font-size:12px;}
+        #rd-print-area .rd-datos{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;border:1px solid #ccc;border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:10px;}
+        #rd-print-area .rd-datos label{display:block;font-size:8px;text-transform:uppercase;color:#888;}
+        #rd-print-area .rd-obs{grid-column:1/-1;}
+        #rd-print-area .rd-tabla{width:100%;border-collapse:collapse;margin-bottom:14px;font-size:10px;}
+        #rd-print-area .rd-tabla th{text-align:left;border-bottom:2px solid #333;padding:4px 6px;font-size:9px;text-transform:uppercase;}
+        #rd-print-area .rd-tabla td{padding:4px 6px;border-bottom:1px solid #eee;}
+        #rd-print-area .rd-unid{color:#888;font-size:9px;}
+        #rd-print-area .rd-tabla tfoot td{border-top:2px solid #333;font-weight:700;padding-top:6px;}
+        #rd-print-area .rd-firma{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px;font-size:9px;}
+        #rd-print-area .rd-firma-box{border-top:1px solid #999;padding-top:20px;text-align:center;color:#555;}
+        .rd-print-cerrar{margin-bottom:14px;padding:9px 20px;background:#eee;border:1px solid #ccc;border-radius:8px;font-size:13px;cursor:pointer;font-weight:700;}
+        @media print{
+          body > *:not(#rd-print-overlay){display:none!important;}
+          #rd-print-overlay{position:fixed!important;inset:0!important;background:white!important;z-index:9999!important;padding:0!important;}
+          .rd-print-cerrar{display:none!important;}
+        }
+      </style>
+      <button class="rd-print-cerrar" onclick="cerrarRdPrintOverlay()">✕ Cerrar</button>
+      <div class="rd-grid">
+        ${copia('ORIGINAL — Destinatario')}
+        ${copia('DUPLICADO — Acuse de recibo BBF')}
+      </div>
+    </div>`;
+
+  let overlay = document.getElementById('rd-print-overlay');
+  if(!overlay){
+    overlay = document.createElement('div');
+    overlay.id = 'rd-print-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:white;z-index:9999;padding:16px;overflow-y:auto;';
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML = contenido;
+  overlay.style.display = 'block';
+  setTimeout(() => window.print(), 400);
+}
+
+function cerrarRdPrintOverlay(){
+  const overlay = document.getElementById('rd-print-overlay');
+  if(overlay) overlay.style.display = 'none';
+}
+
+// PDF vertical — solo ORIGINAL (para adjuntar/enviar digitalmente)
+function exportarRemitoDestinoPDF(id){
+  const r = remitoDestinoById(id);
+  if(!r){ toastProd('Remito no encontrado', 'error'); return; }
+  if(typeof window.jspdf === 'undefined'){
+    toastProd('Cargando generador de PDF, intentá de nuevo en unos segundos...', 'error');
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF(); // portrait por defecto
+
+  let y = 15;
+  try {
+    const logoImg = document.querySelector('.sidebar-logo img');
+    if(logoImg && logoImg.src.startsWith('data:image')){
+      doc.addImage(logoImg.src, 'JPEG', 15, y, 26, 20);
+    }
+  } catch(e){ /* sin logo, seguimos */ }
+
+  doc.setFontSize(15);
+  doc.setFont('helvetica', 'bold');
+  doc.text('Remito Interno de Entrega', 48, 20);
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'normal');
+  doc.text('BBF Catering — Producción', 48, 25);
+
+  doc.setFontSize(10);
+  doc.text('Nº ' + numRemDest(r.id), 165, 18, { align: 'right' });
+  doc.text('Fecha: ' + fechaBonitaProd(r.fecha), 165, 24, { align: 'right' });
+
+  let yDatos = 38;
+  doc.setDrawColor(200);
+  doc.roundedRect(15, yDatos, 180, r.observacion ? 30 : 22, 2, 2);
+  doc.setFontSize(9);
+  doc.setTextColor(120); doc.text('Destinatario', 20, yDatos + 7);
+  doc.setTextColor(20);  doc.setFont('helvetica', 'bold'); doc.text(r.destinatario, 20, yDatos + 12);
+  doc.setFont('helvetica', 'normal'); doc.setTextColor(120); doc.text('Domicilio', 20, yDatos + 18);
+  doc.setTextColor(20);  doc.text(r.domicilio || '—', 45, yDatos + 18);
+  doc.setTextColor(120); doc.text('CUIT', 130, yDatos + 18);
+  doc.setTextColor(20);  doc.text(r.cuit || '—', 143, yDatos + 18);
+  if(r.observacion){
+    doc.setTextColor(120); doc.text('Observación', 20, yDatos + 25);
+    doc.setTextColor(20);  doc.text(r.observacion, 48, yDatos + 25, { maxWidth: 140 });
+  }
+  doc.setTextColor(0);
+
+  doc.autoTable({
+    startY: yDatos + (r.observacion ? 36 : 28),
+    head: [['Cantidad', 'Producto']],
+    body: r.lineas.map(l => [String(l.cantidad), l.nombre + ' (' + l.unidad + ')']),
+    foot: [['Total unidades: ' + r.lineas.reduce((s,l) => s + l.cantidad, 0), '']],
+    theme: 'grid',
+    headStyles: { fillColor: [29,158,117], textColor: 255 },
+    footStyles: { fillColor: [240,240,240], textColor: 30, fontStyle: 'bold' },
+    styles: { fontSize: 9 }
+  });
+
+  const yFirma = doc.lastAutoTable.finalY + 30;
+  doc.setDrawColor(150);
+  doc.setFontSize(8.5);
+  doc.line(20, yFirma, 90, yFirma);
+  doc.text('Entregado por (firma y aclaración)', 20, yFirma + 5);
+  doc.line(120, yFirma, 190, yFirma);
+  doc.text('Recibido por (firma, aclaración y fecha)', 120, yFirma + 5);
+
+  doc.save('remito-' + numRemDest(r.id) + '.pdf');
+  toastProd('✓ PDF del remito descargado');
 }
 
 function guardarMenu(){
@@ -6853,6 +7508,92 @@ function renderMenus(){
     </thead><tbody>${filas}</tbody></table>`;
 }
 
+// ── DESTINATARIOS (ABM) ───────────────────────────────
+function destinatarioById(id){ return PDB.destinatarios.find(d => d.id === id); }
+
+function abrirFormDestinatario(id){
+  if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
+  editDestinatarioId = id;
+  const d = id ? destinatarioById(id) : null;
+  document.getElementById('destinatario-form-title').textContent = d ? 'Editar destinatario' : 'Nuevo destinatario';
+  document.getElementById('dest-nombre').value = d ? d.nombre : '';
+  document.getElementById('dest-domicilio').value = d ? (d.domicilio || '') : '';
+  document.getElementById('dest-cuit').value = d ? (d.cuit || '') : '';
+  document.getElementById('dest-obs').value = d ? (d.observacion || '') : '';
+  document.getElementById('destinatario-form-card').style.display = 'block';
+  document.getElementById('dest-nombre').focus();
+}
+
+function cerrarFormDestinatario(){
+  editDestinatarioId = null;
+  document.getElementById('destinatario-form-card').style.display = 'none';
+}
+
+function guardarDestinatario(){
+  if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
+  const nombre = document.getElementById('dest-nombre').value.trim();
+  const domicilio = document.getElementById('dest-domicilio').value.trim();
+  const cuit = document.getElementById('dest-cuit').value.trim();
+  const observacion = document.getElementById('dest-obs').value.trim();
+  if(!nombre){ toastProd('El nombre es obligatorio', 'error'); return; }
+  const duplicado = PDB.destinatarios.find(d => d.nombre.toLowerCase() === nombre.toLowerCase() && d.id !== editDestinatarioId);
+  if(duplicado){ toastProd('Ya existe un destinatario con ese nombre', 'error'); return; }
+  const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  if(editDestinatarioId){
+    const d = destinatarioById(editDestinatarioId);
+    if(!d) return;
+    d.nombre = nombre; d.domicilio = domicilio; d.cuit = cuit; d.observacion = observacion;
+    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'destinatario-editado', detalle: 'Destinatario "' + nombre + '" editado', usuario });
+    toastProd('✓ Destinatario actualizado');
+  } else {
+    PDB.destinatarios.push({ id: pIdSeq.destinatario++, nombre, domicilio, cuit, observacion, activo: true });
+    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'destinatario-creado', detalle: 'Destinatario "' + nombre + '" creado', usuario });
+    toastProd('✓ Destinatario creado');
+  }
+  cerrarFormDestinatario();
+  saveProd();
+  renderDestinatarios();
+}
+
+async function toggleActivoDestinatario(id){
+  if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
+  const d = destinatarioById(id);
+  if(!d) return;
+  const accion = d.activo ? 'desactivar' : 'reactivar';
+  const ok = await confirmModal('¿Seguro que querés ' + accion + ' a "' + d.nombre + '"?', (d.activo ? 'Desactivar' : 'Reactivar') + ' destinatario');
+  if(!ok) return;
+  d.activo = !d.activo;
+  saveProd();
+  renderDestinatarios();
+  toastProd('✓ Destinatario ' + (d.activo ? 'reactivado' : 'desactivado'));
+}
+
+function renderDestinatarios(){
+  const cont = document.getElementById('destinatarios-lista');
+  if(!cont) return;
+  if(PDB.destinatarios.length === 0){
+    cont.innerHTML = '<div style="color:var(--muted);font-size:.8rem;padding:12px 0">Sin destinatarios cargados — creá el primero con el botón "Nuevo destinatario".</div>';
+    return;
+  }
+  const filas = PDB.destinatarios.slice().sort((a,b) => a.nombre.localeCompare(b.nombre, 'es')).map(d => {
+    const estado = d.activo ? '<span class="badge badge-ok">Activo</span>' : '<span class="badge badge-danger">Inactivo</span>';
+    const btnToggle = d.activo ? '🚫 Desactivar' : '↩ Reactivar';
+    return `<tr style="${d.activo ? '' : 'opacity:.5'}">
+      <td>${escProd(d.nombre)}</td>
+      <td style="color:var(--muted);font-size:.78rem">${escProd(d.domicilio) || '—'}</td>
+      <td style="color:var(--muted);font-size:.78rem">${escProd(d.cuit) || '—'}</td>
+      <td>${estado}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-secondary btn-sm prod-edit-action" onclick="abrirFormDestinatario(${d.id})">✏</button>
+        <button class="btn btn-secondary btn-sm prod-edit-action" onclick="toggleActivoDestinatario(${d.id})">${btnToggle}</button>
+      </td>
+    </tr>`;
+  }).join('');
+  cont.innerHTML = `<table class="stock-table"><thead>
+    <tr><th>Nombre</th><th>Domicilio</th><th>CUIT</th><th>Estado</th><th>Acciones</th></tr>
+    </thead><tbody>${filas}</tbody></table>`;
+}
+
 // ── STOCK SIMPLE DE SEMIELABORADOS ───────────────────
 function renderStockSemi(){
   const cont = document.getElementById('stocksemi-lista');
@@ -6870,9 +7611,10 @@ function renderStockSemi(){
       const cant = PDB.stockSemi[p.id] || 0;
       const color = cant < 0 ? 'var(--danger)' : (cant > 0 ? 'var(--accent)' : 'var(--muted)');
       const alerta = cant < 0 ? ' <span class="badge badge-danger">Negativo</span>' : '';
-      const tieneCosto = p.costoSE !== null && p.costoSE !== undefined && p.costoSE > 0;
-      const costoTxt = tieneCosto ? fmt(p.costoSE) : '—';
-      const valorizado = tieneCosto ? cant * p.costoSE : null;
+      const costoCalc = costoRecetaSE(p);
+      const tieneCosto = costoCalc !== null && costoCalc > 0;
+      const costoTxt = tieneCosto ? fmt(costoCalc) : '—';
+      const valorizado = tieneCosto ? cant * costoCalc : null;
       if(valorizado !== null) totalValorizado += valorizado;
       const valorTxt = valorizado !== null
         ? `<span style="color:${valorizado < 0 ? 'var(--danger)' : 'var(--text)'}">${fmt(valorizado)}</span>` : '—';
@@ -7041,7 +7783,7 @@ function applyReadonlyModeProd(){
 
 // ── RENDER GENERAL ───────────────────────────────────
 function renderAllProd(){
-  const pasos = [renderPRegCentroSelect, renderRegistrosProd, renderCatalogoPProd, renderStockSemi, renderCentros, renderMenus];
+  const pasos = [renderPRegCentroSelect, renderRegistrosProd, renderCatalogoPProd, renderStockSemi, renderCentros, renderMenus, renderDestinatarios, renderRemitosDestinoLista];
   if(isAdminProd()) pasos.push(renderAjustesProd);
   pasos.forEach(fn => {
     try { fn(); } catch(e){ console.warn('renderAllProd — error en ' + fn.name + ':', e); }
