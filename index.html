@@ -4925,19 +4925,21 @@ const prodModuleHTML = '' +
 '              <option value="4">4</option><option value="5">5</option><option value="6">6</option>' +
 '              <option value="7">7</option><option value="8">8</option><option value="9">9</option>' +
 '            </select></div>' +
-'          <div id="pprod-dtase-wrap" style="display:none"><label>Fuente por defecto de renglones</label>' +
+'          <div style="max-width:110px"><label>Orden</label>' +
+'            <input type="number" id="pprod-orden" min="0" max="99" step="1" placeholder="0-99" title="Orden de aparición en el Registro Diario (menor primero; sin orden van al final)"></div>' +
+'        </div>' +
+'        <div class="form-grid">' +
+'          <div id="pprod-dtase-wrap" style="display:none;grid-column:span 2"><label>Fuente por defecto de renglones</label>' +
 '            <select id="pprod-dtase">' +
 '              <option value="no">MP — lista de Stock (sin descuento)</option>' +
 '              <option value="si">SE — descuenta semielaborados</option>' +
 '            </select></div>' +
-'          <div><label>Orden</label>' +
-'            <input type="number" id="pprod-orden" min="0" max="99" step="1" placeholder="0-99" title="Orden de aparici\u00F3n en el Registro Diario (menor primero; sin orden van al final)"></div>' +
-'          <div id="pprod-dtmenu-wrap"><label>Detalla men\u00FA</label>' +
-'            <select id="pprod-dtmenu" title="S\u00ED: en el Registro Diario la l\u00EDnea muestra el selector de men\u00FA. No: la l\u00EDnea se muestra sin men\u00FA.">' +
-'              <option value="si">S\u00ED</option>' +
+'          <div id="pprod-dtmenu-wrap"><label>Detalla menú</label>' +
+'            <select id="pprod-dtmenu" title="Sí: en el Registro Diario la línea muestra el selector de menú. No: la línea se muestra sin menú.">' +
+'              <option value="si">Sí</option>' +
 '              <option value="no">No</option>' +
 '            </select></div>' +
-'          <div id="pprod-costo-wrap" style="display:none"><label>Costo unitario</label>' +
+'          <div id="pprod-costo-wrap" style="display:none;grid-column:span 2"><label>Costo unitario</label>' +
 '            <div id="pprod-costo-display" class="form-readonly-box" style="cursor:pointer" onclick="abrirModalReceta()"></div></div>' +
 '          <div><label>Comparte MP con</label>' +
 '            <select id="pprod-compartecon" onchange="onPProdComparteChange()">' +
@@ -5182,7 +5184,7 @@ const prodModuleHTML = '' +
 
 '  </div>' +
 '  <div id=\"receta-modal-overlay\" style=\"display:none;position:fixed;inset:0;background:rgba(10,12,20,.7);z-index:400;align-items:center;justify-content:center;padding:20px\">' +
-'    <div class=\"card\" style=\"max-width:720px;width:100%;max-height:85vh;overflow-y:auto\">' +
+'    <div class=\"card\" style=\"max-width:780px;width:100%;max-height:85vh;overflow-y:auto\">' +
 '      <div class=\"section-header\">' +
 '        <div class=\"section-title\">🧮 Receta del semielaborado</div>' +
 '      </div>' +
@@ -7050,8 +7052,8 @@ function renderModalReceta(){
             placeholder="$" oninput="onRecetaManualPrecioChange(${i}, this.value)" style="font-size:.8rem;padding:7px 10px">`;
       return `<tr>
         <td style="min-width:220px">${colNombre}</td>
-        <td style="width:140px">${colPrecio}</td>
-        <td style="width:100px"><input type="number" class="receta-cant" data-idx="${i}" min="0" step="any" value="${row.cantidad}"
+        <td style="width:130px">${colPrecio}</td>
+        <td style="width:150px"><input type="number" class="receta-cant" data-idx="${i}" min="0" step="any" value="${row.cantidad}"
           oninput="onRecetaCantChange(${i}, this.value)" style="font-size:.8rem;padding:7px 10px"></td>
         <td class="receta-subtotal" data-idx="${i}" style="width:120px;font-weight:600">${valido ? fmt(subtotal) : '<span style="color:var(--danger)">Sin precio</span>'}</td>
         <td style="width:36px"><button class="btn btn-secondary btn-sm" onclick="quitarFilaReceta(${i})" title="Quitar ingrediente">✕</button></td>
@@ -7320,9 +7322,9 @@ function imprimirRemitoDestino(id){
     <div id="rd-print-area">
       <style>
         @page{ size:A4 landscape; margin:8mm; }
-        #rd-print-area{font-family:Arial,sans-serif;color:#111;}
+        #rd-print-area{font-family:Arial,sans-serif;color:#111;height:100%;}
         #rd-print-area .rd-grid{display:grid;grid-template-columns:1fr 1fr;gap:0;height:100%;}
-        #rd-print-area .rd-copia{padding:10px 14px;border-right:1px dashed #999;font-size:11px;}
+        #rd-print-area .rd-copia{padding:10px 14px;border-right:1px dashed #999;font-size:11px;display:flex;flex-direction:column;height:100%;box-sizing:border-box;}
         #rd-print-area .rd-copia:last-child{border-right:none;}
         #rd-print-area .rd-etiqueta{font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;background:#eee;padding:4px 8px;border-radius:4px;display:inline-block;margin-bottom:8px;}
         #rd-print-area .rd-header{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
@@ -7339,12 +7341,13 @@ function imprimirRemitoDestino(id){
         #rd-print-area .rd-tabla td{padding:4px 6px;border-bottom:1px solid #eee;}
         #rd-print-area .rd-unid{color:#888;font-size:9px;}
         #rd-print-area .rd-tabla tfoot td{border-top:2px solid #333;font-weight:700;padding-top:6px;}
-        #rd-print-area .rd-firma{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px;font-size:9px;}
+        #rd-print-area .rd-firma{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:auto;padding-top:16px;font-size:9px;}
         #rd-print-area .rd-firma-box{border-top:1px solid #999;padding-top:20px;text-align:center;color:#555;}
         .rd-print-cerrar{margin-bottom:14px;padding:9px 20px;background:#eee;border:1px solid #ccc;border-radius:8px;font-size:13px;cursor:pointer;font-weight:700;}
         @media print{
+          html,body{height:100%;}
           body > *:not(#rd-print-overlay){display:none!important;}
-          #rd-print-overlay{position:fixed!important;inset:0!important;background:white!important;z-index:9999!important;padding:0!important;}
+          #rd-print-overlay{position:fixed!important;inset:0!important;background:white!important;z-index:9999!important;padding:0!important;height:100%!important;}
           .rd-print-cerrar{display:none!important;}
         }
       </style>
