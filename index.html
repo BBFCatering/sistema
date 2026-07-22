@@ -1226,11 +1226,7 @@ function renderListadoOC(){
   const locProvId = parseInt(document.getElementById('loc-proveedor').value);
   if(!isNaN(locProvId) && locProvId){
     const nomProvSel = nomProv(locProvId);
-    entradas = entradas.filter(h=>{
-      const nro = extraerNroOCDeDetalle(h.detalle);
-      if(nro===null) return true; // los ingresos manuales se muestran siempre, sin importar el proveedor filtrado
-      return extraerProveedorDeDetalle(h.detalle) === nomProvSel;
-    });
+    entradas = entradas.filter(h=> extraerProveedorDeDetalle(h.detalle) === nomProvSel);
   }
 
   entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
@@ -2655,11 +2651,7 @@ function exportarPDF_ListadoOC(){
   const locProvIdPdf = parseInt(document.getElementById('loc-proveedor').value);
   if(!isNaN(locProvIdPdf) && locProvIdPdf){
     const nomProvSelPdf = nomProv(locProvIdPdf);
-    entradas = entradas.filter(h=>{
-      const nro = extraerNroOCDeDetalle(h.detalle);
-      if(nro===null) return true;
-      return extraerProveedorDeDetalle(h.detalle) === nomProvSelPdf;
-    });
+    entradas = entradas.filter(h=> extraerProveedorDeDetalle(h.detalle) === nomProvSelPdf);
   }
 
   entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
@@ -2723,11 +2715,7 @@ function exportarExcel_ListadoOC(){
   const locProvIdXls = parseInt(document.getElementById('loc-proveedor').value);
   if(!isNaN(locProvIdXls) && locProvIdXls){
     const nomProvSelXls = nomProv(locProvIdXls);
-    entradas = entradas.filter(h=>{
-      const nro = extraerNroOCDeDetalle(h.detalle);
-      if(nro===null) return true;
-      return extraerProveedorDeDetalle(h.detalle) === nomProvSelXls;
-    });
+    entradas = entradas.filter(h=> extraerProveedorDeDetalle(h.detalle) === nomProvSelXls);
   }
 
   entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
@@ -3391,7 +3379,7 @@ function renderAjustesRemitosStock(){
       </div>
       <div class="item-actions">
         ${!r.anulado?`<button class="btn btn-secondary btn-sm" onclick="modificarRemitoAdmin(${r.id})">✏ Modificar</button>
-        <button class="btn btn-danger btn-sm" onclick="eliminarRemitoAdmin(${r.id})">🗑 Eliminar</button>`:''}
+        <button class="btn btn-danger btn-sm" onclick="eliminarRemitoStockAdmin(${r.id})">🗑 Eliminar</button>`:''}
       </div>
     </div>`).join('');
 }
@@ -3517,7 +3505,7 @@ async function guardarModificacionRemito(){
   toast(`✓ Remito ${remito.nro} modificado correctamente`);
 }
 
-async function eliminarRemitoAdmin(remitoId){
+async function eliminarRemitoStockAdmin(remitoId){
   if(!esAdminStock()){ toast('Solo un administrador puede eliminar remitos','error'); return; }
   const remito = DB.remitos.find(r=>r.id===remitoId);
   if(!remito || remito.anulado){ toast('Este remito ya está anulado','error'); return; }
