@@ -1510,7 +1510,7 @@ function onIngOCProveedorChange(){
   }
 
   // OC del proveedor que todavía no fueron usadas para un ingreso (no recibidas)
-  const ocsPendientes = (DB.ordenesCompra||[]).filter(o => o.proveedorId===provId && !o.recibida);
+  const ocsPendientes = (DB.ordenesCompra||[]).filter(o => o.proveedorId===provId && !o.recibida && !o.anulada);
 
   if(!ocsPendientes.length){
     selOrden.disabled = true;
@@ -2332,6 +2332,7 @@ function renderOCs(){
         <div class="item-detail">
           ${fdt(oc.fecha)} · ${oc.lineas.length} ítem${oc.lineas.length>1?'s':''} · Total: <strong>${fmtMoney(oc.total)}</strong>
           ${oc.recibida?' · <span class="badge badge-noperecedero">Recibida</span>':''}
+          ${oc.anulada?' · <span class="badge badge-noperecedero">Anulada</span>':''}
         </div>
       </div>
       <div class="item-actions">
@@ -3129,7 +3130,7 @@ function switchTab(tab){
   if(tab==='remitos') renderRemitos();
   if(tab==='compras') renderOCs();
   if(tab==='historial') renderHistorial();
-  if(tab==='ajustes') switchAjustesStockSub('compras');
+  if(tab==='ajustes') switchAjustesStockSub('ocpend');
 }
 
 // ── SUBMENÚ DE HISTORIAL ─────────────────────────────────
@@ -3177,8 +3178,155 @@ function switchAjustesStockSub(sub){
   document.querySelectorAll('#panel-ajustes .listado-subtab').forEach(t=>t.classList.toggle('active', t.dataset.sub===sub));
   document.querySelectorAll('#panel-ajustes .listado-subpanel').forEach(p=>p.classList.remove('active'));
   document.getElementById('ajstock-sub-'+sub).classList.add('active');
+  if(sub==='ocpend') renderAjustesOcPendientes();
   if(sub==='compras') renderAjustesCompras();
   if(sub==='remitos') renderAjustesRemitosStock();
+}
+
+// ── AJUSTE DE OC PENDIENTES (no recibidas — sin impacto en stock) ──
+let ajOcEditOc = null;
+let ajOcEditLineas = [];
+
+function renderAjustesOcPendientes(){
+  const el = document.getElementById('ajocp-lista');
+  const q = (document.getElementById('ajocp-search')?.value||'').toLowerCase();
+  let ocs = (DB.ordenesCompra||[]).filter(o=>!o.recibida && !o.anulada);
+  if(q) ocs = ocs.filter(o=> o.nro.toLowerCase().includes(q) || nomProv(o.proveedorId).toLowerCase().includes(q));
+  ocs.sort((a,b)=> b.fecha.localeCompare(a.fecha));
+
+  if(!ocs.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">📄</div><p>No hay órdenes de compra pendientes.</p></div>`;
+    return;
+  }
+  el.innerHTML = ocs.map(o=>`
+    <div class="item-card" style="margin-bottom:8px">
+      <div>
+        <div class="item-name">${o.nro} <span style="font-size:.75rem;font-weight:400;color:var(--muted)">— ${nomProv(o.proveedorId)}</span></div>
+        <div class="item-detail">${fdt(o.fecha)} · ${o.lineas.length} ítem${o.lineas.length!==1?'s':''} · Total: <strong>${fmtMoney(o.total)}</strong></div>
+      </div>
+      <div class="item-actions">
+        <button class="btn btn-secondary btn-sm" onclick="modificarOcPendienteAdmin(${o.id})">✏ Modificar</button>
+        <button class="btn btn-danger btn-sm" onclick="darDeBajaOcPendienteAdmin(${o.id})">🚫 Dar de baja</button>
+      </div>
+    </div>`).join('');
+}
+
+function modificarOcPendienteAdmin(ocId){
+  if(!esAdminStock()){ toast('Solo un administrador puede modificar órdenes de compra','error'); return; }
+  const oc = DB.ordenesCompra.find(o=>o.id===ocId);
+  if(!oc){ toast('Orden no encontrada','error'); return; }
+  if(oc.recibida){ toast('Esta OC ya fue recibida — no se puede modificar desde acá. Primero revertí su ingreso desde Ajuste de Compras.','error'); return; }
+  ajOcEditOc = oc;
+  ajOcEditLineas = oc.lineas.map(l=>({...l}));
+  document.getElementById('ajocp-edit-title').textContent = 'Modificar ' + oc.nro + ' — ' + nomProv(oc.proveedorId);
+  document.getElementById('ajocp-edit-obs').value = oc.obs || '';
+  const prodsProv = DB.productos.filter(p=>p.activo && (p.proveedoresIds||[]).includes(oc.proveedorId));
+  setProdSearchList('ajocp-add-prod-wrap', prodsProv.map(p=>({id:p.id, label:p.nombre})));
+  resetProdSearchWidget('ajocp-add-prod-wrap');
+  ajRenderOcEditLineas();
+  document.getElementById('ajocp-edit-wrap').style.display = '';
+  document.getElementById('ajocp-edit-wrap').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function ajRenderOcEditLineas(){
+  const tbody = document.getElementById('ajocp-edit-tbody');
+  if(!ajOcEditLineas.length){
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:16px">No quedan líneas. Agregá un producto o dala de baja desde la lista.</td></tr>`;
+    document.getElementById('ajocp-edit-total').textContent = fmtMoney(0);
+    return;
+  }
+  let total = 0;
+  tbody.innerHTML = ajOcEditLineas.map((l,i)=>{
+    const prod = getProd(l.productoId);
+    const subtotal = l.cantidad * precioFinal(l.precio, l.bonificacion);
+    total += subtotal;
+    return `<tr>
+      <td>${prod?prod.nombre:'—'}</td>
+      <td><input type="number" min="0.01" step="0.01" value="${l.cantidad}" style="width:80px" onchange="ajUpdateOcEditLinea(${i},'cantidad',this.value)"></td>
+      <td><input type="number" min="0" step="0.01" value="${l.precio}" style="width:100px" onchange="ajUpdateOcEditLinea(${i},'precio',this.value)"></td>
+      <td><input type="number" min="0" max="100" step="0.01" value="${l.bonificacion}" style="width:80px" onchange="ajUpdateOcEditLinea(${i},'bonificacion',this.value)"></td>
+      <td>${fmtMoney(subtotal)}</td>
+      <td><button class="btn btn-sm btn-warn" onclick="ajQuitarOcEditLinea(${i})">✕</button></td>
+    </tr>`;
+  }).join('');
+  document.getElementById('ajocp-edit-total').textContent = 'Total: ' + fmtMoney(total);
+}
+
+function ajUpdateOcEditLinea(idx, campo, valor){
+  ajOcEditLineas[idx][campo] = parseFloat(valor)||0;
+  ajRenderOcEditLineas();
+}
+
+function ajQuitarOcEditLinea(idx){
+  ajOcEditLineas.splice(idx,1);
+  ajRenderOcEditLineas();
+}
+
+function ajAgregarLineaOC(){
+  const prodId = parseInt(document.getElementById('ajocp-add-producto').value);
+  if(!prodId){ toast('Seleccioná un producto','error'); return; }
+  if(ajOcEditLineas.some(l=>l.productoId===prodId)){ toast('Ese producto ya está en la orden','error'); return; }
+  const info = getPrecioInfo(prodId, ajOcEditOc.proveedorId);
+  ajOcEditLineas.push({ productoId: prodId, cantidad:1, precio: info.precio||0, bonificacion: info.bonificacion||0 });
+  resetProdSearchWidget('ajocp-add-prod-wrap');
+  ajRenderOcEditLineas();
+}
+
+function cancelarModificacionOcPendiente(){
+  ajOcEditOc = null; ajOcEditLineas = [];
+  const wrap = document.getElementById('ajocp-edit-wrap');
+  if(wrap) wrap.style.display = 'none';
+}
+
+async function guardarModificacionOcPendiente(){
+  if(!esAdminStock()){ toast('Solo un administrador puede modificar órdenes de compra','error'); return; }
+  if(!ajOcEditOc) return;
+  if(!ajOcEditLineas.length){ toast('La orden debe tener al menos un producto — para eliminarla del todo, usá "Dar de baja"','error'); return; }
+  for(const l of ajOcEditLineas){
+    if(!l.cantidad || l.cantidad<=0){ toast('Revisá las cantidades — deben ser mayores a 0','error'); return; }
+  }
+  if(!(await confirmModal(`¿Guardar los cambios en ${ajOcEditOc.nro}? Como todavía no fue recibida, esto no afecta el stock.`))) return;
+
+  const oc = ajOcEditOc;
+  if(oc.recibida){
+    toast('Esta OC ya fue recibida — no se puede modificar','error');
+    cancelarModificacionOcPendiente(); renderAjustesOcPendientes(); return;
+  }
+
+  const obs = document.getElementById('ajocp-edit-obs').value.trim();
+  const total = ajOcEditLineas.reduce((s,l)=>s+l.cantidad*precioFinal(l.precio,l.bonificacion),0);
+
+  oc.lineas = JSON.parse(JSON.stringify(ajOcEditLineas));
+  oc.total = total;
+  oc.obs = obs;
+
+  oc.lineas.forEach(l=>{
+    setPrecioProv(l.productoId, oc.proveedorId, l.precio, l.bonificacion);
+  });
+
+  save();
+  cancelarModificacionOcPendiente();
+  renderAll();
+  renderAjustesOcPendientes();
+  toast(`✓ ${oc.nro} modificada correctamente`);
+}
+
+async function darDeBajaOcPendienteAdmin(ocId){
+  if(!esAdminStock()){ toast('Solo un administrador puede dar de baja órdenes de compra','error'); return; }
+  const oc = DB.ordenesCompra.find(o=>o.id===ocId);
+  if(!oc){ toast('Orden no encontrada','error'); return; }
+  if(oc.recibida){ toast('Esta OC ya fue recibida — primero revertí su ingreso desde Ajuste de Compras (así vuelve a quedar Pendiente) y después dala de baja.','error'); return; }
+
+  if(!(await confirmModal(`¿Dar de baja la orden ${oc.nro} (${nomProv(oc.proveedorId)})? Como todavía no fue recibida, esto no afecta el stock. La orden queda marcada como Anulada.`))) return;
+
+  oc.anulada = true;
+  oc.fechaAnulacion = new Date().toISOString();
+  oc.anuladoPor = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+
+  save();
+  renderAll();
+  renderAjustesOcPendientes();
+  toast(`✓ ${oc.nro} dada de baja`);
 }
 
 // ── AJUSTE DE COMPRAS ────────────────────────────────────────
@@ -4292,12 +4440,51 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
   <!-- AJUSTES (SOLO ADMIN): modificar/eliminar Compras y Remitos ya cargados -->
   <div id="panel-ajustes" class="panel">
     <div class="listado-submenu">
-      <button class="listado-subtab active" data-sub="compras" onclick="switchAjustesStockSub('compras')">🛒 Ajuste de Compras</button>
+      <button class="listado-subtab active" data-sub="ocpend" onclick="switchAjustesStockSub('ocpend')">📄 OC Pendientes</button>
+      <button class="listado-subtab" data-sub="compras" onclick="switchAjustesStockSub('compras')">🛒 Ajuste de Compras</button>
       <button class="listado-subtab" data-sub="remitos" onclick="switchAjustesStockSub('remitos')">🧾 Ajuste de Remitos</button>
     </div>
 
+    <!-- SUB: OC Pendientes (aún no recibidas) -->
+    <div id="ajstock-sub-ocpend" class="listado-subpanel active">
+      <div class="section-header">
+        <div class="section-title">📄 Órdenes de Compra Pendientes — solo administrador</div>
+      </div>
+      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Solo se listan las OC que <strong>todavía no fueron recibidas</strong>. Como no impactaron el stock, modificarlas o darlas de baja acá no afecta ningún movimiento — es un cambio puramente documental. Si una OC ya fue recibida, primero revertí su ingreso desde "Ajuste de Compras" (queda Pendiente de nuevo) y después modificála o dala de baja acá.</div>
+      <div class="search-bar"><span class="search-icon">🔍</span><input type="text" id="ajocp-search" placeholder="Buscar por proveedor o número..." oninput="renderAjustesOcPendientes()"></div>
+      <div id="ajocp-edit-wrap" class="card" style="display:none;margin:14px 0;border:1px solid var(--accent)">
+        <div class="section-title" id="ajocp-edit-title">Modificar orden de compra</div>
+        <div class="col-full" style="margin-bottom:10px">
+          <label>Observación</label>
+          <input type="text" id="ajocp-edit-obs">
+        </div>
+        <div style="overflow-x:auto">
+          <table class="oc-table">
+            <thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Bonif. %</th><th>Subtotal</th><th></th></tr></thead>
+            <tbody id="ajocp-edit-tbody"></tbody>
+          </table>
+        </div>
+        <div style="text-align:right;font-weight:700;margin:8px 0" id="ajocp-edit-total"></div>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+          <div class="prod-search-wrap" id="ajocp-add-prod-wrap" style="flex:1;min-width:180px">
+            <label style="font-size:.78rem">Agregar producto</label>
+            <input type="text" class="prod-search-input" id="ajocp-add-prod-text" placeholder="Buscar producto del proveedor..." autocomplete="off" oninput="filterProdSearch('ajocp-add-prod-wrap')" onfocus="openProdDropdown('ajocp-add-prod-wrap')" onblur="closeProdDropdownDelayed('ajocp-add-prod-wrap')">
+            <button type="button" class="prod-clear-btn" onclick="clearProdSearch('ajocp-add-prod-wrap',null)" style="display:none">✕</button>
+            <div class="prod-dropdown" style="display:none"></div>
+            <input type="hidden" id="ajocp-add-producto">
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="ajAgregarLineaOC()">+ Agregar línea</button>
+        </div>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-primary" onclick="guardarModificacionOcPendiente()">✔ Guardar cambios</button>
+          <button class="btn btn-secondary" onclick="cancelarModificacionOcPendiente()">Cancelar</button>
+        </div>
+      </div>
+      <div id="ajocp-lista"></div>
+    </div>
+
     <!-- SUB: Ajuste de Compras (Ingresos recibidos por OC) -->
-    <div id="ajstock-sub-compras" class="listado-subpanel active">
+    <div id="ajstock-sub-compras" class="listado-subpanel">
       <div class="section-header">
         <div class="section-title">🛒 Ajuste de Compras — solo administrador</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
