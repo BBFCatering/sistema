@@ -1141,7 +1141,7 @@ function renderListadoRemitos(){
   const destino = document.getElementById('lrem-destino').value;
   const el = document.getElementById('listado-remitos-container');
 
-  let remitos = [...(DB.remitos||[])];
+  let remitos = [...(DB.remitos||[])].filter(r => !r.anulado);
   if(desde) remitos = remitos.filter(r => r.fecha >= desde);
   if(hasta) remitos = remitos.filter(r => r.fecha <= hasta);
   if(destino) remitos = remitos.filter(r => r.destino === destino);
@@ -1220,6 +1220,16 @@ function renderListadoOC(){
       if(!isNaN(nDesde) && n < nDesde) return false;
       if(!isNaN(nHasta) && n > nHasta) return false;
       return true;
+    });
+  }
+
+  const locProvId = parseInt(document.getElementById('loc-proveedor').value);
+  if(!isNaN(locProvId) && locProvId){
+    const nomProvSel = nomProv(locProvId);
+    entradas = entradas.filter(h=>{
+      const nro = extraerNroOCDeDetalle(h.detalle);
+      if(nro===null) return true; // los ingresos manuales se muestran siempre, sin importar el proveedor filtrado
+      return extraerProveedorDeDetalle(h.detalle) === nomProvSel;
     });
   }
 
@@ -1451,19 +1461,26 @@ async function ingresarStock(){
 }
 
 // Aplica un ingreso de stock para un producto dado (usado tanto por el
-// ingreso manual como por el ingreso desde Orden de Compra)
-function aplicarIngresoLinea(prodId, provId, cant, venc, loteRef, detalleExtra, temp){
+// ingreso manual como por el ingreso desde Orden de Compra).
+// ocId (opcional): si el ingreso proviene de una Orden de Compra, se etiqueta
+// el registro de historial con el id de la OC para permitir revertirlo con
+// precisión desde Ajustes → Ajuste de Compras. Devuelve una referencia
+// estructurada de lo creado (loteId o stockSimple) para armar el snapshot
+// oc.recepcion.lineas.
+function aplicarIngresoLinea(prodId, provId, cant, venc, loteRef, detalleExtra, temp, ocId){
   const prod=getProd(prodId);
-  if(!prod) return;
+  if(!prod) return null;
   if(prod.perecedero==='si'){
     const lote={id:idSeq.lote++,productoId:prodId,proveedorId:provId,cantidad:cant,cantidadInicial:cant,vencimiento:venc,temp:temp||null,ingreso:new Date().toISOString(),loteRef};
     DB.lotes.push(lote);
     const detalleTemp = temp ? ` · Temp: ${temp}°C` : '';
-    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleExtra?' · '+detalleExtra:''}${detalleTemp}`,fecha:new Date().toISOString()});
+    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleExtra?' · '+detalleExtra:''}${detalleTemp}`,fecha:new Date().toISOString(),ocId:ocId||null});
+    return {productoId:prodId, perecedero:'si', loteId:lote.id, cantidad:cant, unidad:prod.unidad, vencimiento:venc, loteRef, temp:temp||null, proveedorId:provId};
   } else {
     if(!DB.stockSimple[prodId]) DB.stockSimple[prodId]={cantidad:0,unidad:prod.unidad};
     DB.stockSimple[prodId].cantidad+=cant;
-    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Proveedor: ${nomProv(provId)}${loteRef?' · '+loteRef:''}${detalleExtra?' · '+detalleExtra:''}`,fecha:new Date().toISOString()});
+    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Proveedor: ${nomProv(provId)}${loteRef?' · '+loteRef:''}${detalleExtra?' · '+detalleExtra:''}`,fecha:new Date().toISOString(),ocId:ocId||null});
+    return {productoId:prodId, perecedero:'no', loteId:null, cantidad:cant, unidad:prod.unidad, loteRef:loteRef||null, proveedorId:provId};
   }
 }
 
@@ -1619,17 +1636,21 @@ function confirmarIngresoOC(){
   const obs = (document.getElementById('ingoc-observaciones')?.value||'').trim();
   const detalleObs = obs ? ` · Obs: ${obs}` : '';
 
+  const recepcionLineas = [];
   ingOCLineas.forEach(l=>{
     const detalle = l.extra
       ? `Adicional — no incluido en OC ${ingOCActual.nro}${detalleObs}`
       : `Ingreso desde OC ${ingOCActual.nro}${detalleObs}`;
-    aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle, l.perecedero==='si'?(l.temp||null):null);
+    const ref = aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle, l.perecedero==='si'?(l.temp||null):null, ingOCActual.id);
+    if(ref) recepcionLineas.push(ref);
   });
 
   // Marcar la OC como recibida
   ingOCActual.recibida = true;
   ingOCActual.fechaRecepcion = new Date().toISOString();
   if(obs) ingOCActual.obsRecepcion = obs;
+  // Snapshot estructurado de lo recibido (permite modificar/eliminar con precisión desde Ajustes → Ajuste de Compras)
+  ingOCActual.recepcion = { fecha: ingOCActual.fechaRecepcion, obs: obs||null, lineas: recepcionLineas };
 
   save();
   toast(`✓ Ingreso registrado desde ${ingOCActual.nro}`);
@@ -2050,7 +2071,10 @@ function openProvDropdown(wrapId){
 function filterProvSearch(wrapId){
   const e=_provWrapEls(wrapId); if(!e) return;
   const q=e.text.value.trim().toLowerCase();
-  const matches=DB.proveedores.filter(p=>p.activo&&(!q||p.nombre.toLowerCase().includes(q)));
+  // El widget de filtro de listados (histórico) incluye también proveedores inactivos,
+  // ya que puede haber ingresos pasados de proveedores dados de baja.
+  const soloActivos = wrapId!=='loc-prov-wrap';
+  const matches=DB.proveedores.filter(p=>(soloActivos?p.activo:true)&&(!q||p.nombre.toLowerCase().includes(q)));
   if(!matches.length){
     e.drop.innerHTML='<div class="prov-no-results">Sin resultados</div>';
   } else {
@@ -2068,6 +2092,7 @@ function selectProv(wrapId, provId, provNombre){
   if(wrapId==='ing-prov-wrap')    onProveedorChange();
   else if(wrapId==='ingoc-prov-wrap') onIngOCProveedorChange();
   else if(wrapId==='oc-prov-wrap')    onOCProveedorChange();
+  else if(wrapId==='loc-prov-wrap')   {} // filtro de listado: se aplica al presionar "Filtrar"
 }
 
 function closeProvDropdownDelayed(wrapId){
@@ -2527,7 +2552,7 @@ function exportarPDF_ListadoRemitos(){
   const desde = document.getElementById('lrem-desde').value;
   const hasta = document.getElementById('lrem-hasta').value;
   const destino = document.getElementById('lrem-destino').value;
-  let remitos = [...(DB.remitos||[])];
+  let remitos = [...(DB.remitos||[])].filter(r => !r.anulado);
   if(desde) remitos = remitos.filter(r => r.fecha >= desde);
   if(hasta) remitos = remitos.filter(r => r.fecha <= hasta);
   if(destino) remitos = remitos.filter(r => r.destino === destino);
@@ -2566,7 +2591,7 @@ function exportarExcel_ListadoRemitos(){
   const desde = document.getElementById('lrem-desde').value;
   const hasta = document.getElementById('lrem-hasta').value;
   const destino = document.getElementById('lrem-destino').value;
-  let remitos = [...(DB.remitos||[])];
+  let remitos = [...(DB.remitos||[])].filter(r => !r.anulado);
   if(desde) remitos = remitos.filter(r => r.fecha >= desde);
   if(hasta) remitos = remitos.filter(r => r.fecha <= hasta);
   if(destino) remitos = remitos.filter(r => r.destino === destino);
@@ -2626,6 +2651,17 @@ function exportarPDF_ListadoOC(){
       return true;
     });
   }
+
+  const locProvIdPdf = parseInt(document.getElementById('loc-proveedor').value);
+  if(!isNaN(locProvIdPdf) && locProvIdPdf){
+    const nomProvSelPdf = nomProv(locProvIdPdf);
+    entradas = entradas.filter(h=>{
+      const nro = extraerNroOCDeDetalle(h.detalle);
+      if(nro===null) return true;
+      return extraerProveedorDeDetalle(h.detalle) === nomProvSelPdf;
+    });
+  }
+
   entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
 
   if(!entradas.length){ toast('No hay ingresos de stock en el rango seleccionado','error'); return; }
@@ -2657,6 +2693,74 @@ function exportarPDF_ListadoOC(){
     theme:'grid', headStyles:{fillColor:[29,158,117],textColor:255}, styles:{fontSize:8.5}
   });
   doc.save('ingresos-stock.pdf');
+}
+
+function exportarExcel_ListadoOC(){
+  if(typeof XLSX === 'undefined'){ toast('Cargando generador de Excel...','error'); return; }
+
+  const modo = document.getElementById('loc-modo').value;
+  let entradas = (DB.historial||[]).filter(h => h.tipo==='ingreso');
+  if(modo==='fecha'){
+    const desde = document.getElementById('loc-desde').value;
+    const hasta = document.getElementById('loc-hasta').value;
+    if(desde) entradas = entradas.filter(h => h.fecha.slice(0,10) >= desde);
+    if(hasta) entradas = entradas.filter(h => h.fecha.slice(0,10) <= hasta);
+  } else {
+    const nDesde = parseInt(document.getElementById('loc-nro-desde').value);
+    const nHasta = parseInt(document.getElementById('loc-nro-hasta').value);
+    entradas = entradas.filter(h=>{
+      const nro = extraerNroOCDeDetalle(h.detalle);
+      if(nro===null) return true;
+      const m = nro.match(/(\d+)$/);
+      const n = m ? parseInt(m[1]) : null;
+      if(n===null) return false;
+      if(!isNaN(nDesde) && n < nDesde) return false;
+      if(!isNaN(nHasta) && n > nHasta) return false;
+      return true;
+    });
+  }
+
+  const locProvIdXls = parseInt(document.getElementById('loc-proveedor').value);
+  if(!isNaN(locProvIdXls) && locProvIdXls){
+    const nomProvSelXls = nomProv(locProvIdXls);
+    entradas = entradas.filter(h=>{
+      const nro = extraerNroOCDeDetalle(h.detalle);
+      if(nro===null) return true;
+      return extraerProveedorDeDetalle(h.detalle) === nomProvSelXls;
+    });
+  }
+
+  entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+
+  if(!entradas.length){ toast('No hay ingresos de stock en el rango seleccionado','error'); return; }
+
+  let totalGeneral=0;
+  const filas = [['N° OC','Fecha','Proveedor','Producto','Cant.','Precio','Bonif.','Subtotal']];
+  let lastNro;
+  entradas.forEach(h=>{
+    const nro = extraerNroOCDeDetalle(h.detalle);
+    const prov = extraerProveedorDeDetalle(h.detalle);
+    const inicioGrupo = nro===null || nro!==lastNro;
+    lastNro = nro;
+    const lineaOC = buscarPrecioLineaOC(nro, h.productoId);
+    const precio = lineaOC ? lineaOC.precio : mejorPrecioFinal(h.productoId);
+    const bonif = lineaOC ? lineaOC.bonificacion : null;
+    const subtotal = precio!=null ? h.cantidad*precioFinal(precio,bonif) : 0;
+    if(precio!=null) totalGeneral += subtotal;
+    filas.push([
+      inicioGrupo?(nro||'Manual'):'', inicioGrupo?ff(h.fecha.slice(0,10)):'', inicioGrupo?prov:'',
+      h.nombre, h.cantidad, precio!=null?precio:null,
+      bonif?bonif+'%':'—', precio!=null?subtotal:null
+    ]);
+  });
+  filas.push([]);
+  filas.push(['','','','','','','Total general:', totalGeneral]);
+
+  const ws = XLSX.utils.aoa_to_sheet(filas);
+  ws['!cols'] = [{wch:14},{wch:12},{wch:22},{wch:28},{wch:9},{wch:11},{wch:9},{wch:12}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Ingresos Stock');
+  XLSX.writeFile(wb, 'ingresos-stock.xlsx');
 }
 
 function exportarPDF_ListadoOCObs(){
@@ -2871,6 +2975,8 @@ async function cerrarRemito(){
   if(!remitoLineas.length){ toast('Agregá al menos una línea','error'); return; }
   if(!(await confirmModal(`¿Cerrar remito ${nro} y descontar stock?\n\n${remitoLineas.length} línea(s) — esta acción no se puede deshacer.`))) return;
 
+  const remitoId = idSeq.remito++;
+
   // Descontar stock
   remitoLineas.forEach(l => {
     if(l.loteId){
@@ -2883,11 +2989,11 @@ async function cerrarRemito(){
       tipo:'egreso', productoId:l.productoId, nombre:l.nombre,
       cantidad:l.cantidad, unidad:l.unidad,
       detalle:`Remito ${nro}${l.loteRef?' · Lote '+l.loteRef:''}`,
-      fecha:new Date().toISOString()
+      fecha:new Date().toISOString(), remitoId
     });
   });
 
-  const remito = { id:idSeq.remito++, destino, nro, fecha, obs, lineas:[...remitoLineas], fechaCierre:new Date().toISOString() };
+  const remito = { id:remitoId, destino, nro, fecha, obs, lineas:[...remitoLineas], fechaCierre:new Date().toISOString() };
   DB.remitos.unshift(remito);
   save();
 
@@ -3009,7 +3115,7 @@ function renderRemitos(){
   el.innerHTML = DB.remitos.map(r=>`
     <div class="item-card" style="margin-bottom:8px">
       <div>
-        <div class="item-name">Remito ${r.nro} <span style="font-size:.75rem;font-weight:400;color:var(--muted)">— ${ff(r.fecha)}${r.destino?' · '+r.destino:''}</span></div>
+        <div class="item-name">Remito ${r.nro} <span style="font-size:.75rem;font-weight:400;color:var(--muted)">— ${ff(r.fecha)}${r.destino?' · '+r.destino:''}</span>${r.anulado?' <span class="badge badge-noperecedero">Anulado</span>':''}</div>
         <div class="item-detail">
           ${r.lineas.length} línea(s) · 
           ${r.lineas.map(l=>`${l.nombre} (${l.cantidad} ${l.unidad})`).join(', ')}
@@ -3025,7 +3131,8 @@ function renderRemitos(){
 
 // ── TABS ──────────────────────────────────────────────
 function switchTab(tab){
-  const tabs=['stock','listado','ingreso','egreso','remitos','productos','proveedores','compras','historial'];
+  if(tab==='ajustes' && !(typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin')) return; // exclusivo admin
+  const tabs=['stock','listado','ingreso','egreso','remitos','productos','proveedores','compras','historial','ajustes'];
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===tab));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   document.getElementById('panel-'+tab).classList.add('active');
@@ -3034,6 +3141,7 @@ function switchTab(tab){
   if(tab==='remitos') renderRemitos();
   if(tab==='compras') renderOCs();
   if(tab==='historial') renderHistorial();
+  if(tab==='ajustes') switchAjustesStockSub('compras');
 }
 
 // ── SUBMENÚ DE HISTORIAL ─────────────────────────────────
@@ -3067,6 +3175,366 @@ function onLOCObsModoChange(){
   const modo = document.getElementById('locobs-modo').value;
   document.getElementById('locobs-filtros-fecha').style.display = modo==='fecha' ? 'flex' : 'none';
   document.getElementById('locobs-filtros-numero').style.display = modo==='numero' ? 'flex' : 'none';
+}
+
+// ═══════════════════════════════════════════════════════════
+// AJUSTES (SOLO ADMIN): modificar/eliminar Compras y Remitos
+// ═══════════════════════════════════════════════════════════
+let ajCompraEditOc = null;
+let ajCompraEditLineas = [];
+let ajRemitoEditRemito = null;
+let ajRemitoEditLineas = [];
+
+function switchAjustesStockSub(sub){
+  document.querySelectorAll('#panel-ajustes .listado-subtab').forEach(t=>t.classList.toggle('active', t.dataset.sub===sub));
+  document.querySelectorAll('#panel-ajustes .listado-subpanel').forEach(p=>p.classList.remove('active'));
+  document.getElementById('ajstock-sub-'+sub).classList.add('active');
+  if(sub==='compras') renderAjustesCompras();
+  if(sub==='remitos') renderAjustesRemitosStock();
+}
+
+// ── AJUSTE DE COMPRAS ────────────────────────────────────────
+function renderAjustesCompras(){
+  const el = document.getElementById('ajc-lista');
+  const desde = document.getElementById('ajc-desde').value;
+  const hasta = document.getElementById('ajc-hasta').value;
+  let ocs = (DB.ordenesCompra||[]).filter(o=>o.recibida);
+  if(desde) ocs = ocs.filter(o=> (o.fechaRecepcion||'').slice(0,10) >= desde);
+  if(hasta) ocs = ocs.filter(o=> (o.fechaRecepcion||'').slice(0,10) <= hasta);
+  ocs.sort((a,b)=> (b.fechaRecepcion||'').localeCompare(a.fechaRecepcion||''));
+
+  if(!ocs.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">🛒</div><p>No hay compras recibidas en el rango seleccionado.</p></div>`;
+    return;
+  }
+  el.innerHTML = ocs.map(o=>{
+    const disponible = !!o.recepcion;
+    const totalLineas = disponible ? o.recepcion.lineas.length : o.lineas.length;
+    return `<div class="item-card" style="margin-bottom:8px">
+      <div>
+        <div class="item-name">${o.nro} <span style="font-size:.75rem;font-weight:400;color:var(--muted)">— ${nomProv(o.proveedorId)}</span></div>
+        <div class="item-detail">
+          Recibida: ${fdt(o.fechaRecepcion)} · ${totalLineas} línea(s)
+          ${!disponible?'<br><span style="color:#c77700">⚠ Recibida antes de esta actualización — sin datos suficientes para modificar/eliminar automáticamente.</span>':''}
+        </div>
+      </div>
+      <div class="item-actions">
+        ${disponible?`<button class="btn btn-secondary btn-sm" onclick="modificarCompraAdmin(${o.id})">✏ Modificar</button>
+        <button class="btn btn-danger btn-sm" onclick="eliminarCompraAdmin(${o.id})">🗑 Eliminar</button>`:''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// Revierte el stock que había sumado una recepción de OC (usa el snapshot
+// oc.recepcion.lineas, guardado con precisión desde esta actualización).
+// Devuelve un array de avisos si el stock ya había sido parcial o totalmente
+// consumido (no se puede llevar a negativo: se revierte lo que quede disponible).
+function revertirIngresoOC(oc){
+  const avisos = [];
+  if(!oc.recepcion) return avisos;
+  oc.recepcion.lineas.forEach(l=>{
+    const prod = getProd(l.productoId);
+    const nombre = prod ? prod.nombre : ('#'+l.productoId);
+    if(l.perecedero==='si' && l.loteId){
+      const lote = DB.lotes.find(x=>x.id===l.loteId);
+      if(lote){
+        if(lote.cantidad < l.cantidad){
+          avisos.push(`${nombre}: el lote ya estaba parcialmente consumido — se revirtió lo que quedaba (${lote.cantidad} de ${l.cantidad}).`);
+          lote.cantidad = 0;
+        } else {
+          lote.cantidad -= l.cantidad;
+        }
+      } else {
+        avisos.push(`${nombre}: no se encontró el lote (puede haber sido eliminado) — no se pudo revertir esta línea.`);
+      }
+    } else {
+      const st = DB.stockSimple[l.productoId];
+      if(st){
+        if(st.cantidad < l.cantidad){
+          avisos.push(`${nombre}: el stock ya estaba parcialmente consumido — se revirtió lo que quedaba (${st.cantidad} de ${l.cantidad}).`);
+          st.cantidad = 0;
+        } else {
+          st.cantidad -= l.cantidad;
+        }
+      }
+    }
+  });
+  return avisos;
+}
+
+function modificarCompraAdmin(ocId){
+  if(!esAdminStock()){ toast('Solo un administrador puede modificar compras','error'); return; }
+  const oc = DB.ordenesCompra.find(o=>o.id===ocId);
+  if(!oc || !oc.recepcion){ toast('Esta compra no puede modificarse automáticamente','error'); return; }
+  ajCompraEditOc = oc;
+  ajCompraEditLineas = oc.recepcion.lineas.map(l=>({...l}));
+  document.getElementById('ajc-edit-title').textContent = 'Modificar recepción — ' + oc.nro;
+  ajRenderCompraEditLineas();
+  document.getElementById('ajc-edit-wrap').style.display = '';
+  document.getElementById('ajc-edit-wrap').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function ajRenderCompraEditLineas(){
+  const tbody = document.getElementById('ajc-edit-tbody');
+  tbody.innerHTML = ajCompraEditLineas.map((l,i)=>{
+    const prod = getProd(l.productoId);
+    return `<tr>
+      <td>${prod?prod.nombre:'—'}</td>
+      <td><input type="number" min="0.01" step="0.01" value="${l.cantidad}" style="width:90px" onchange="ajUpdateCompraEditLinea(${i},'cantidad',this.value)"></td>
+      <td>${l.unidad}</td>
+      <td>${l.perecedero==='si'
+        ? `<input type="text" value="${l.temp||''}" placeholder="Ej: -18.5" style="width:70px" onchange="ajUpdateCompraEditLinea(${i},'temp',this.value)">`
+        : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${l.perecedero==='si'
+        ? `<input type="date" value="${l.vencimiento||''}" onchange="ajUpdateCompraEditLinea(${i},'vencimiento',this.value)">`
+        : '<span style="color:var(--muted)">—</span>'}</td>
+      <td><input type="text" value="${l.loteRef||''}" style="width:120px" onchange="ajUpdateCompraEditLinea(${i},'loteRef',this.value)"></td>
+    </tr>`;
+  }).join('');
+}
+
+function ajUpdateCompraEditLinea(idx, campo, valor){
+  if(campo==='cantidad') ajCompraEditLineas[idx].cantidad = parseFloat(valor)||0;
+  else ajCompraEditLineas[idx][campo] = valor;
+}
+
+function cancelarModificacionCompra(){
+  ajCompraEditOc = null; ajCompraEditLineas = [];
+  const wrap = document.getElementById('ajc-edit-wrap');
+  if(wrap) wrap.style.display = 'none';
+}
+
+async function guardarModificacionCompra(){
+  if(!esAdminStock()){ toast('Solo un administrador puede modificar compras','error'); return; }
+  if(!ajCompraEditOc) return;
+  for(const l of ajCompraEditLineas){
+    if(!l.cantidad || l.cantidad<=0){ toast('Revisá las cantidades — deben ser mayores a 0','error'); return; }
+    if(l.perecedero==='si' && !l.vencimiento){
+      const prod=getProd(l.productoId);
+      toast(`Falta la fecha de vencimiento de "${prod?prod.nombre:''}"`,'error'); return;
+    }
+  }
+  if(!(await confirmModal(`¿Guardar los cambios en la recepción de ${ajCompraEditOc.nro}? Se revertirá el stock anterior y se aplicará el nuevo.`))) return;
+
+  const oc = ajCompraEditOc;
+  const avisosRevert = revertirIngresoOC(oc);
+  DB.historial = (DB.historial||[]).filter(h => !(h.tipo==='ingreso' && h.ocId===oc.id));
+
+  const provId = oc.proveedorId;
+  const obsPrev = oc.recepcion.obs;
+  const detalleObs = obsPrev ? ` · Obs: ${obsPrev}` : '';
+  const nuevasLineas = [];
+  ajCompraEditLineas.forEach(l=>{
+    const esAdicional = !oc.lineas.some(ol=>ol.productoId===l.productoId);
+    const detalle = esAdicional
+      ? `Adicional — no incluido en OC ${oc.nro}${detalleObs}`
+      : `Ingreso desde OC ${oc.nro}${detalleObs}`;
+    const ref = aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle, l.perecedero==='si'?(l.temp||null):null, oc.id);
+    if(ref) nuevasLineas.push(ref);
+  });
+  oc.recepcion = { fecha: new Date().toISOString(), obs: obsPrev, lineas: nuevasLineas };
+  oc.fechaRecepcion = oc.recepcion.fecha;
+
+  save();
+  cancelarModificacionCompra();
+  renderAll();
+  renderAjustesCompras();
+  if(avisosRevert.length) toast('✓ Recepción modificada. Avisos: ' + avisosRevert.join(' | '), 'error');
+  else toast(`✓ Recepción de ${oc.nro} modificada correctamente`);
+}
+
+async function eliminarCompraAdmin(ocId){
+  if(!esAdminStock()){ toast('Solo un administrador puede eliminar compras','error'); return; }
+  const oc = DB.ordenesCompra.find(o=>o.id===ocId);
+  if(!oc || !oc.recepcion){ toast('Esta compra no puede eliminarse automáticamente','error'); return; }
+
+  if(!(await confirmModal(`¿Eliminar la recepción de ${oc.nro} (${nomProv(oc.proveedorId)})?\n\nSe revertirá el stock que había sumado y la orden volverá a quedar Pendiente para recibirse de nuevo.`))) return;
+
+  const avisos = revertirIngresoOC(oc);
+  DB.historial = (DB.historial||[]).filter(h => !(h.tipo==='ingreso' && h.ocId===oc.id));
+
+  oc.recibida = false;
+  delete oc.recepcion;
+  delete oc.fechaRecepcion;
+  delete oc.obsRecepcion;
+
+  save();
+  renderAll();
+  renderAjustesCompras();
+  if(avisos.length) toast('✓ Recepción eliminada. Avisos: ' + avisos.join(' | '), 'error');
+  else toast(`✓ Recepción de ${oc.nro} eliminada — la OC vuelve a estar Pendiente`);
+}
+
+// ── AJUSTE DE REMITOS ────────────────────────────────────────
+function renderAjustesRemitosStock(){
+  const el = document.getElementById('ajr-lista');
+  const desde = document.getElementById('ajr-desde').value;
+  const hasta = document.getElementById('ajr-hasta').value;
+  let rems = [...(DB.remitos||[])];
+  if(desde) rems = rems.filter(r=> r.fecha >= desde);
+  if(hasta) rems = rems.filter(r=> r.fecha <= hasta);
+  rems.sort((a,b)=> a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
+
+  if(!rems.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">🧾</div><p>No hay remitos en el rango seleccionado.</p></div>`;
+    return;
+  }
+  el.innerHTML = rems.map(r=>`
+    <div class="item-card" style="margin-bottom:8px">
+      <div>
+        <div class="item-name">Remito ${r.nro} <span style="font-size:.75rem;font-weight:400;color:var(--muted)">— ${ff(r.fecha)}${r.destino?' · '+r.destino:''}</span>${r.anulado?' <span class="badge badge-noperecedero">Anulado</span>':''}</div>
+        <div class="item-detail">
+          ${r.lineas.length} línea(s) · ${r.lineas.map(l=>`${l.nombre} (${l.cantidad} ${l.unidad})`).join(', ')}
+          ${r.anulado?`<br><span style="font-size:.72rem">Anulado: ${fdt(r.fechaAnulacion)}${r.anuladoPor?' · '+r.anuladoPor:''}</span>`:''}
+        </div>
+      </div>
+      <div class="item-actions">
+        ${!r.anulado?`<button class="btn btn-secondary btn-sm" onclick="modificarRemitoAdmin(${r.id})">✏ Modificar</button>
+        <button class="btn btn-danger btn-sm" onclick="eliminarRemitoAdmin(${r.id})">🗑 Eliminar</button>`:''}
+      </div>
+    </div>`).join('');
+}
+
+// Devuelve al stock (lotes o stockSimple) todo lo que un remito había descontado.
+// Siempre preciso: los remitos ya guardan loteId/productoId/cantidad estructurados.
+function revertirRemitoStock(remito){
+  remito.lineas.forEach(l=>{
+    if(l.loteId){
+      const lote = DB.lotes.find(x=>x.id===l.loteId);
+      if(lote) lote.cantidad += l.cantidad;
+    } else {
+      if(!DB.stockSimple[l.productoId]) DB.stockSimple[l.productoId] = {cantidad:0, unidad:l.unidad};
+      DB.stockSimple[l.productoId].cantidad += l.cantidad;
+    }
+  });
+}
+
+function modificarRemitoAdmin(remitoId){
+  if(!esAdminStock()){ toast('Solo un administrador puede modificar remitos','error'); return; }
+  const remito = DB.remitos.find(r=>r.id===remitoId);
+  if(!remito || remito.anulado){ toast('Este remito no puede modificarse','error'); return; }
+  ajRemitoEditRemito = remito;
+  ajRemitoEditLineas = remito.lineas.map(l=>({...l}));
+  document.getElementById('ajr-edit-title').textContent = 'Modificar remito ' + remito.nro;
+  document.getElementById('ajr-edit-destino').value = remito.destino||'';
+  document.getElementById('ajr-edit-obs').value = remito.obs||'';
+  ajRenderRemitoEditLineas();
+  document.getElementById('ajr-edit-wrap').style.display = '';
+  document.getElementById('ajr-edit-wrap').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function ajRenderRemitoEditLineas(){
+  const tbody = document.getElementById('ajr-edit-tbody');
+  if(!ajRemitoEditLineas.length){
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:16px">No quedan líneas. Si querés eliminar todo el remito, usá "Eliminar" en la lista en cambio.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = ajRemitoEditLineas.map((l,i)=>`
+    <tr>
+      <td>${l.nombre}</td>
+      <td style="font-size:.75rem;color:var(--muted)">${l.loteRef?`Lote ${l.loteRef}`:'Stock general'}</td>
+      <td><input type="number" min="0.01" step="0.01" value="${l.cantidad}" style="width:90px" onchange="ajUpdateRemitoEditLinea(${i},this.value)"></td>
+      <td>${l.unidad}</td>
+      <td><button class="btn btn-sm btn-warn" onclick="ajQuitarRemitoEditLinea(${i})">✕</button></td>
+    </tr>`).join('');
+}
+
+function ajUpdateRemitoEditLinea(idx, valor){
+  ajRemitoEditLineas[idx].cantidad = parseFloat(valor)||0;
+}
+
+function ajQuitarRemitoEditLinea(idx){
+  ajRemitoEditLineas.splice(idx,1);
+  ajRenderRemitoEditLineas();
+}
+
+function cancelarModificacionRemito(){
+  ajRemitoEditRemito = null; ajRemitoEditLineas = [];
+  const wrap = document.getElementById('ajr-edit-wrap');
+  if(wrap) wrap.style.display = 'none';
+}
+
+async function guardarModificacionRemito(){
+  if(!esAdminStock()){ toast('Solo un administrador puede modificar remitos','error'); return; }
+  if(!ajRemitoEditRemito) return;
+  if(!ajRemitoEditLineas.length){ toast('El remito debe tener al menos una línea — para eliminarlo del todo, usá "Eliminar" en la lista','error'); return; }
+  for(const l of ajRemitoEditLineas){
+    if(!l.cantidad || l.cantidad<=0){ toast('Revisá las cantidades — deben ser mayores a 0','error'); return; }
+  }
+  const destino = document.getElementById('ajr-edit-destino').value;
+  const obs = document.getElementById('ajr-edit-obs').value.trim();
+  if(!destino){ toast('Seleccioná el destino','error'); return; }
+
+  // Validar stock disponible según la diferencia entre cantidad nueva y original
+  for(const l of ajRemitoEditLineas){
+    const orig = ajRemitoEditRemito.lineas.find(o=> l.loteId ? o.loteId===l.loteId : (!o.loteId && o.productoId===l.productoId));
+    const cantOriginal = orig ? orig.cantidad : 0;
+    const delta = l.cantidad - cantOriginal;
+    if(delta > 0){
+      if(l.loteId){
+        const lote = DB.lotes.find(x=>x.id===l.loteId);
+        const disp = lote ? lote.cantidad : 0;
+        if(delta > disp){ toast(`Stock insuficiente en el lote de "${l.nombre}". Disponible para aumentar: ${disp} ${l.unidad}`,'error'); return; }
+      } else {
+        const disp = (DB.stockSimple[l.productoId]||{cantidad:0}).cantidad;
+        if(delta > disp){ toast(`Stock insuficiente de "${l.nombre}". Disponible para aumentar: ${disp} ${l.unidad}`,'error'); return; }
+      }
+    }
+  }
+
+  if(!(await confirmModal(`¿Guardar los cambios en el remito ${ajRemitoEditRemito.nro}? Se ajustará el stock según las diferencias.`))) return;
+
+  const remito = ajRemitoEditRemito;
+  revertirRemitoStock(remito);
+  DB.historial = (DB.historial||[]).filter(h => !(h.tipo==='egreso' && (h.remitoId===remito.id || (!h.remitoId && h.detalle && h.detalle.indexOf('Remito '+remito.nro)===0))));
+
+  ajRemitoEditLineas.forEach(l=>{
+    if(l.loteId){
+      const lote = DB.lotes.find(x=>x.id===l.loteId);
+      if(lote) lote.cantidad -= l.cantidad;
+    } else {
+      if(!DB.stockSimple[l.productoId]) DB.stockSimple[l.productoId] = {cantidad:0, unidad:l.unidad};
+      DB.stockSimple[l.productoId].cantidad -= l.cantidad;
+    }
+    DB.historial.unshift({
+      tipo:'egreso', productoId:l.productoId, nombre:l.nombre,
+      cantidad:l.cantidad, unidad:l.unidad,
+      detalle:`Remito ${remito.nro}${l.loteRef?' · Lote '+l.loteRef:''}`,
+      fecha:new Date().toISOString(), remitoId:remito.id
+    });
+  });
+
+  remito.destino = destino;
+  remito.obs = obs;
+  remito.lineas = ajRemitoEditLineas.map(l=>({...l}));
+  remito.fechaModificacion = new Date().toISOString();
+
+  save();
+  cancelarModificacionRemito();
+  renderAll();
+  renderAjustesRemitosStock();
+  toast(`✓ Remito ${remito.nro} modificado correctamente`);
+}
+
+async function eliminarRemitoAdmin(remitoId){
+  if(!esAdminStock()){ toast('Solo un administrador puede eliminar remitos','error'); return; }
+  const remito = DB.remitos.find(r=>r.id===remitoId);
+  if(!remito || remito.anulado){ toast('Este remito ya está anulado','error'); return; }
+
+  if(!(await confirmModal(`¿Eliminar el remito ${remito.nro}? Se devolverá todo el stock que había descontado. El remito quedará marcado como Anulado (no se borra, para mantener la trazabilidad).`))) return;
+
+  revertirRemitoStock(remito);
+  DB.historial = (DB.historial||[]).filter(h => !(h.tipo==='egreso' && (h.remitoId===remito.id || (!h.remitoId && h.detalle && h.detalle.indexOf('Remito '+remito.nro)===0))));
+
+  remito.anulado = true;
+  remito.fechaAnulacion = new Date().toISOString();
+  remito.anuladoPor = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+
+  save();
+  renderAll();
+  renderAjustesRemitosStock();
+  toast(`✓ Remito ${remito.nro} anulado — stock devuelto`);
 }
 
 // ── Helpers de parseo de texto libre del historial de ingresos ──
@@ -3368,6 +3836,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
     <button class="tab" onclick="switchTab('proveedores')">🏭 Proveedores</button>
     <button class="tab" onclick="switchTab('compras')">🛒 Compras</button>
     <button class="tab" onclick="switchTab('historial')">🕓 Historial</button>
+    <button class="tab" id="tab-btn-ajustes-stock" onclick="switchTab('ajustes')" style="display:none">🔧 Ajustes</button>
   </div>
 
   <div id="alerts-banner" class="alerts-banner"></div>
@@ -3465,8 +3934,17 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
             <input type="number" min="1" id="loc-nro-hasta" placeholder="999" style="width:90px;font-size:.78rem;padding:5px 8px;">
           </label>
         </span>
+        <label style="font-size:.78rem;color:var(--muted)">Proveedor
+          <div class="prov-search-wrap" id="loc-prov-wrap" style="width:220px;display:inline-block;vertical-align:middle">
+            <input type="text" class="prov-search-input" id="loc-prov-text" placeholder="Todos" autocomplete="off" style="font-size:.78rem;padding:5px 8px;" oninput="filterProvSearch('loc-prov-wrap')" onfocus="openProvDropdown('loc-prov-wrap')" onblur="closeProvDropdownDelayed('loc-prov-wrap')">
+            <button type="button" class="prov-clear-btn" onclick="clearProvSearch('loc-prov-wrap')" style="display:none">✕</button>
+            <div class="prov-dropdown" style="display:none"></div>
+            <input type="hidden" id="loc-proveedor">
+          </div>
+        </label>
         <button class="btn btn-secondary btn-sm" onclick="renderListadoOC()">🔍 Filtrar</button>
         <button class="btn btn-secondary btn-sm" onclick="exportarPDF_ListadoOC()">📄 PDF</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportarExcel_ListadoOC()">📊 Excel</button>
       </div>
       <div id="listado-oc-container"></div>
     </div>
@@ -3822,6 +4300,88 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
       <div id="historial-precios-list"></div>
     </div>
   </div>
+
+  <!-- AJUSTES (SOLO ADMIN): modificar/eliminar Compras y Remitos ya cargados -->
+  <div id="panel-ajustes" class="panel">
+    <div class="listado-submenu">
+      <button class="listado-subtab active" data-sub="compras" onclick="switchAjustesStockSub('compras')">🛒 Ajuste de Compras</button>
+      <button class="listado-subtab" data-sub="remitos" onclick="switchAjustesStockSub('remitos')">🧾 Ajuste de Remitos</button>
+    </div>
+
+    <!-- SUB: Ajuste de Compras (Ingresos recibidos por OC) -->
+    <div id="ajstock-sub-compras" class="listado-subpanel active">
+      <div class="section-header">
+        <div class="section-title">🛒 Ajuste de Compras — solo administrador</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <label style="font-size:.78rem;color:var(--muted)">Desde
+            <input type="date" id="ajc-desde" style="width:auto;font-size:.78rem;padding:5px 8px;"></label>
+          <label style="font-size:.78rem;color:var(--muted)">Hasta
+            <input type="date" id="ajc-hasta" style="width:auto;font-size:.78rem;padding:5px 8px;"></label>
+          <button class="btn btn-secondary btn-sm" onclick="renderAjustesCompras()">🔍 Filtrar</button>
+        </div>
+      </div>
+      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Solo se listan las Órdenes de Compra ya <strong>recibidas</strong>. <strong>Modificar</strong> reabre la recepción para corregir cantidades, vencimientos o lotes (se revierte lo anterior y se aplica lo nuevo). <strong>Eliminar</strong> revierte todo el stock que esa recepción había sumado y la OC vuelve a quedar Pendiente para recibirse de nuevo. Si ese stock ya fue parcialmente consumido, el sistema avisa antes de continuar.</div>
+      <div id="ajc-edit-wrap" class="card" style="display:none;margin-bottom:16px;border:1px solid var(--accent)">
+        <div class="section-title" id="ajc-edit-title">Modificar recepción</div>
+        <div style="overflow-x:auto">
+          <table class="stock-table">
+            <thead><tr><th>Producto</th><th>Cantidad</th><th>Unidad</th><th>Temp °C</th><th>Vencimiento</th><th>Lote/Ref</th></tr></thead>
+            <tbody id="ajc-edit-tbody"></tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:14px">
+          <button class="btn btn-primary" onclick="guardarModificacionCompra()">✔ Guardar cambios</button>
+          <button class="btn btn-secondary" onclick="cancelarModificacionCompra()">Cancelar</button>
+        </div>
+      </div>
+      <div id="ajc-lista"></div>
+    </div>
+
+    <!-- SUB: Ajuste de Remitos -->
+    <div id="ajstock-sub-remitos" class="listado-subpanel">
+      <div class="section-header">
+        <div class="section-title">🧾 Ajuste de Remitos — solo administrador</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <label style="font-size:.78rem;color:var(--muted)">Desde
+            <input type="date" id="ajr-desde" style="width:auto;font-size:.78rem;padding:5px 8px;"></label>
+          <label style="font-size:.78rem;color:var(--muted)">Hasta
+            <input type="date" id="ajr-hasta" style="width:auto;font-size:.78rem;padding:5px 8px;"></label>
+          <button class="btn btn-secondary btn-sm" onclick="renderAjustesRemitosStock()">🔍 Filtrar</button>
+        </div>
+      </div>
+      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px"><strong>Modificar</strong> reabre el remito para corregir destino, cantidades o líneas (se devuelve el stock anterior y se descuenta el nuevo). <strong>Eliminar</strong> devuelve todo el stock que ese remito había descontado; el remito queda marcado como "Anulado" (no se borra, para mantener la trazabilidad y no reutilizar su número).</div>
+      <div id="ajr-edit-wrap" class="card" style="display:none;margin-bottom:16px;border:1px solid var(--accent)">
+        <div class="section-title" id="ajr-edit-title">Modificar remito</div>
+        <div class="form-grid" style="margin-bottom:10px">
+          <div>
+            <label>Destino</label>
+            <select id="ajr-edit-destino">
+              <option value="Cocina Ternium">Cocina Ternium</option>
+              <option value="Cocina Comirsa">Cocina Comirsa</option>
+              <option value="Sandwicheria Comirsa">Sandwicheria Comirsa</option>
+              <option value="Otros">Otros</option>
+            </select>
+          </div>
+          <div>
+            <label>Observación</label>
+            <input type="text" id="ajr-edit-obs">
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="stock-table">
+            <thead><tr><th>Producto</th><th>Detalle</th><th>Cantidad</th><th>Unidad</th><th></th></tr></thead>
+            <tbody id="ajr-edit-tbody"></tbody>
+          </table>
+        </div>
+        <div style="font-size:.72rem;color:var(--muted);margin:8px 0">No se pueden agregar productos nuevos acá — solo ajustar cantidades o quitar líneas existentes. Para sumar un producto nuevo, eliminá el remito completo y emitilo de nuevo desde Egreso.</div>
+        <div style="display:flex;gap:10px;margin-top:10px">
+          <button class="btn btn-primary" onclick="guardarModificacionRemito()">✔ Guardar cambios</button>
+          <button class="btn btn-secondary" onclick="cancelarModificacionRemito()">Cancelar</button>
+        </div>
+      </div>
+      <div id="ajr-lista"></div>
+    </div>
+  </div>
 </div>
 
 <!-- MODAL PRODUCTO -->
@@ -3841,6 +4401,8 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
           <option value="unidades">Unidades</option>
           <option value="litros">Litros</option>
           <option value="caja">Caja</option>
+          <option value="cajon">Cajon</option>
+          <option value="bolsa">Bolsa</option>
         </select>
       </div>
       <div>
@@ -4459,6 +5021,10 @@ function openFullscreen(modName, moduleHTML, perm, initialTab) {
   }
 
   contentEl.innerHTML = moduleHTML;
+
+  // Pestaña "Ajustes" (modificar/eliminar Compras y Remitos): solo administradores
+  const tabAjSt = contentEl.querySelector('#tab-btn-ajustes-stock');
+  if (tabAjSt) tabAjSt.style.display = (typeof currentUser !== 'undefined' && currentUser && currentUser.role === 'admin') ? 'inline-block' : 'none';
 
   overlay.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
