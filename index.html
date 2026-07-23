@@ -5304,7 +5304,7 @@ let PDB = JSON.parse(localStorage.getItem('bbf_prod_v1')||'null') || {
                      //  lineas:[{productoId,cantidad,unidad,menuId:num|null,
                      //           detalles:[{refTipo:'se'|'mp',refId,nombre,cantidad,unidad}]}],
                      //  estado:'cerrado', usuario, creado, fechaCierre, usuarioCierre}
-  menus: [],         // {id, numero:0-99 (único), descripcion, activo}
+  menus: [],         // {id, numero:0-999 (único), descripcion, activo}
   destinatarios: [], // {id, nombre, domicilio, cuit, observacion, activo}
   remitosDestino: [],// {id (= Nº de remito, correlativo), fecha, destinatarioId,
                      //  destinatario, domicilio, cuit (snapshot editable al emitir),
@@ -5733,7 +5733,7 @@ const prodModuleHTML = '' +
 '      <div class="card" id="menu-form-card" style="display:none">' +
 '        <div class="card-title" id="menu-form-title">Nuevo men\u00FA</div>' +
 '        <div class="form-grid">' +
-'          <div><label>N\u00FAmero <span class="req">*</span></label><input type="text" id="menu-numero" maxlength="2" inputmode="numeric" placeholder="00-99" style="width:90px;text-align:center"></div>' +
+'          <div><label>N\u00FAmero <span class="req">*</span></label><input type="text" id="menu-numero" maxlength="3" inputmode="numeric" placeholder="000-999" style="width:90px;text-align:center"></div>' +
 '          <div class="col-full" style="grid-column:span 2"><label>Descripci\u00F3n <span class="req">*</span></label><input type="text" id="menu-descripcion" placeholder="Ej: Milanesa con pur\u00E9" maxlength="120"></div>' +
 '        </div>' +
 '        <div style="display:flex;gap:10px;flex-wrap:wrap">' +
@@ -5747,7 +5747,7 @@ const prodModuleHTML = '' +
 
 '  <div id="panelp-destino" class="panel">' +
 '    <div class="listado-submenu">' +
-'      <button class="listado-subtab active" data-sub="remitos" onclick="switchDestinoSub(\'remitos\')">🧾 Remitos</button>' +
+'      <button class="listado-subtab active" data-sub="remitos" onclick="switchDestinoSub(\'remitos\')">🧾 Emisión de Remitos</button>' +
 '      <button class="listado-subtab" data-sub="destinatarios" onclick="switchDestinoSub(\'destinatarios\')">📇 Destinatarios</button>' +
 '    </div>' +
 
@@ -5775,10 +5775,10 @@ const prodModuleHTML = '' +
 
 '    <div id="destsub-remitos" class="listado-subpanel active">' +
 '      <div class="section-header">' +
-'        <div class="section-title">Remitos de entrega</div>' +
+'        <div class="section-title">Emisión de Remitos</div>' +
 '        <button class="btn btn-primary btn-sm" id="btn-nuevo-remito" onclick="abrirFormRemitoDestino()">➕ Nuevo remito</button>' +
 '      </div>' +
-'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Documento interno de entrega — no descuenta stock. Registra qué productos elaborados se entregaron, a quién y cuándo.</div>' +
+'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Documento interno de entrega — no descuenta stock. Registra qué productos elaborados se entregaron, a quién y cuándo. El listado de remitos emitidos está en Informes → Remitos Emitidos.</div>' +
 
 '      <div class="card" id="remdest-form-card" style="display:none">' +
 '        <div class="card-title" id="remdest-form-title">Nuevo remito</div>' +
@@ -5812,8 +5812,6 @@ const prodModuleHTML = '' +
 '          <button class="btn btn-secondary" onclick="document.getElementById(\'remdest-emitido-card\').style.display=\'none\'">Cerrar</button>' +
 '        </div>' +
 '      </div>' +
-
-'      <div id="remitos-destino-lista"></div>' +
 '    </div>' +
 '  </div>' +
 '  <div id="panelp-informes" class="panel">' +
@@ -5821,6 +5819,7 @@ const prodModuleHTML = '' +
 '      <button class="listado-subtab active" data-sub="registros" onclick="switchInformesSub(\'registros\')">📋 Registros cargados</button>' +
 '      <button class="listado-subtab" data-sub="novedades" onclick="switchInformesSub(\'novedades\')">📰 Novedades</button>' +
 '      <button class="listado-subtab" data-sub="costoprom" onclick="switchInformesSub(\'costoprom\')">📊 Costo promedio</button>' +
+'      <button class="listado-subtab" data-sub="remitosemitidos" onclick="switchInformesSub(\'remitosemitidos\')">📦 Remitos Emitidos</button>' +
 '    </div>' +
 '    <div id="infsub-registros" class="listado-subpanel active">' +
 '    <div class="card">' +
@@ -5892,7 +5891,7 @@ const prodModuleHTML = '' +
 '        <div style="min-width:200px"><label style="font-size:.72rem">Producto</label>' +
 '          <select id="pcp-producto" onchange="renderCostoPromedio()" style="font-size:.78rem;padding:6px 8px"></select></div>' +
 '        <div><label style="font-size:.72rem">N\u00BA</label>' +
-'          <input type="text" id="pcp-menu-num" maxlength="2" inputmode="numeric" placeholder="N\u00BA" oninput="pcpMenuNumInput(this)" onblur="pcpMenuAplicarNum(this, true)" style="width:46px;font-size:.78rem;padding:6px;text-align:center"></div>' +
+'          <input type="text" id="pcp-menu-num" maxlength="3" inputmode="numeric" placeholder="N\u00BA" oninput="pcpMenuNumInput(this)" onblur="pcpMenuAplicarNum(this, true)" style="width:54px;font-size:.78rem;padding:6px;text-align:center"></div>' +
 '        <div style="min-width:180px"><label style="font-size:.72rem">Men\u00FA</label>' +
 '          <select id="pcp-menu" onchange="pcpMenuSelChange(this)" style="font-size:.78rem;padding:6px 8px"></select></div>' +
 '        <button class="btn btn-secondary btn-sm" onclick="limpiarFiltrosCostoProm()">\u2728 Limpiar</button>' +
@@ -5905,12 +5904,35 @@ const prodModuleHTML = '' +
 '      <div id="pcp-lista"></div>' +
 '    </div>' +
 '    </div>' +
+
+'    <div id="infsub-remitosemitidos" class="listado-subpanel">' +
+'    <div class="card">' +
+'      <div class="section-header">' +
+'        <div class="section-title">📦 Remitos Emitidos</div>' +
+'      </div>' +
+'      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">' +
+'        <div><label style="font-size:.72rem">Desde (fecha)</label>' +
+'          <input type="date" id="infre-desde" style="width:auto;font-size:.78rem;padding:6px 8px"></div>' +
+'        <div><label style="font-size:.72rem">Hasta (fecha)</label>' +
+'          <input type="date" id="infre-hasta" style="width:auto;font-size:.78rem;padding:6px 8px"></div>' +
+'        <div style="min-width:200px"><label style="font-size:.72rem">Destinatario</label>' +
+'          <select id="infre-destinatario"><option value="">Todos</option></select></div>' +
+'        <div style="min-width:200px"><label style="font-size:.72rem">Producto</label>' +
+'          <select id="infre-producto"><option value="">Todos</option></select></div>' +
+'        <button class="btn btn-secondary btn-sm" onclick="renderInformeRemitosEmitidos()">🔍 Filtrar</button>' +
+'        <button class="btn btn-secondary btn-sm" onclick="limpiarFiltrosInfRemitos()">✨ Todos</button>' +
+'      </div>' +
+'      <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">Los tres filtros admiten "Todos" y se combinan entre sí. Documental — estos remitos no descuentan stock.</div>' +
+'      <div id="infre-lista"></div>' +
+'    </div>' +
+'    </div>' +
 '  </div>' +
 
 '  <div id="panelp-ajustes" class="panel">' +
 '    <div class="listado-submenu">' +
 '      <button class="listado-subtab active" data-sub="registros" onclick="switchAjustesSub(\'registros\')">🔧 Ajuste de Registros</button>' +
 '      <button class="listado-subtab" data-sub="remitos" onclick="switchAjustesSub(\'remitos\')">🧾 Ajuste de Remitos</button>' +
+'      <button class="listado-subtab" data-sub="stocksemi" onclick="switchAjustesSub(\'stocksemi\')">📦 Ajuste Stock SE</button>' +
 '    </div>' +
 '    <div id="ajsub-registros" class="listado-subpanel active">' +
 '    <div class="card">' +
@@ -5942,6 +5964,24 @@ const prodModuleHTML = '' +
 '      </div>' +
 '      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Desde acá podés <strong>modificar</strong> un remito emitido (destinatario, domicilio, CUIT, observación y líneas) o <strong>eliminarlo</strong>. Es documental — no toca stock. La fecha no se puede cambiar porque identifica al remito. Si eliminás uno, su número queda vacante (no se reutiliza).</div>' +
 '      <div id="rajustes-lista"></div>' +
+'    </div>' +
+'    </div>' +
+'    <div id="ajsub-stocksemi" class="listado-subpanel">' +
+'    <div class="card">' +
+'      <div class="section-header">' +
+'        <div class="section-title">📦 Ajuste de Stock de Semielaborados — solo administrador</div>' +
+'      </div>' +
+'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Usalo para corregir el stock simple de semielaborados según el recuento físico. Elegí el semielaborado y cargá la diferencia: un número positivo suma, uno negativo resta. Queda registrado en el historial de abajo.</div>' +
+'      <div class="form-grid" style="margin-bottom:12px">' +
+'        <div><label>Semielaborado <span class="req">*</span></label><select id="ajse-producto"><option value="">— Seleccioná —</option></select></div>' +
+'        <div><label>Ajuste (+/-) <span class="req">*</span></label><input type="number" id="ajse-cantidad" step="any" placeholder="Ej: -3.5 o 10"></div>' +
+'        <div><label>Motivo (opcional)</label><input type="text" id="ajse-motivo" placeholder="Ej: recuento físico semanal"></div>' +
+'      </div>' +
+'      <button class="btn btn-primary btn-sm" onclick="aplicarAjusteStockSemi()">✔ Aplicar ajuste</button>' +
+'      <div style="margin-top:22px">' +
+'        <div class="section-title" style="font-size:.85rem;margin-bottom:8px">Historial de ajustes</div>' +
+'        <div id="ajse-historial"></div>' +
+'      </div>' +
 '    </div>' +
 '    </div>' +
 '  </div>' +
@@ -5995,6 +6035,7 @@ function switchInformesSub(sub){
   if(sub === 'registros') renderInformesProd();
   if(sub === 'novedades') renderNovedadesProd();
   if(sub === 'costoprom'){ poblarSelectsCostoProm(); renderCostoPromedio(); }
+  if(sub === 'remitosemitidos'){ poblarSelectsInfRemitos(); renderInformeRemitosEmitidos(); }
 }
 
 function switchProdSub(sub){
@@ -6117,12 +6158,26 @@ function construirGrillaLineas(centroId, fuente, bloqueado){
         </tr>`;
       }
     }
+
+    // Renglón libre de "Detalle guarnición y/o Salsa": va después de cada
+    // producto PRINCIPAL (no aplica a productos asociados, ya que son
+    // idénticos al principal). Es texto libre, opcional, y se guarda en el
+    // registro para futuros listados (ej. "Listado de guarniciones por centro").
+    if(!p.comparteConId){
+      const detGuarn = linea ? (linea.detalleGuarnicion || '') : '';
+      filas += `<tr class="preg-guarn-row">
+        <td colspan="4" style="padding:6px 10px 14px 10px;background:rgba(107,116,153,.03)">
+          <label style="font-size:.72rem;color:var(--muted);display:block;margin-bottom:4px">Detalle guarnición y/o Salsa</label>
+          <input type="text" class="preg-guarn" data-prodid="${p.id}" value="${escProd(detGuarn)}" placeholder="Ej: puré, ensalada, salsa criolla..." ${dis} style="width:100%;font-size:.8rem;padding:7px 10px">
+        </td>
+      </tr>`;
+    }
   });
 
   return `<table class="stock-table">
     <thead><tr><th>Producto</th><th>Tipo</th><th>Cantidad</th><th>Unidad</th></tr></thead>
     <tbody>${filas}</tbody></table>
-    <div style="font-size:.7rem;color:var(--muted);margin-top:8px">Se guardan los productos con cantidad mayor a cero o con renglones de detalle completos (esto último permite cargar las MP en el producto principal con cantidad 0 para repartir el costo hacia su producto asociado). Cada renglón de detalle elige su fuente: MP (lista del Stock, informativo) o SE ↓ (semielaborados, descuenta al cerrar). Al guardar, el registro queda cerrado.</div>`;
+    <div style="font-size:.7rem;color:var(--muted);margin-top:8px">Se guardan los productos con cantidad mayor a cero, con renglones de detalle completos, o con el detalle de guarnición/salsa cargado (esto último permite cargar las MP en el producto principal con cantidad 0 para repartir el costo hacia su producto asociado). Cada renglón de detalle elige su fuente: MP (lista del Stock, informativo) o SE ↓ (semielaborados, descuenta al cerrar). Al guardar, el registro queda cerrado.</div>`;
 }
 
 // UI de menú de una línea elaborada del registro: campo chico de 2 dígitos
@@ -6140,23 +6195,23 @@ function construirMenuUI(prodId, menuId, dis){
   ).join('');
   const numVal = asignado ? menuNum(asignado) : '';
   return `<span style="display:inline-flex;align-items:center;gap:6px;margin-left:8px">
-    <input type="text" class="preg-menu-num" data-prodid="${prodId}" value="${numVal}" maxlength="2" inputmode="numeric" placeholder="Nº" ${dis}
+    <input type="text" class="preg-menu-num" data-prodid="${prodId}" value="${numVal}" maxlength="3" inputmode="numeric" placeholder="Nº" ${dis}
       oninput="pregMenuNumInput(this)" onblur="pregMenuAplicarNum(this, true)"
-      title="Número de menú (2 dígitos) — atajo del desplegable"
-      style="width:46px;font-size:.74rem;padding:4px 6px;text-align:center">
+      title="Número de menú (3 dígitos) — atajo del desplegable"
+      style="width:54px;font-size:.74rem;padding:4px 6px;text-align:center">
     <select class="preg-menu-sel" data-prodid="${prodId}" ${dis} onchange="pregMenuSelChange(this)"
       style="width:auto;max-width:340px;min-width:200px;font-size:.72rem;padding:4px 8px">${opts}</select>
   </span>`;
 }
 
-// Tipear el número selecciona el menú en el desplegable (con 2 dígitos, o al
-// salir del campo con 1 dígito). Número inexistente: se limpia con aviso.
+// Tipear el número selecciona el menú en el desplegable (con 3 dígitos, o al
+// salir del campo con menos dígitos). Número inexistente: se limpia con aviso.
 function pregMenuAplicarNum(inp, alBlur){
   const sel = inp.parentElement.querySelector('.preg-menu-sel');
   if(!sel) return;
   const v = inp.value;
   if(v === ''){ sel.value = ''; return; }
-  if(v.length < 2 && !alBlur) return;   // esperando el segundo dígito
+  if(v.length < 3 && !alBlur) return;   // esperando el tercer dígito
   const num = parseInt(v);
   const opcion = Array.from(sel.options).find(o => {
     if(o.value === '') return false;
@@ -6170,12 +6225,12 @@ function pregMenuAplicarNum(inp, alBlur){
   } else {
     sel.value = '';
     inp.value = '';
-    toastProd('No existe un menú con el número ' + (isNaN(num) ? v : String(num).padStart(2,'0')), 'error');
+    toastProd('No existe un menú con el número ' + (isNaN(num) ? v : String(num).padStart(3,'0')), 'error');
   }
 }
 
 function pregMenuNumInput(inp){
-  inp.value = inp.value.replace(/\D/g, '').slice(0, 2);
+  inp.value = inp.value.replace(/\D/g, '').slice(0, 3);
   pregMenuAplicarNum(inp, false);
 }
 
@@ -6371,7 +6426,9 @@ function recolectarLineasForm(){
     const cant = parseFloat(inp.value);
     const pid = parseInt(inp.dataset.prodid);
     const dets = detallesPorProducto[pid] || [];
-    if(cant > 0 || dets.length > 0){
+    const guarnEl = document.querySelector('#preg-lineas .preg-guarn[data-prodid="' + pid + '"]');
+    const detalleGuarnicion = guarnEl ? guarnEl.value.trim() : '';
+    if(cant > 0 || dets.length > 0 || detalleGuarnicion){
       const p = pprodById(pid);
       const selMenu = document.querySelector('#preg-lineas .preg-menu-sel[data-prodid="' + pid + '"]');
       const menuId = (selMenu && selMenu.value !== '') ? parseInt(selMenu.value) : null;
@@ -6380,7 +6437,8 @@ function recolectarLineasForm(){
         cantidad: cant > 0 ? cant : 0,
         unidad: p.unidad,
         menuId: menuId,
-        detalles: dets
+        detalles: dets,
+        detalleGuarnicion: detalleGuarnicion
       });
     }
   });
@@ -7020,7 +7078,7 @@ function pcpMenuAplicarNum(inp, alBlur){
   if(!sel) return;
   const v = inp.value;
   if(v === ''){ sel.value = ''; renderCostoPromedio(); return; }
-  if(v.length < 2 && !alBlur) return;
+  if(v.length < 3 && !alBlur) return;
   const num = parseInt(v);
   const m = PDB.menus.find(x => x.numero === num);
   if(m){
@@ -7029,12 +7087,12 @@ function pcpMenuAplicarNum(inp, alBlur){
   } else {
     sel.value = '';
     inp.value = '';
-    toastProd('No existe un menú con el número ' + (isNaN(num) ? v : String(num).padStart(2,'0')), 'error');
+    toastProd('No existe un menú con el número ' + (isNaN(num) ? v : String(num).padStart(3,'0')), 'error');
   }
   renderCostoPromedio();
 }
 function pcpMenuNumInput(inp){
-  inp.value = inp.value.replace(/\D/g, '').slice(0, 2);
+  inp.value = inp.value.replace(/\D/g, '').slice(0, 3);
   pcpMenuAplicarNum(inp, false);
 }
 function pcpMenuSelChange(sel){
@@ -7437,6 +7495,7 @@ function switchAjustesSub(sub){
   if(panel) panel.classList.add('active');
   if(sub === 'registros') renderAjustesProd();
   if(sub === 'remitos')   renderAjustesRemitos();
+  if(sub === 'stocksemi') renderAjusteStockSemi();
 }
 
 function renderAjustesProd(){
@@ -7730,7 +7789,7 @@ function renderCatalogoPProd(){
 
 // ── MENÚS (ABM) ──────────────────────────────────────
 function menuById(id){ return PDB.menus.find(m => m.id === id); }
-function menuNum(m){ return String(m.numero).padStart(2, '0'); }
+function menuNum(m){ return String(m.numero).padStart(3, '0'); }
 function menuLabel(m){ return menuNum(m) + ' — ' + m.descripcion; }
 
 function abrirFormMenu(id){
@@ -8138,6 +8197,84 @@ function mostrarAccionesRemito(id){
   document.getElementById('remdest-emitido-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
+// ── INFORME: REMITOS EMITIDOS (Informes) ────────────────────
+function poblarSelectsInfRemitos(){
+  const selDest = document.getElementById('infre-destinatario');
+  const selProd = document.getElementById('infre-producto');
+  if(!selDest || !selProd) return;
+  const valDest = selDest.value;
+  const valProd = selProd.value;
+
+  const dests = PDB.destinatarios.slice().sort(function(a,b){ return a.nombre.localeCompare(b.nombre,'es'); });
+  selDest.innerHTML = '<option value="">Todos</option>' + dests.map(function(d){
+    return '<option value="' + d.id + '">' + escProd(d.nombre) + '</option>';
+  }).join('');
+  if(valDest) selDest.value = valDest;
+
+  // Solo productos que efectivamente aparecen en algún remito emitido
+  const prodIds = new Set();
+  PDB.remitosDestino.forEach(function(r){ r.lineas.forEach(function(l){ prodIds.add(l.productoId); }); });
+  const prods = Array.from(prodIds).map(function(id){ return pprodById(id); }).filter(Boolean)
+    .sort(function(a,b){ return a.nombre.localeCompare(b.nombre,'es'); });
+  selProd.innerHTML = '<option value="">Todos</option>' + prods.map(function(p){
+    return '<option value="' + p.id + '">' + escProd(p.nombre) + '</option>';
+  }).join('');
+  if(valProd) selProd.value = valProd;
+}
+
+function limpiarFiltrosInfRemitos(){
+  document.getElementById('infre-desde').value = '';
+  document.getElementById('infre-hasta').value = '';
+  document.getElementById('infre-destinatario').value = '';
+  document.getElementById('infre-producto').value = '';
+  renderInformeRemitosEmitidos();
+}
+
+function renderInformeRemitosEmitidos(){
+  const cont = document.getElementById('infre-lista');
+  if(!cont) return;
+  const desde = document.getElementById('infre-desde').value;
+  const hasta = document.getElementById('infre-hasta').value;
+  const destId = parseInt(document.getElementById('infre-destinatario').value);
+  const prodId = parseInt(document.getElementById('infre-producto').value);
+
+  let rems = PDB.remitosDestino.slice();
+  if(desde) rems = rems.filter(function(r){ return r.fecha >= desde; });
+  if(hasta) rems = rems.filter(function(r){ return r.fecha <= hasta; });
+  if(!isNaN(destId)) rems = rems.filter(function(r){ return r.destinatarioId === destId; });
+  rems.sort(function(a,b){ return b.id - a.id; });
+
+  // Una fila por línea (producto) dentro de cada remito, para que el filtro de producto sea preciso
+  const filas = [];
+  rems.forEach(function(r){
+    r.lineas.forEach(function(l){
+      if(!isNaN(prodId) && l.productoId !== prodId) return;
+      filas.push({ remito: r, linea: l });
+    });
+  });
+
+  if(!filas.length){
+    cont.innerHTML = '<div class="empty-state"><div class="icon">📦</div><p>No hay remitos emitidos con esos filtros.</p></div>';
+    return;
+  }
+
+  const filasHtml = filas.map(function(f){
+    return '<tr>' +
+      '<td style="font-family:\'Syne\',sans-serif;font-weight:700">' + numRemDest(f.remito.id) + '</td>' +
+      '<td>' + fechaBonitaProd(f.remito.fecha) + '</td>' +
+      '<td>' + escProd(f.remito.destinatario) + '</td>' +
+      '<td>' + escProd(f.linea.nombre) + '</td>' +
+      '<td style="text-align:right">' + f.linea.cantidad + '</td>' +
+      '<td style="color:var(--muted)">' + escProd(f.linea.unidad) + '</td>' +
+      '<td><button class="btn btn-secondary btn-sm" onclick="mostrarAccionesRemito(' + f.remito.id + ')">👁 Ver</button></td>' +
+    '</tr>';
+  }).join('');
+
+  cont.innerHTML = '<table class="stock-table"><thead><tr><th>Nº</th><th>Fecha</th><th>Destinatario</th><th>Producto</th><th>Cantidad</th><th>Unidad</th><th></th></tr></thead><tbody>' +
+    filasHtml + '</tbody></table>' +
+    '<div style="font-size:.72rem;color:var(--muted);margin-top:8px">' + filas.length + ' línea(s) de ' + rems.length + ' remito(s).</div>';
+}
+
 function renderRemitosDestinoLista(){
   const cont = document.getElementById('remitos-destino-lista');
   if(!cont) return;
@@ -8329,11 +8466,11 @@ function guardarMenu(){
   if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
   const numRaw = document.getElementById('menu-numero').value.trim();
   const descripcion = document.getElementById('menu-descripcion').value.trim();
-  if(!/^\d{1,2}$/.test(numRaw)){ toastProd('El número debe tener 1 o 2 dígitos (0 a 99)', 'error'); return; }
+  if(!/^\d{1,3}$/.test(numRaw)){ toastProd('El número debe tener de 1 a 3 dígitos (0 a 999)', 'error'); return; }
   const numero = parseInt(numRaw);
   if(!descripcion){ toastProd('La descripción es obligatoria', 'error'); return; }
   const dupNum = PDB.menus.find(m => m.numero === numero && m.id !== editMenuId);
-  if(dupNum){ toastProd('El número ' + String(numero).padStart(2,'0') + ' ya está usado por "' + dupNum.descripcion + '"', 'error'); return; }
+  if(dupNum){ toastProd('El número ' + String(numero).padStart(3,'0') + ' ya está usado por "' + dupNum.descripcion + '"', 'error'); return; }
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
   if(editMenuId){
     const m = menuById(editMenuId);
@@ -8479,6 +8616,67 @@ function renderDestinatarios(){
 }
 
 // ── STOCK SIMPLE DE SEMIELABORADOS ───────────────────
+// ── AJUSTE DE STOCK DE SEMIELABORADOS (solo admin) ──────────
+function renderAjusteStockSemi(){
+  const sel = document.getElementById('ajse-producto');
+  if(!sel) return;
+  const semis = PDB.productosProd.filter(p => p.tipo === 'semielaborado').slice().sort((a,b)=>a.nombre.localeCompare(b.nombre,'es'));
+  const valActual = sel.value;
+  sel.innerHTML = '<option value="">— Seleccioná —</option>' + semis.map(function(p){
+    return '<option value="' + p.id + '">' + escProd(p.nombre) + ' (stock actual: ' + (PDB.stockSemi[p.id]||0) + ' ' + escProd(p.unidad) + ')</option>';
+  }).join('');
+  if(valActual) sel.value = valActual;
+
+  const hist = document.getElementById('ajse-historial');
+  if(!hist) return;
+  const entradas = (PDB.historialProd||[]).filter(function(h){ return h.tipo === 'ajuste-stock-se'; })
+    .slice().sort(function(a,b){ return b.ts.localeCompare(a.ts); });
+  if(!entradas.length){
+    hist.innerHTML = '<div style="font-size:.8rem;color:var(--muted);padding:8px 0">Todavía no se registraron ajustes.</div>';
+    return;
+  }
+  hist.innerHTML = '<table class="stock-table"><thead><tr><th>Fecha</th><th>Detalle</th><th>Usuario</th></tr></thead><tbody>' +
+    entradas.map(function(h){
+      return '<tr><td style="white-space:nowrap;color:var(--muted);font-size:.78rem">' + new Date(h.ts).toLocaleString('es-AR') +
+        '</td><td>' + escProd(h.detalle) + '</td><td style="color:var(--muted);font-size:.78rem">' + escProd(h.usuario||'—') + '</td></tr>';
+    }).join('') +
+    '</tbody></table>';
+}
+
+async function aplicarAjusteStockSemi(){
+  if(!isAdminProd()){ toastProd('Solo un administrador puede ajustar el stock de semielaborados','error'); return; }
+  const prodId = parseInt(document.getElementById('ajse-producto').value);
+  const cantidad = parseFloat(document.getElementById('ajse-cantidad').value);
+  const motivo = document.getElementById('ajse-motivo').value.trim();
+  if(!prodId){ toastProd('Seleccioná un semielaborado','error'); return; }
+  if(!cantidad || isNaN(cantidad)){ toastProd('Cargá una cantidad de ajuste distinta de 0','error'); return; }
+  const p = pprodById(prodId);
+  if(!p){ toastProd('Producto no encontrado','error'); return; }
+
+  const stockAnterior = PDB.stockSemi[prodId] || 0;
+  const stockNuevo = stockAnterior + cantidad;
+  const signo = cantidad > 0 ? '+' : '';
+
+  const msg = '¿Aplicar el ajuste ' + signo + cantidad + ' ' + p.unidad + ' a "' + p.nombre + '"?\n\nStock actual: ' + stockAnterior + ' ' + p.unidad +
+    '\nStock resultante: ' + stockNuevo + ' ' + p.unidad + (motivo ? ('\n\nMotivo: ' + motivo) : '');
+  if(!(await confirmModal(msg, 'Ajustar stock'))) return;
+
+  PDB.stockSemi[prodId] = stockNuevo;
+  const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  PDB.historialProd.push({
+    ts: new Date().toISOString(), tipo: 'ajuste-stock-se',
+    detalle: '"' + p.nombre + '": ' + signo + cantidad + ' ' + p.unidad + ' (de ' + stockAnterior + ' a ' + stockNuevo + ')' + (motivo ? ' — Motivo: ' + motivo : ''),
+    usuario: usuario
+  });
+
+  saveProd();
+  document.getElementById('ajse-cantidad').value = '';
+  document.getElementById('ajse-motivo').value = '';
+  renderAjusteStockSemi();
+  renderStockSemi();
+  toastProd('✓ Stock de "' + p.nombre + '" ajustado a ' + stockNuevo + ' ' + p.unidad);
+}
+
 function renderStockSemi(){
   const cont = document.getElementById('stocksemi-lista');
   if(!cont) return;
