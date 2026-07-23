@@ -5291,7 +5291,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // ── DATA PRODUCCIÓN ───────────────────────────────────
 let PDB = JSON.parse(localStorage.getItem('bbf_prod_v1')||'null') || {
-  centros: [],       // {id, nombre, activo}
+  centros: [],       // {id, numero:1-9 (único), nombre, activo}
   productosProd: [], // {id, nombre, tipo:'elaborado'|'semielaborado', unidad, centrosIds:[],
                      //  detallaMP:bool, cantElementos:0-9, dtaStockSE:bool (fuente def. renglones),
                      //  orden:0-99|null, detallaMenu:bool, activo,
@@ -5323,6 +5323,16 @@ function migrarPDB(){
   if(!PDB.destinatarios)    PDB.destinatarios = [];
   if(!PDB.remitosDestino)   PDB.remitosDestino = [];
   if(!PDB.historialProd)  PDB.historialProd = [];
+  PDB.centros.forEach(c => {
+    if(c.numero === undefined || c.numero === null){
+      // Migración: centros cargados antes del número estructurado — se
+      // infiere del dígito inicial del nombre actual (ej. "1-Cocina
+      // Comirsa" → 1). Si no puede inferirse, queda sin número y hay que
+      // completarlo a mano una vez en el ABM de Centros de elaboración.
+      const m = /^(\d)/.exec(c.nombre || '');
+      c.numero = m ? parseInt(m[1]) : null;
+    }
+  });
   PDB.productosProd.forEach(p => {
     if(!p.centrosIds) p.centrosIds = [];
     if(p.detallaMP === undefined)     p.detallaMP = false;
@@ -5714,8 +5724,10 @@ const prodModuleHTML = '' +
 '      <div class="card" id="centro-form-card" style="display:none">' +
 '        <div class="card-title" id="centro-form-title">Nuevo centro de elaboración</div>' +
 '        <div class="form-grid">' +
-'          <div class="col-full"><label>Nombre <span class="req">*</span></label><input type="text" id="centro-nombre" placeholder="Ej: Cocina Central" maxlength="80"></div>' +
+'          <div><label>N\u00FAmero <span class="req">*</span></label><input type="text" id="centro-numero" maxlength="1" inputmode="numeric" placeholder="1-9" style="width:70px;text-align:center"></div>' +
+'          <div class="col-full" style="grid-column:span 2"><label>Nombre <span class="req">*</span></label><input type="text" id="centro-nombre" placeholder="Ej: Cocina Central" maxlength="80"></div>' +
 '        </div>' +
+'        <div style="font-size:.72rem;color:var(--muted);margin:-4px 0 12px">El n\u00FAmero determina el orden en el desplegable "Elaborado en" del Registro Diario y qu\u00E9 men\u00FAs (por centena) pueden asignarse en ese centro.</div>' +
 '        <div style="display:flex;gap:10px;flex-wrap:wrap">' +
 '          <button class="btn btn-primary" onclick="guardarCentro()">💾 Guardar centro</button>' +
 '          <button class="btn btn-secondary" onclick="cerrarFormCentro()">Cancelar</button>' +
@@ -5729,7 +5741,7 @@ const prodModuleHTML = '' +
 '        <div class="section-title">Men\u00FAs</div>' +
 '        <button class="btn btn-primary btn-sm" id="btn-nuevo-menu" onclick="abrirFormMenu(null)">\u2795 Nuevo men\u00FA</button>' +
 '      </div>' +
-'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Tabla de men\u00FAs para el Registro Diario: cada men\u00FA tiene un n\u00FAmero de 2 d\u00EDgitos (\u00FAnico) y su descripci\u00F3n. En el registro se elige por n\u00FAmero o desde el desplegable, ordenado por n\u00FAmero ascendente. Asignarlo es opcional.</div>' +
+'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Tabla de men\u00FAs para el Registro Diario: cada men\u00FA tiene un n\u00FAmero de 3 d\u00EDgitos (\u00FAnico) y su descripci\u00F3n. La centena (primer d\u00EDgito) debe coincidir con el n\u00FAmero de alg\u00FAn centro de elaboraci\u00F3n cargado. En el registro se elige por n\u00FAmero o desde el desplegable, ordenado por n\u00FAmero ascendente. Asignarlo es opcional.</div>' +
 '      <div class="card" id="menu-form-card" style="display:none">' +
 '        <div class="card-title" id="menu-form-title">Nuevo men\u00FA</div>' +
 '        <div class="form-grid">' +
@@ -6071,7 +6083,8 @@ function renderPRegCentroSelect(){
   const sel = document.getElementById('preg-centro');
   if(!sel) return;
   const valorActual = sel.value;
-  const activos = PDB.centros.filter(c => c.activo);
+  const activos = PDB.centros.filter(c => c.activo)
+    .slice().sort((a,b) => (a.numero === null || a.numero === undefined ? 99 : a.numero) - (b.numero === null || b.numero === undefined ? 99 : b.numero));
   sel.innerHTML = '<option value="">— Seleccioná —</option>' +
     activos.map(c => `<option value="${c.id}">${escProd(c.nombre)}</option>`).join('');
   if(valorActual && activos.some(c => String(c.id) === valorActual)) sel.value = valorActual;
@@ -6081,6 +6094,10 @@ function renderPRegCentroSelect(){
 // centro y, para los que "Detalla MP", sus N renglones de detalle debajo
 // (buscador de producto + cantidad + unidad automática).
 function construirGrillaLineas(centroId, fuente, bloqueado){
+  // Número del centro (1-9), usado para restringir qué menús (por centena)
+  // pueden asignarse a las líneas de este registro.
+  const centroObj = PDB.centros.find(c => c.id === centroId);
+  const centroNumero = (centroObj && centroObj.numero !== null && centroObj.numero !== undefined) ? centroObj.numero : null;
   let productos = PDB.productosProd.filter(p => p.activo && p.centrosIds.includes(centroId));
   // En edición: incluir productos presentes en el registro aunque hoy estén
   // inactivos o desasociados del centro (para no perder información)
@@ -6114,7 +6131,7 @@ function construirGrillaLineas(centroId, fuente, bloqueado){
     // UI de menú: solo elaborados que detallan menú y NO son asociados —
     // el asociado hereda el menú de su producto principal al cerrar.
     const menuUI = (p.tipo === 'elaborado' && !p.comparteConId && p.detallaMenu !== false)
-      ? construirMenuUI(p.id, linea ? linea.menuId : null, dis) : '';
+      ? construirMenuUI(p.id, linea ? linea.menuId : null, dis, centroNumero) : '';
     filas += `<tr>
       <td><span style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap">${escProd(p.nombre)}${p.activo ? '' : ' <span class="badge badge-danger">Inactivo</span>'}${menuUI}</span></td>
       <td>${badge}</td>
@@ -6184,18 +6201,26 @@ function construirGrillaLineas(centroId, fuente, bloqueado){
 // + desplegable ordenado por número ascendente, sincronizados en ambos
 // sentidos. Asignar menú es opcional. Se ofrecen los menús activos (más el
 // asignado en el registro, aunque hoy esté inactivo, para no perder el dato).
-function construirMenuUI(prodId, menuId, dis){
+function construirMenuUI(prodId, menuId, dis, centroNumero){
   const asignado = (menuId !== null && menuId !== undefined) ? menuById(menuId) : null;
+  // Seguridad operativa: si el centro tiene número definido, sólo se ofrecen
+  // menús cuya centena (primer dígito del número de 3 cifras) coincida con
+  // ese centro. El menú ya asignado al registro se sigue mostrando aunque
+  // no coincida (dato histórico, para no perderlo), marcado como tal.
+  const tieneCentroNum = centroNumero !== null && centroNumero !== undefined;
   const lista = PDB.menus
     .filter(m => m.activo || (asignado && m.id === asignado.id))
+    .filter(m => !tieneCentroNum || Math.floor(m.numero / 100) === centroNumero || (asignado && m.id === asignado.id))
     .sort((a,b) => a.numero - b.numero);
   if(lista.length === 0) return '';   // sin menús cargados: la grilla sigue como siempre
-  const opts = '<option value="">— Menú —</option>' + lista.map(m =>
-    `<option value="${m.id}" ${asignado && asignado.id === m.id ? 'selected' : ''}>${menuNum(m)} — ${escProd(m.descripcion)}${m.activo ? '' : ' (inactivo)'}</option>`
-  ).join('');
+  const fueraDeCentro = asignado && tieneCentroNum && Math.floor(asignado.numero / 100) !== centroNumero;
+  const opts = '<option value="">— Menú —</option>' + lista.map(m => {
+    const esAsignadoFuera = fueraDeCentro && m.id === asignado.id;
+    return `<option value="${m.id}" ${asignado && asignado.id === m.id ? 'selected' : ''}>${menuNum(m)} — ${escProd(m.descripcion)}${m.activo ? '' : ' (inactivo)'}${esAsignadoFuera ? ' (otro centro)' : ''}</option>`;
+  }).join('');
   const numVal = asignado ? menuNum(asignado) : '';
   return `<span style="display:inline-flex;align-items:center;gap:6px;margin-left:8px">
-    <input type="text" class="preg-menu-num" data-prodid="${prodId}" value="${numVal}" maxlength="3" inputmode="numeric" placeholder="Nº" ${dis}
+    <input type="text" class="preg-menu-num" data-prodid="${prodId}" data-centro-num="${tieneCentroNum ? centroNumero : ''}" value="${numVal}" maxlength="3" inputmode="numeric" placeholder="Nº" ${dis}
       oninput="pregMenuNumInput(this)" onblur="pregMenuAplicarNum(this, true)"
       title="Número de menú (3 dígitos) — atajo del desplegable"
       style="width:54px;font-size:.74rem;padding:4px 6px;text-align:center">
@@ -6225,7 +6250,15 @@ function pregMenuAplicarNum(inp, alBlur){
   } else {
     sel.value = '';
     inp.value = '';
-    toastProd('No existe un menú con el número ' + (isNaN(num) ? v : String(num).padStart(3,'0')), 'error');
+    const centroNumRaw = inp.dataset.centroNum;
+    const centroNum = (centroNumRaw !== undefined && centroNumRaw !== '') ? parseInt(centroNumRaw) : null;
+    const numStr = isNaN(num) ? v : String(num).padStart(3,'0');
+    const existeEnOtroCentro = centroNum !== null && !isNaN(num) && PDB.menus.some(m => m.numero === num);
+    if(existeEnOtroCentro){
+      toastProd('El menú ' + numStr + ' no corresponde al centro de elaboración seleccionado', 'error');
+    } else {
+      toastProd('No existe un menú con el número ' + numStr, 'error');
+    }
   }
 }
 
@@ -8471,6 +8504,15 @@ function guardarMenu(){
   if(!descripcion){ toastProd('La descripción es obligatoria', 'error'); return; }
   const dupNum = PDB.menus.find(m => m.numero === numero && m.id !== editMenuId);
   if(dupNum){ toastProd('El número ' + String(numero).padStart(3,'0') + ' ya está usado por "' + dupNum.descripcion + '"', 'error'); return; }
+  // Seguridad operativa: la centena (primer dígito) debe corresponder a un
+  // centro de elaboración ya cargado — así el menú queda automáticamente
+  // disponible solo en ese centro en el Registro Diario.
+  const centena = Math.floor(numero / 100);
+  const centroCoincide = PDB.centros.some(c => c.numero === centena);
+  if(!centroCoincide){
+    toastProd('La centena ' + centena + ' no corresponde a ningún centro de elaboración cargado (revisá el número o creá primero ese centro)', 'error');
+    return;
+  }
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
   if(editMenuId){
     const m = menuById(editMenuId);
@@ -8723,9 +8765,10 @@ function abrirFormCentro(id){
   editCentroId = id;
   const c = id ? PDB.centros.find(x => x.id === id) : null;
   document.getElementById('centro-form-title').textContent = c ? 'Editar centro de elaboración' : 'Nuevo centro de elaboración';
+  document.getElementById('centro-numero').value = (c && c.numero !== null && c.numero !== undefined) ? String(c.numero) : '';
   document.getElementById('centro-nombre').value = c ? c.nombre : '';
   document.getElementById('centro-form-card').style.display = 'block';
-  document.getElementById('centro-nombre').focus();
+  document.getElementById('centro-numero').focus();
 }
 
 function cerrarFormCentro(){
@@ -8735,21 +8778,27 @@ function cerrarFormCentro(){
 
 function guardarCentro(){
   if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
+  const numRaw = document.getElementById('centro-numero').value.trim();
   const nombre = document.getElementById('centro-nombre').value.trim();
+  if(!/^\d$/.test(numRaw)){ toastProd('El número debe ser un único dígito (1 a 9)', 'error'); return; }
+  const numero = parseInt(numRaw);
+  if(numero < 1){ toastProd('El número debe ser entre 1 y 9', 'error'); return; }
   if(!nombre){ toastProd('El nombre es obligatorio', 'error'); return; }
   const duplicado = PDB.centros.find(c => c.nombre.toLowerCase() === nombre.toLowerCase() && c.id !== editCentroId);
   if(duplicado){ toastProd('Ya existe un centro con ese nombre', 'error'); return; }
+  const dupNum = PDB.centros.find(c => c.numero === numero && c.id !== editCentroId);
+  if(dupNum){ toastProd('El número ' + numero + ' ya está usado por "' + dupNum.nombre + '"', 'error'); return; }
 
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
 
   if(editCentroId){
     const c = PDB.centros.find(x => x.id === editCentroId);
     if(!c) return;
-    c.nombre = nombre;
+    c.numero = numero; c.nombre = nombre;
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'centro-editado', detalle: 'Centro "' + nombre + '" editado', usuario });
     toastProd('✓ Centro actualizado');
   } else {
-    PDB.centros.push({ id: pIdSeq.centro++, nombre, activo: true });
+    PDB.centros.push({ id: pIdSeq.centro++, numero, nombre, activo: true });
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'centro-creado', detalle: 'Centro "' + nombre + '" creado', usuario });
     toastProd('✓ Centro creado');
   }
@@ -8781,12 +8830,15 @@ function renderCentros(){
     return;
   }
   const filas = PDB.centros
-    .slice().sort((a,b) => a.nombre.localeCompare(b.nombre))
+    .slice().sort((a,b) => (a.numero === null || a.numero === undefined ? 99 : a.numero) - (b.numero === null || b.numero === undefined ? 99 : b.numero))
     .map(c => {
       const nProds = PDB.productosProd.filter(p => p.centrosIds.includes(c.id)).length;
       const estado = c.activo ? '<span class="badge badge-ok">Activo</span>' : '<span class="badge badge-danger">Inactivo</span>';
       const btnToggle = c.activo ? '🚫 Desactivar' : '↩ Reactivar';
+      const numTxt = (c.numero === null || c.numero === undefined)
+        ? '<span class="badge badge-danger">Sin nº</span>' : c.numero;
       return `<tr style="${c.activo ? '' : 'opacity:.5'}">
+        <td style="text-align:center;font-weight:600">${numTxt}</td>
         <td>${escProd(c.nombre)}</td>
         <td style="color:var(--muted)">${nProds} producto${nProds === 1 ? '' : 's'}</td>
         <td>${estado}</td>
@@ -8797,7 +8849,7 @@ function renderCentros(){
       </tr>`;
     }).join('');
   cont.innerHTML = `<table class="stock-table"><thead>
-    <tr><th>Nombre</th><th>Productos asociados</th><th>Estado</th><th>Acciones</th></tr>
+    <tr><th>Nº</th><th>Nombre</th><th>Productos asociados</th><th>Estado</th><th>Acciones</th></tr>
     </thead><tbody>${filas}</tbody></table>`;
 }
 
