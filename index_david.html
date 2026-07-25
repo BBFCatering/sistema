@@ -2,6 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mis Accesos</title>
 <style>
   :root{
@@ -92,7 +93,6 @@
   .cat-handle{
     cursor:grab; color:var(--muted); font-size:14px; padding:2px 5px;
     flex-shrink:0; user-select:none; line-height:1;
-    -webkit-user-drag:element;
   }
   .cat-handle:active{cursor:grabbing;}
   .category.dragover-cat{
@@ -221,7 +221,6 @@ const ROW_ID = 'links_david';
 
 let data = { categories: [] };
 let dragState = null;    // arrastre de un link individual
-let catDragState = null; // arrastre de una categoría completa
 let cargaCompleta = false; // true recién después de leer la fila de Supabase
 
 function uid(){ return 'x' + Math.random().toString(36).slice(2,10); }
@@ -359,6 +358,38 @@ function moveCategory(fromCatId, toCatId){
   save(); render();
 }
 
+// Arrastre manual de categorías (mouse), más confiable entre navegadores
+// que el Drag & Drop nativo de HTML5 cuando el handle es chico.
+function iniciarArrastreCategoria(catId, catEl){
+  catEl.classList.add('dragging-cat');
+  document.body.style.userSelect = 'none';
+
+  function onMove(ev){
+    document.querySelectorAll('.category.dragover-cat').forEach(el => el.classList.remove('dragover-cat'));
+    const elUnder = document.elementFromPoint(ev.clientX, ev.clientY);
+    const targetCat = elUnder && elUnder.closest('.category');
+    if(targetCat && targetCat.dataset.catId !== catId){
+      targetCat.classList.add('dragover-cat');
+    }
+  }
+
+  function onUp(ev){
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.body.style.userSelect = '';
+    document.querySelectorAll('.category').forEach(el => el.classList.remove('dragover-cat', 'dragging-cat'));
+
+    const elUnder = document.elementFromPoint(ev.clientX, ev.clientY);
+    const targetCat = elUnder && elUnder.closest('.category');
+    if(targetCat && targetCat.dataset.catId && targetCat.dataset.catId !== catId){
+      moveCategory(catId, targetCat.dataset.catId);
+    }
+  }
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
 function setNoteLocal(catId, linkId, texto){
   const cat = data.categories.find(c => c.id === catId);
   if(!cat) return;
@@ -413,16 +444,9 @@ function render(){
     handle.className = 'cat-handle';
     handle.textContent = '⠿';
     handle.title = 'Arrastrar para reordenar categoría';
-    handle.draggable = true;
-    handle.addEventListener('dragstart', (e) => {
-      catDragState = { catId: cat.id };
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', cat.id);
-      catEl.classList.add('dragging-cat');
-    });
-    handle.addEventListener('dragend', () => {
-      catEl.classList.remove('dragging-cat');
-      catDragState = null;
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      iniciarArrastreCategoria(cat.id, catEl);
     });
 
     const title = document.createElement('input');
@@ -439,25 +463,6 @@ function render(){
     head.appendChild(handle);
     head.appendChild(title);
     head.appendChild(delBtn);
-
-    catEl.addEventListener('dragenter', (e) => {
-      if(!catDragState || catDragState.catId === cat.id) return;
-      e.preventDefault();
-    });
-    catEl.addEventListener('dragover', (e) => {
-      if(!catDragState || catDragState.catId === cat.id) return;
-      e.preventDefault();
-      catEl.classList.add('dragover-cat');
-    });
-    catEl.addEventListener('dragleave', () => {
-      catEl.classList.remove('dragover-cat');
-    });
-    catEl.addEventListener('drop', (e) => {
-      if(!catDragState || catDragState.catId === cat.id) return;
-      e.preventDefault();
-      catEl.classList.remove('dragover-cat');
-      moveCategory(catDragState.catId, cat.id);
-    });
 
     const linksEl = document.createElement('div');
     linksEl.className = 'links';
