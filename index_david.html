@@ -92,6 +92,7 @@
   .cat-handle{
     cursor:grab; color:var(--muted); font-size:14px; padding:2px 5px;
     flex-shrink:0; user-select:none; line-height:1;
+    -webkit-user-drag:element;
   }
   .cat-handle:active{cursor:grabbing;}
   .category.dragover-cat{
@@ -159,6 +160,11 @@
     font-size:12.5px; padding:3px 7px; border-radius:5px; flex-shrink:0;
   }
   .note-bar .note-del:hover{color:var(--danger); background:rgba(217,107,107,.12);}
+  .note-bar .note-confirm{
+    background:none; border:none; color:var(--muted); cursor:pointer;
+    font-size:13.5px; padding:3px 7px; border-radius:5px; flex-shrink:0;
+  }
+  .note-bar .note-confirm:hover{color:#00e5a0; background:rgba(0,229,160,.12);}
   .add-link{
     display:flex; gap:6px; padding:10px;
   }
@@ -411,6 +417,7 @@ function render(){
     handle.addEventListener('dragstart', (e) => {
       catDragState = { catId: cat.id };
       e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', cat.id);
       catEl.classList.add('dragging-cat');
     });
     handle.addEventListener('dragend', () => {
@@ -433,6 +440,10 @@ function render(){
     head.appendChild(title);
     head.appendChild(delBtn);
 
+    catEl.addEventListener('dragenter', (e) => {
+      if(!catDragState || catDragState.catId === cat.id) return;
+      e.preventDefault();
+    });
     catEl.addEventListener('dragover', (e) => {
       if(!catDragState || catDragState.catId === cat.id) return;
       e.preventDefault();
@@ -487,6 +498,11 @@ function render(){
       noteInput.placeholder = 'Nota / ayudamemoria para acceder al sitio...';
       noteInput.value = link.nota || '';
 
+      const noteConfirm = document.createElement('button');
+      noteConfirm.className = 'note-confirm';
+      noteConfirm.textContent = '✓';
+      noteConfirm.title = 'Guardar y cerrar nota';
+
       const noteDel = document.createElement('button');
       noteDel.className = 'note-del';
       noteDel.textContent = '✕';
@@ -504,6 +520,10 @@ function render(){
         noteBtn.classList.toggle('has-note', !!(val && val.trim()));
         noteBar.style.display = 'none';
       }
+      noteConfirm.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        cerrarYGuardarNota();
+      });
       noteInput.addEventListener('keydown', e => {
         if(e.key === 'Enter'){ e.preventDefault(); cerrarYGuardarNota(); }
       });
@@ -518,6 +538,7 @@ function render(){
       });
 
       noteBar.appendChild(noteInput);
+      noteBar.appendChild(noteConfirm);
       noteBar.appendChild(noteDel);
 
       tile.addEventListener('dragstart', (e) => {
