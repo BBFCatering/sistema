@@ -200,6 +200,8 @@
   <h1><span class="dot"></span>Mis Accesos</h1>
   <input class="search" id="search" placeholder="Buscar link o categoría...">
   <button class="btn primary" id="addCatBtn">+ Categoría</button>
+  <button class="btn" id="fsEnterBtn" title="Pantalla completa">⛶ Pantalla completa</button>
+  <button class="btn" id="fsExitBtn" title="Salir de pantalla completa" style="display:none;">⤢ Salir de pantalla completa</button>
   <span id="syncIndicator">🔄 Conectando...</span>
 </header>
 
@@ -340,6 +342,16 @@ function addLink(catId, url, name){
   }
   cat.links.push({ id: uid(), url, name: label });
   save(); render();
+}
+
+function renameLink(catId, linkId, name){
+  const cat = data.categories.find(c => c.id === catId);
+  if(!cat) return;
+  const link = cat.links.find(l => l.id === linkId);
+  if(!link) return;
+  const label = (name || '').trim();
+  if(label) link.name = label;
+  save();
 }
 
 function removeLink(catId, linkId){
@@ -485,6 +497,47 @@ function render(){
       const name = document.createElement('span');
       name.className = 'name';
       name.textContent = link.name;
+      name.title = 'Doble click para editar el nombre';
+
+      // El nombre se puede editar con doble click, sin dar de baja el link.
+      // Un solo click sigue abriendo el sitio (con una breve espera para
+      // poder distinguirlo de un doble click); el doble click cancela esa
+      // apertura y entra en modo edición.
+      let clickTimer = null;
+      name.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        clearTimeout(clickTimer);
+        clickTimer = setTimeout(() => { window.open(link.url, '_blank', 'noopener,noreferrer'); }, 230);
+      });
+      name.addEventListener('dblclick', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        clearTimeout(clickTimer);
+        if(name.isContentEditable) return;
+        const original = link.name;
+        name.textContent = '';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = original;
+        input.style.cssText = 'flex:1;min-width:0;background:transparent;border:none;border-bottom:1px solid var(--accent-2);color:var(--text);font-size:13.3px;padding:0;';
+        name.appendChild(input);
+        input.focus();
+        input.select();
+        tile.draggable = false;
+
+        function confirmar(){
+          const val = input.value.trim() || original;
+          renameLink(cat.id, link.id, val);
+          name.textContent = val;
+          tile.draggable = true;
+        }
+        input.addEventListener('mousedown', e => e.stopPropagation());
+        input.addEventListener('click', e => e.stopPropagation());
+        input.addEventListener('keydown', e => {
+          if(e.key === 'Enter'){ e.preventDefault(); confirmar(); }
+          if(e.key === 'Escape'){ e.preventDefault(); name.textContent = original; tile.draggable = true; }
+        });
+        input.addEventListener('blur', confirmar);
+      });
 
       const noteBtn = document.createElement('button');
       noteBtn.className = 'note-btn' + (link.nota && link.nota.trim() ? ' has-note' : '');
@@ -628,6 +681,25 @@ document.getElementById('addCatBtn').addEventListener('click', () => {
   if(name && name.trim()) addCategory(name.trim());
 });
 document.getElementById('search').addEventListener('input', render);
+
+// Pantalla completa: solo manual (a pedido del usuario), nunca automático al cargar.
+const fsEnterBtn = document.getElementById('fsEnterBtn');
+const fsExitBtn = document.getElementById('fsExitBtn');
+
+function actualizarBotonesFullscreen(){
+  const enFullscreen = !!document.fullscreenElement;
+  fsEnterBtn.style.display = enFullscreen ? 'none' : '';
+  fsExitBtn.style.display = enFullscreen ? '' : 'none';
+}
+
+fsEnterBtn.addEventListener('click', () => {
+  document.documentElement.requestFullscreen().catch(e => console.warn('Fullscreen error:', e));
+});
+fsExitBtn.addEventListener('click', () => {
+  if(document.fullscreenElement) document.exitFullscreen().catch(e => console.warn('Exit fullscreen error:', e));
+});
+document.addEventListener('fullscreenchange', actualizarBotonesFullscreen);
+actualizarBotonesFullscreen();
 
 cargarDesdeSupabase();
 </script>
