@@ -497,28 +497,19 @@ function render(){
       const name = document.createElement('span');
       name.className = 'name';
       name.textContent = link.name;
-      name.title = 'Doble click para editar el nombre';
 
-      // El nombre se puede editar con doble click, sin dar de baja el link.
-      // Un solo click sigue abriendo el sitio (con una breve espera para
-      // poder distinguirlo de un doble click); el doble click cancela esa
-      // apertura y entra en modo edición.
-      let clickTimer = null;
-      name.addEventListener('click', (e) => {
-        e.preventDefault(); e.stopPropagation();
-        clearTimeout(clickTimer);
-        clickTimer = setTimeout(() => { window.open(link.url, '_blank', 'noopener,noreferrer'); }, 230);
-      });
-      name.addEventListener('dblclick', (e) => {
-        e.preventDefault(); e.stopPropagation();
-        clearTimeout(clickTimer);
-        if(name.isContentEditable) return;
+      const editBtn = document.createElement('button');
+      editBtn.className = 'note-btn';
+      editBtn.textContent = '✎';
+      editBtn.title = 'Editar nombre';
+
+      function entrarEdicion(){
         const original = link.name;
         name.textContent = '';
         const input = document.createElement('input');
         input.type = 'text';
         input.value = original;
-        input.style.cssText = 'flex:1;min-width:0;background:transparent;border:none;border-bottom:1px solid var(--accent-2);color:var(--text);font-size:13.3px;padding:0;';
+        input.style.cssText = 'width:100%;background:transparent;border:none;border-bottom:1px solid var(--accent-2);color:var(--text);font-size:13.3px;padding:0;';
         name.appendChild(input);
         input.focus();
         input.select();
@@ -537,6 +528,14 @@ function render(){
           if(e.key === 'Escape'){ e.preventDefault(); name.textContent = original; tile.draggable = true; }
         });
         input.addEventListener('blur', confirmar);
+      }
+
+      // Mismo guard que usan los botones de la nota: evita que el navegador
+      // navegue el <a> o dispare el blur antes de procesar el click.
+      editBtn.addEventListener('mousedown', e => e.preventDefault());
+      editBtn.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        entrarEdicion();
       });
 
       const noteBtn = document.createElement('button');
@@ -546,6 +545,7 @@ function render(){
 
       tile.appendChild(img);
       tile.appendChild(name);
+      tile.appendChild(editBtn);
       tile.appendChild(noteBtn);
 
       // Barra expandible con la nota / ayudamemoria del sitio.
