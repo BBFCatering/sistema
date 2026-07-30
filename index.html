@@ -680,7 +680,8 @@
 // ── DATA ──────────────────────────────────────────────
 let DB = JSON.parse(localStorage.getItem('sf_v3')||'null') || {
   productos:[],   // {id,nombre,unidad,perecedero,proveedoresIds[],desc,activo,precios:{provId:{precio,bonificacion}}}
-  proveedores:[], // {id,nombre,cuit,tel,email,pago,notas,activo}
+  proveedores:[], // {id,nombre,cuit,tel,email,pago,notas,activo,alicuotaIvaId}
+  alicuotasIva:[], // {id, valor:Number (ej 21, 10.5), activo} — catálogo de alícuotas de IVA para asignar a proveedores
   lotes:[],       // {id,productoId,proveedorId,cantidad,cantidadInicial,vencimiento,ingreso,loteRef}
   stockSimple:{}, // {productoId: {cantidad,unidad}}  — para no perecederos
   remitos:[],     // {id,nro,fecha,obs,lineas[],fechaCierre}
@@ -693,15 +694,18 @@ let DB = JSON.parse(localStorage.getItem('sf_v3')||'null') || {
 if(!DB.remitos) DB.remitos=[];
 if(!DB.ordenesCompra) DB.ordenesCompra=[];
 if(!DB.historialPrecios) DB.historialPrecios=[];
+if(!DB.alicuotasIva) DB.alicuotasIva=[];
 if(DB.usuarios === undefined) DB.usuarios = null;
 DB.productos.forEach(p=>{ if(!p.precios) p.precios={}; });
+DB.proveedores.forEach(p=>{ if(p.alicuotaIvaId===undefined) p.alicuotaIvaId=null; });
 // idSeq AFTER migration so arrays exist
 let idSeq = {
   prod:   maxId('productos'),
   prov:   maxId('proveedores'),
   lote:   maxId('lotes'),
   remito: DB.remitos.length ? Math.max(...DB.remitos.map(x=>x.id)) + 1 : 1,
-  oc:     Math.max(252, DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id)) + 1 : 1)
+  oc:     Math.max(252, DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id)) + 1 : 1),
+  alicuota: maxId('alicuotasIva')
 };
 let editProdId=null, editProvId=null;
 let ocEnEdicion=null; // {proveedorId, lineas:[{productoId,cantidad,precio,bonificacion}]}
@@ -753,14 +757,17 @@ async function cargarDesdeSupabase(){
       if(!DB.remitos)        DB.remitos        = [];
       if(!DB.ordenesCompra)  DB.ordenesCompra  = [];
       if(!DB.historialPrecios) DB.historialPrecios = [];
+      if(!DB.alicuotasIva)   DB.alicuotasIva   = [];
       if(DB.usuarios === undefined) DB.usuarios = null;
       DB.productos.forEach(p=>{ if(!p.precios) p.precios={}; });
+      DB.proveedores.forEach(p=>{ if(p.alicuotaIvaId===undefined) p.alicuotaIvaId=null; });
       // Recalcular todos los contadores de ID
       idSeq.prod   = maxId('productos');
       idSeq.prov   = maxId('proveedores');
       idSeq.lote   = maxId('lotes');
       idSeq.remito = DB.remitos.length ? Math.max(...DB.remitos.map(x=>x.id),0)+1 : 1;
       idSeq.oc     = Math.max(252, DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id),0)+1 : 1);
+      idSeq.alicuota = maxId('alicuotasIva');
       localStorage.setItem('sf_v3', JSON.stringify(DB));
       renderAll();
     }
@@ -884,6 +891,24 @@ function getProd(id){ return DB.productos.find(p=>p.id===id); }
 function getProv(id){ return DB.proveedores.find(p=>p.id===id); }
 function nomProv(id){ const p=getProv(id);return p?p.nombre:'—'; }
 function nomProd(id){ const p=getProd(id);return p?p.nombre:'—'; }
+
+// ── ALÍCUOTAS DE IVA ─────────────────────────────────────
+function getAlicuota(id){ return DB.alicuotasIva.find(a=>a.id===id); }
+// Valor numérico (ej. 21, 10.5) de la alícuota asignada al proveedor, o 0 si
+// todavía no tiene una asignada (proveedor sin cargar / valor no encontrado).
+function alicuotaValorProv(provId){
+  const p = getProv(provId);
+  if(!p || !p.alicuotaIvaId) return 0;
+  const a = getAlicuota(p.alicuotaIvaId);
+  return a ? Number(a.valor)||0 : 0;
+}
+// TOTAL C/IVA = SUBTOTAL × ((100 + ALÍCUOTA) / 100)
+function totalConIva(subtotal, provId){
+  return subtotal * ((100 + alicuotaValorProv(provId)) / 100);
+}
+function fmtAlicuota(valor){
+  return Number(valor).toFixed(1).replace('.', ',') + '%';
+}
 
 // ── PRECIOS / BONIFICACIONES ────────────────────────────
 function fmtMoney(n){ return '$\u00A0' + (Number(n)||0).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
@@ -1972,6 +1997,7 @@ async function darDeBajaProd(id){
 
 // ── PROVEEDORES ───────────────────────────────────────
 function renderProveedores(){
+  renderAlicuotasIva();
   document.getElementById('stat-provs').textContent=DB.proveedores.filter(p=>p.activo).length;
   const el=document.getElementById('proveedores-list');
   const q=(document.getElementById('search-proveedores')?.value||'').toLowerCase();
@@ -1988,9 +2014,13 @@ function renderProveedores(){
   }
   el.innerHTML=[...lista].sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(p=>{
     const prodsAsoc=DB.productos.filter(x=>x.activo&&(x.proveedoresIds||[]).includes(p.id)).map(x=>x.nombre).join(', ')||'Sin productos asociados';
+    const alic = p.alicuotaIvaId ? getAlicuota(p.alicuotaIvaId) : null;
+    const alicBadge = alic
+      ? `<span class="badge badge-neutral" style="margin-left:6px">IVA ${fmtAlicuota(alic.valor)}</span>`
+      : `<span class="badge badge-danger" style="margin-left:6px">IVA sin asignar</span>`;
     return `<div class="item-card ${p.activo?'':'inactivo'}">
       <div>
-        <div class="item-name">${p.nombre} ${!p.activo?'<span class="badge badge-neutral">Inactivo</span>':''}</div>
+        <div class="item-name">${p.nombre} ${!p.activo?'<span class="badge badge-neutral">Inactivo</span>':''}${alicBadge}</div>
         <div class="item-detail">
           ${p.cuit?`CUIT: ${p.cuit}<br>`:''}
           ${p.tel?`📞 ${p.tel}  `:''}${p.email?`✉ ${p.email}<br>`:''}
@@ -2010,6 +2040,61 @@ function renderProveedores(){
   if (typeof isReadonly !== 'undefined' && isReadonly) applyReadonlyMode(true);
 }
 
+// ── ALÍCUOTAS DE IVA (catálogo, usado por Proveedores) ──
+function renderAlicuotasIva(){
+  const cont = document.getElementById('alicuotas-iva-list');
+  if(!cont) return;
+  if(!DB.alicuotasIva.length){
+    cont.innerHTML = '<span style="font-size:.78rem;color:var(--muted)">Todavía no hay alícuotas cargadas.</span>';
+  } else {
+    cont.innerHTML = DB.alicuotasIva.slice().sort((a,b)=>a.valor-b.valor).map(a => `
+      <span class="badge ${a.activo?'badge-ok':'badge-neutral'}" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px">
+        ${fmtAlicuota(a.valor)}
+        <button type="button" onclick="toggleActivoAlicuota(${a.id})" title="${a.activo?'Desactivar':'Reactivar'}" style="background:none;border:none;color:inherit;cursor:pointer;font-size:.85rem;padding:0;line-height:1">${a.activo?'✕':'↩'}</button>
+      </span>`).join('');
+  }
+  // Si el modal de proveedor está abierto, refrescamos también su selector
+  const sel = document.getElementById('prov-alicuota-iva');
+  if(sel) renderProvAlicuotaSelect(sel.value ? parseInt(sel.value) : (editProvId ? (getProv(editProvId)||{}).alicuotaIvaId : null));
+}
+
+function agregarAlicuotaIva(){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés modificar alícuotas','error'); return; }
+  const inp = document.getElementById('alicuota-nueva');
+  const raw = inp.value.trim().replace(',', '.');
+  if(!/^\d{1,2}(\.\d)?$/.test(raw)){ toast('La alícuota debe ser un número de hasta 2 dígitos y 1 decimal (ej: 21 o 10.5)','error'); return; }
+  const valor = parseFloat(raw);
+  const dup = DB.alicuotasIva.find(a => a.valor === valor);
+  if(dup){ toast('Esa alícuota ya está cargada' + (dup.activo?'':' (está desactivada — podés reactivarla)'), 'error'); return; }
+  DB.alicuotasIva.push({ id: idSeq.alicuota++, valor, activo: true });
+  inp.value = '';
+  save();
+  renderAlicuotasIva();
+  toast(`✓ Alícuota ${fmtAlicuota(valor)} agregada`);
+}
+
+function toggleActivoAlicuota(id){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés modificar alícuotas','error'); return; }
+  const a = getAlicuota(id);
+  if(!a) return;
+  a.activo = !a.activo;
+  save();
+  renderAlicuotasIva();
+  toast(`Alícuota ${fmtAlicuota(a.valor)} ${a.activo?'reactivada':'desactivada'}`);
+}
+
+// Puebla el <select id="prov-alicuota-iva"> con las alícuotas activas
+// (ordenadas ascendente), conservando visible la que ya tuviera asignada el
+// proveedor aunque haya sido desactivada después (para no perder el dato).
+function renderProvAlicuotaSelect(seleccionadaId){
+  const sel = document.getElementById('prov-alicuota-iva');
+  if(!sel) return;
+  const activas = DB.alicuotasIva.filter(a => a.activo || a.id === seleccionadaId).slice().sort((a,b)=>a.valor-b.valor);
+  sel.innerHTML = '<option value="">— Sin asignar —</option>' +
+    activas.map(a => `<option value="${a.id}">${fmtAlicuota(a.valor)}${(!a.activo)?' (inactiva)':''}</option>`).join('');
+  sel.value = seleccionadaId ? String(seleccionadaId) : '';
+}
+
 function abrirModalProveedor(id=null){
   if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés editar proveedores','error'); return; }
   editProvId=id;
@@ -2021,9 +2106,11 @@ function abrirModalProveedor(id=null){
     document.getElementById('prov-email').value=p.email||'';
     document.getElementById('prov-pago').value=p.pago||'';
     document.getElementById('prov-notas').value=p.notas||'';
+    renderProvAlicuotaSelect(p.alicuotaIvaId||null);
   } else {
     ['prov-nombre','prov-cuit','prov-tel','prov-email','prov-notas'].forEach(x=>document.getElementById(x).value='');
     document.getElementById('prov-pago').value='';
+    renderProvAlicuotaSelect(null);
   }
   document.getElementById('modal-proveedor').classList.remove('hidden');
 }
@@ -2032,7 +2119,8 @@ function guardarProveedor(){
   if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés guardar cambios','error'); return; }
   const nombre=document.getElementById('prov-nombre').value.trim();
   if(!nombre){toast('El nombre es obligatorio','error');return;}
-  const datos={nombre,cuit:document.getElementById('prov-cuit').value.trim(),tel:document.getElementById('prov-tel').value.trim(),email:document.getElementById('prov-email').value.trim(),pago:document.getElementById('prov-pago').value.trim(),notas:document.getElementById('prov-notas').value.trim()};
+  const alicSel = document.getElementById('prov-alicuota-iva').value;
+  const datos={nombre,cuit:document.getElementById('prov-cuit').value.trim(),tel:document.getElementById('prov-tel').value.trim(),email:document.getElementById('prov-email').value.trim(),pago:document.getElementById('prov-pago').value.trim(),notas:document.getElementById('prov-notas').value.trim(),alicuotaIvaId:alicSel?parseInt(alicSel):null};
   if(editProvId){ Object.assign(getProv(editProvId),datos); toast(`✓ "${nombre}" actualizado`); }
   else { DB.proveedores.push({id:idSeq.prov++,activo:true,...datos}); toast(`✓ "${nombre}" agregado`); }
   save(); cerrarModal('modal-proveedor'); renderAll();
@@ -2238,8 +2326,9 @@ function toggleOCLinea(productoId, proveedorId){
 function renderOCLineas(){
   const tbody = document.getElementById('oc-lineas-tbody');
   if(!ocEnEdicion.lineas.length){
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:16px">Seleccioná productos arriba para agregarlos a la orden</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:16px">Seleccioná productos arriba para agregarlos a la orden</td></tr>`;
     document.getElementById('oc-total').textContent = fmtMoney(0);
+    document.getElementById('oc-total-civa').textContent = fmtMoney(0);
     return;
   }
   let total=0;
@@ -2253,10 +2342,12 @@ function renderOCLineas(){
       <td><input type="number" min="0" step="0.01" value="${l.precio}" style="width:100px" onchange="updateOCLinea(${i},'precio',this.value)"></td>
       <td><input type="number" min="0" max="100" step="0.01" value="${l.bonificacion}" style="width:80px" onchange="updateOCLinea(${i},'bonificacion',this.value)"></td>
       <td>${fmtMoney(subtotal)}</td>
+      <td>${fmtMoney(totalConIva(subtotal, ocEnEdicion.proveedorId))}</td>
       <td><button class="btn btn-sm btn-warn" onclick="quitarOCLinea(${i})">✕</button></td>
     </tr>`;
   }).join('');
   document.getElementById('oc-total').textContent = fmtMoney(total);
+  document.getElementById('oc-total-civa').textContent = fmtMoney(totalConIva(total, ocEnEdicion.proveedorId));
 }
 
 function updateOCLinea(idx, campo, valor){
@@ -2352,22 +2443,27 @@ function abrirVerOC(ocId){
       <strong>Proveedor:</strong> ${prov?prov.nombre:'—'}${prov&&prov.email?` (${prov.email})`:''}
     </div>
     <table class="oc-table">
-      <thead><tr><th>Item</th><th>Descripción</th><th>Cantidad</th><th>Precio</th>${oc.lineas.some(l=>l.bonificacion)?'<th>Bonif.</th>':''}<th>Total</th></tr></thead>
+      <thead><tr><th>Item</th><th>Descripción</th><th>Cantidad</th><th>Precio S/IVA</th>${oc.lineas.some(l=>l.bonificacion)?'<th>Bonif.</th>':''}<th>Subtotal</th><th>Total C/IVA</th></tr></thead>
       <tbody>
         ${oc.lineas.map((l,i)=>{
           const prod=getProd(l.productoId);
           const final = precioFinal(l.precio,l.bonificacion);
+          const subtotal = l.cantidad*final;
           return `<tr>
             <td>${i+1}</td>
             <td>${prod?prod.nombre:'—'}</td>
             <td>${l.cantidad}</td>
             <td>${fmtMoney(l.precio)}</td>
             ${oc.lineas.some(x=>x.bonificacion)?`<td>${l.bonificacion?l.bonificacion+'%':'—'}</td>`:''}
-            <td>${fmtMoney(l.cantidad*final)}</td>
+            <td>${fmtMoney(subtotal)}</td>
+            <td>${fmtMoney(totalConIva(subtotal, oc.proveedorId))}</td>
           </tr>`;
         }).join('')}
       </tbody>
-      <tfoot><tr><td colspan="${oc.lineas.some(l=>l.bonificacion)?4:3}" style="text-align:right;font-weight:700">Total</td><td colspan="2" style="font-weight:700">${fmtMoney(oc.total)}</td></tr></tfoot>
+      <tfoot>
+        <tr><td colspan="${oc.lineas.some(l=>l.bonificacion)?5:4}" style="text-align:right;font-weight:700">Total</td><td colspan="2" style="font-weight:700">${fmtMoney(oc.total)}</td></tr>
+        <tr><td colspan="${oc.lineas.some(l=>l.bonificacion)?5:4}" style="text-align:right;font-weight:700;color:var(--accent)">Total c/IVA</td><td colspan="2" style="font-weight:700;color:var(--accent)">${fmtMoney(totalConIva(oc.total, oc.proveedorId))}</td></tr>
+      </tfoot>
     </table>
     ${(oc.condPago||oc.notasProv||oc.obs)?`
     <div style="margin-top:14px;font-size:.85rem;border-top:1px solid var(--border);padding-top:10px">
@@ -2418,21 +2514,26 @@ function generarPDF_OC(oc){
   y += 10;
   const hasBonif = oc.lineas.some(l=>l.bonificacion);
   const head = hasBonif
-    ? [['Item','Descripción','Cant.','Precio','Bonif.','Total']]
-    : [['Item','Descripción','Cant.','Precio','Total']];
+    ? [['Item','Descripción','Cant.','Precio S/IVA','Bonif.','Subtotal','Total C/IVA']]
+    : [['Item','Descripción','Cant.','Precio S/IVA','Subtotal','Total C/IVA']];
   const body = oc.lineas.map((l,i)=>{
     const prod=getProd(l.productoId);
     const final = precioFinal(l.precio,l.bonificacion);
+    const subtotal = l.cantidad*final;
     const row = [String(i+1), prod?prod.nombre:'—', String(l.cantidad), fmtMoney(l.precio)];
     if(hasBonif) row.push(l.bonificacion?l.bonificacion+'%':'—');
-    row.push(fmtMoney(l.cantidad*final));
+    row.push(fmtMoney(subtotal));
+    row.push(fmtMoney(totalConIva(subtotal, oc.proveedorId)));
     return row;
   });
 
   doc.autoTable({
     startY: y,
     head, body,
-    foot: [[{content:'Total', colSpan: hasBonif?5:4, styles:{halign:'right',fontStyle:'bold'}}, {content: fmtMoney(oc.total), styles:{fontStyle:'bold'}}]],
+    foot: [
+      [{content:'Total', colSpan: hasBonif?5:4, styles:{halign:'right',fontStyle:'bold'}}, {content: fmtMoney(oc.total), colSpan:2, styles:{fontStyle:'bold'}}],
+      [{content:'Total c/IVA', colSpan: hasBonif?5:4, styles:{halign:'right',fontStyle:'bold'}}, {content: fmtMoney(totalConIva(oc.total, oc.proveedorId)), colSpan:2, styles:{fontStyle:'bold'}}]
+    ],
     theme:'grid',
     headStyles:{ fillColor:[29,158,117], textColor:255 },
     styles:{ fontSize:10 }
@@ -4339,6 +4440,15 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
       <div class="section-title">Base de proveedores</div>
       <button class="btn btn-primary btn-sm" onclick="abrirModalProveedor()">+ Nuevo proveedor</button>
     </div>
+    <div class="card" style="margin-bottom:16px;padding:14px 16px">
+      <div class="section-title" style="font-size:.88rem;margin-bottom:10px">Alícuotas de IVA</div>
+      <div style="font-size:.74rem;color:var(--muted);margin-bottom:10px">Catálogo de porcentajes de IVA disponibles para asignar a cada proveedor (ver más abajo, en el formulario de proveedor). Se usan para calcular el "Total c/IVA" de las órdenes de compra.</div>
+      <div id="alicuotas-iva-list" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px"></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="text" id="alicuota-nueva" placeholder="Ej: 21 o 10.5" style="width:110px" inputmode="decimal">
+        <button class="btn btn-secondary btn-sm" onclick="agregarAlicuotaIva()">+ Agregar alícuota</button>
+      </div>
+    </div>
     <div class="search-bar"><span class="search-icon">🔍</span><input type="text" id="search-proveedores" placeholder="Buscar proveedor..." oninput="renderProveedores()"></div>
     <div id="proveedores-list" class="item-list"></div>
   </div>
@@ -4369,9 +4479,12 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
 
         <div class="section-title" style="font-size:.95rem;margin-bottom:8px">Líneas de la orden</div>
         <table class="oc-table" id="oc-lineas-tabla">
-          <thead><tr><th>Producto</th><th>Cant.</th><th>Precio</th><th>Bonif. %</th><th>Subtotal</th><th></th></tr></thead>
+          <thead><tr><th>Producto</th><th>Cant.</th><th>Precio s/IVA</th><th>Bonif. %</th><th>Subtotal</th><th>Total c/IVA</th><th></th></tr></thead>
           <tbody id="oc-lineas-tbody"></tbody>
-          <tfoot><tr><td colspan="4" style="text-align:right;font-weight:700">Total</td><td id="oc-total" style="font-weight:700"></td><td></td></tr></tfoot>
+          <tfoot>
+            <tr><td colspan="4" style="text-align:right;font-weight:700">Total</td><td id="oc-total" style="font-weight:700"></td><td></td><td></td></tr>
+            <tr><td colspan="4" style="text-align:right;font-weight:700;color:var(--accent)">Total c/IVA</td><td colspan="2" id="oc-total-civa" style="font-weight:700;color:var(--accent)"></td><td></td></tr>
+          </tfoot>
         </table>
 
         <div style="margin-top:14px;font-size:.85rem;border-top:1px solid var(--border);padding-top:12px">
@@ -4630,6 +4743,12 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
       <div>
         <label>Condición de pago / entrega</label>
         <input type="text" id="prov-pago" placeholder="Ej: 30 días FF, entrega lunes y jueves">
+      </div>
+      <div>
+        <label>Alícuota de IVA</label>
+        <select id="prov-alicuota-iva">
+          <option value="">— Sin asignar —</option>
+        </select>
       </div>
       <div class="col-full">
         <label>Notas (opcional)</label>
