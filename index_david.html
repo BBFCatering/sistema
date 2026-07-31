@@ -190,6 +190,27 @@
     grid-column:1/-1; text-align:center; color:var(--muted); padding:60px 20px;
     font-size:14px;
   }
+  #gateOverlay{
+    position:fixed; inset:0; z-index:100;
+    background:var(--bg);
+    display:flex; align-items:center; justify-content:center;
+  }
+  #gateBox{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:28px 26px; width:100%; max-width:300px;
+    display:flex; flex-direction:column; gap:12px;
+  }
+  #gateBox h2{margin:0 0 2px; font-size:16px; font-weight:600;}
+  #gateBox input{
+    background:var(--panel-2); border:1px solid var(--line); border-radius:8px;
+    color:var(--text); font-size:14px; padding:10px 12px;
+  }
+  #gateBox input:focus{outline:none; border-color:var(--accent-2);}
+  #gateBox button{
+    background:var(--accent); border:none; color:#211a0d; font-weight:700;
+    border-radius:8px; padding:10px; font-size:14px; cursor:pointer;
+  }
+  #gateError{color:var(--danger); font-size:12.5px; min-height:16px;}
   ::-webkit-scrollbar{width:9px; height:9px;}
   ::-webkit-scrollbar-thumb{background:var(--line); border-radius:5px;}
 </style>
@@ -206,6 +227,15 @@
 </header>
 
 <main id="board"></main>
+
+<div id="gateOverlay">
+  <div id="gateBox">
+    <h2>Acceso privado</h2>
+    <input type="password" id="gateInput" placeholder="Clave de acceso" autocomplete="off">
+    <div id="gateError"></div>
+    <button id="gateBtn">Ingresar</button>
+  </div>
+</div>
 
 <script>
 /* ─────────────────────────────────────────────────────────────
@@ -701,7 +731,54 @@ fsExitBtn.addEventListener('click', () => {
 document.addEventListener('fullscreenchange', actualizarBotonesFullscreen);
 actualizarBotonesFullscreen();
 
-cargarDesdeSupabase();
+// ─────────────────────────────────────────────────────────────
+// Clave de acceso: se pide una única vez por dispositivo/navegador.
+// Se guarda un flag en localStorage (no la clave en sí) para no
+// volver a pedirla en ingresos siguientes desde el mismo equipo.
+// La clave se compara por hash SHA-256 (no viaja ni queda en texto
+// plano en el código fuente). No es una seguridad fuerte: solo
+// evita el ingreso casual de alguien que se cruza con la URL.
+// ─────────────────────────────────────────────────────────────
+const GATE_HASH = '29a38811ae33bd11aaf6cbbef0af2da879d78f3c8deb3b4cc734a41079a4e2c3';
+const GATE_KEY = 'misAccesos_ok';
+
+async function sha256Hex(texto){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(texto));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function iniciarApp(){
+  const overlay = document.getElementById('gateOverlay');
+  if(overlay) overlay.remove();
+  cargarDesdeSupabase();
+}
+
+if(localStorage.getItem(GATE_KEY) === 'true'){
+  iniciarApp();
+} else {
+  const gateInput = document.getElementById('gateInput');
+  const gateBtn = document.getElementById('gateBtn');
+  const gateError = document.getElementById('gateError');
+  gateInput.focus();
+
+  async function intentarIngresar(){
+    const val = gateInput.value;
+    if(!val) return;
+    gateBtn.disabled = true;
+    const hash = await sha256Hex(val);
+    if(hash === GATE_HASH){
+      localStorage.setItem(GATE_KEY, 'true');
+      iniciarApp();
+    } else {
+      gateError.textContent = 'Clave incorrecta.';
+      gateInput.value = '';
+      gateInput.focus();
+      gateBtn.disabled = false;
+    }
+  }
+  gateBtn.addEventListener('click', intentarIngresar);
+  gateInput.addEventListener('keydown', e => { if(e.key === 'Enter') intentarIngresar(); });
+}
 </script>
 </body>
 </html>
