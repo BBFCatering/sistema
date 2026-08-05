@@ -6087,7 +6087,7 @@ const prodModuleHTML = '' +
 '          <button class="btn btn-secondary btn-sm" onclick="renderAjustesProd()">🔍 Filtrar</button>' +
 '        </div>' +
 '      </div>' +
-'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Desde acá podés <strong>modificar</strong> un registro cerrado (cantidades, novedades y detalles de MP) o <strong>eliminarlo</strong>. En ambos casos, el stock de semielaborados se ajusta automáticamente. La fecha y el centro no se pueden cambiar porque identifican al registro: para corregirlos, eliminá el registro y cargalo de nuevo desde Registro Diario.</div>' +
+'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Desde acá podés <strong>modificar</strong> un registro cerrado (fecha, cantidades, novedades y detalles de MP) o <strong>eliminarlo</strong>. En ambos casos, el stock de semielaborados se ajusta automáticamente. El centro no se puede cambiar porque identifica al registro junto con la fecha: si hace falta cambiar de centro, eliminá el registro y cargalo de nuevo desde Registro Diario.</div>' +
 '      <div id="pajustes-lista"></div>' +
 '    </div>' +
 '    </div>' +
@@ -6103,7 +6103,7 @@ const prodModuleHTML = '' +
 '          <button class="btn btn-secondary btn-sm" onclick="renderAjustesRemitos()">🔍 Filtrar</button>' +
 '        </div>' +
 '      </div>' +
-'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Desde acá podés <strong>modificar</strong> un remito emitido (destinatario, domicilio, CUIT, observación y líneas) o <strong>eliminarlo</strong>. Es documental — no toca stock. La fecha no se puede cambiar porque identifica al remito. Si eliminás uno, su número queda vacante (no se reutiliza).</div>' +
+'      <div style="font-size:.74rem;color:var(--muted);margin-bottom:12px">Desde acá podés <strong>modificar</strong> un remito emitido (fecha, destinatario, domicilio, CUIT, observación y líneas) o <strong>eliminarlo</strong>. Es documental — no toca stock. Si eliminás uno, su número queda vacante (no se reutiliza).</div>' +
 '      <div id="rajustes-lista"></div>' +
 '    </div>' +
 '    </div>' +
@@ -6526,8 +6526,10 @@ function onPRegChange(){
     btnGuardar.style.cursor  = deshabilitar ? 'not-allowed' : 'pointer';
     btnGuardar.textContent = enEdicionAdmin ? '💾 Guardar cambios (admin)' : '💾 Guardar y cerrar registro';
   }
-  // En edición admin, fecha y centro identifican al registro: bloqueados
-  fechaEl.disabled  = enEdicionAdmin;
+  // En edición admin, el centro identifica al registro y queda bloqueado.
+  // La fecha SÍ se puede corregir (error de carga frecuente); se valida al
+  // guardar que la nueva fecha no choque con otro registro ya existente.
+  fechaEl.disabled  = false;
   centroEl.disabled = enEdicionAdmin;
   const btnCancel = document.getElementById('btn-cancelar-admin-edit');
   if(btnCancel) btnCancel.style.display = enEdicionAdmin ? 'inline-block' : 'none';
@@ -6752,6 +6754,17 @@ async function guardarYCerrarRegistro(){
     const r = PDB.registros.find(x => x.id === regAdminEditId);
     if(!r){ limpiarFormRegistro(); return; }
 
+    const nuevaFecha = document.getElementById('preg-fecha').value;
+    if(!nuevaFecha){ toastProd('Ingresá la fecha', 'error'); return; }
+    const fechaCambio = nuevaFecha !== r.fecha;
+    if(fechaCambio){
+      const dup = buscarRegistro(nuevaFecha, r.centroId);
+      if(dup && dup.id !== r.id){
+        toastProd('Ya existe otro registro para ' + centroNombre(r.centroId) + ' en la fecha ' + fechaBonitaProd(nuevaFecha), 'error');
+        return;
+      }
+    }
+
     const lineas = recolectarLineasForm();
     const novedades = recolectarNovedadesForm();
     const hayNovedades = novedades.bpm || novedades.poes || novedades.mantenimiento || novedades.rrhh;
@@ -6760,19 +6773,24 @@ async function guardarYCerrarRegistro(){
       return;
     }
 
+    const msgFecha = fechaCambio
+      ? '\n\nLa fecha se corrige de ' + fechaBonitaProd(r.fecha) + ' a ' + fechaBonitaProd(nuevaFecha) + '.'
+      : '';
     const ok = await confirmModal(
       'Vas a modificar el registro CERRADO del ' + fechaBonitaProd(r.fecha) + ' — ' + centroNombre(r.centroId) +
-      '.\n\nEl stock de semielaborados se ajustará automáticamente: se revierte el impacto anterior y se aplica el nuevo.\n\n¿Confirmás los cambios?',
+      '.\n\nEl stock de semielaborados se ajustará automáticamente: se revierte el impacto anterior y se aplica el nuevo.' + msgFecha + '\n\n¿Confirmás los cambios?',
       'Modificar registro (admin)');
     if(!ok) return;
 
     const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
     const contexto = 'modificación admin registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId);
+    const fechaAnterior = r.fecha;
 
     // Revertir impacto anterior. Nota: los registros "abiertos" heredados de
     // la primera versión del módulo nunca impactaron stock → nada que revertir.
     if(r.estado === 'cerrado') aplicarImpactoRegistro(r, -1, contexto, usuario);
     calcularCostosLineas(lineas); // nueva foto: costos con precios de hoy
+    r.fecha = nuevaFecha;
     r.lineas = lineas;
     r.novedades = novedades;
     aplicarImpactoRegistro(r, +1, contexto, usuario);
@@ -6780,8 +6798,9 @@ async function guardarYCerrarRegistro(){
     r.estado = 'cerrado';
     r.fechaCierre = r.fechaCierre || new Date().toISOString();
     r.usuarioCierre = r.usuarioCierre || usuario;
+    const detalleFecha = fechaCambio ? ' — fecha corregida de ' + fechaBonitaProd(fechaAnterior) + ' a ' + fechaBonitaProd(nuevaFecha) : '';
     PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'registro-modificado-admin',
-      detalle: 'Registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId) + ' modificado por admin (' + lineas.length + ' líneas)', usuario });
+      detalle: 'Registro ' + fechaBonitaProd(nuevaFecha) + ' · ' + centroNombre(r.centroId) + ' modificado por admin (' + lineas.length + ' líneas)' + detalleFecha, usuario });
 
     limpiarFormRegistro();
     saveProd();
@@ -8173,8 +8192,7 @@ function bindBuscadoresReceta(){
 function remitoDestinoById(id){ return PDB.remitosDestino.find(r => r.id === id); }
 function numRemDest(id){ return String(id).padStart(4, '0'); }
 
-// Sin argumento: nuevo remito. Con id: reabre uno emitido para modificarlo
-// (solo admin) — la fecha queda fija (identifica al remito), el resto es editable.
+// Sin argumento: nuevo remito. Con id: reabre uno emitido para modificarlo (solo admin).
 function abrirFormRemitoDestino(id){
   if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
   const r = id ? remitoDestinoById(id) : null;
@@ -8186,7 +8204,6 @@ function abrirFormRemitoDestino(id){
 
   document.getElementById('remdest-form-title').textContent = r ? ('Editar remito Nº ' + numRemDest(r.id)) : 'Nuevo remito';
   document.getElementById('remdest-fecha').value = r ? r.fecha : new Date().toISOString().split('T')[0];
-  document.getElementById('remdest-fecha').disabled = !!r;
   document.getElementById('remdest-dest-buscar').value = r ? r.destinatario : '';
   document.getElementById('remdest-dest-id').value = r ? (r.destinatarioId || '') : '';
   document.getElementById('remdest-domicilio').value = r ? (r.domicilio || '') : '';
@@ -8295,25 +8312,31 @@ async function cerrarRemitoDestino(){
 
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
 
-  // Modo edición (admin, desde Ajuste de Remitos): la fecha no cambia,
-  // todo lo demás se actualiza en el mismo remito. Es documental — no hay
-  // impacto de stock que revertir/reaplicar.
+  // Modo edición (admin, desde Ajuste de Remitos): ahora también se puede
+  // corregir la fecha (además de destinatario, domicilio, CUIT, observación
+  // y líneas). Es documental — no hay impacto de stock que revertir/reaplicar.
   if(remAdminEditId !== null){
     if(!isAdminProd()){ toastProd('Solo un administrador puede modificar remitos', 'error'); return; }
     const r = remitoDestinoById(remAdminEditId);
     if(!r){ toastProd('El remito ya no existe', 'error'); remAdminEditId = null; return; }
-    const ok = await confirmModal('¿Guardar los cambios del remito Nº ' + numRemDest(r.id) + '? La fecha (' + fechaBonitaProd(r.fecha) + ') no cambia.', 'Modificar remito');
+    const fechaCambio = fecha !== r.fecha;
+    const msgFecha = fechaCambio
+      ? ' La fecha se corrige de ' + fechaBonitaProd(r.fecha) + ' a ' + fechaBonitaProd(fecha) + '.'
+      : ' La fecha (' + fechaBonitaProd(r.fecha) + ') no cambia.';
+    const ok = await confirmModal('¿Guardar los cambios del remito Nº ' + numRemDest(r.id) + '?' + msgFecha, 'Modificar remito');
     if(!ok) return;
+    const fechaAnterior = r.fecha;
+    r.fecha = fecha;
     r.destinatarioId = destId;
     r.destinatario = d.nombre;
     r.domicilio = document.getElementById('remdest-domicilio').value.trim();
     r.cuit = document.getElementById('remdest-cuit').value.trim();
     r.observacion = document.getElementById('remdest-obs').value.trim();
     r.lineas = lineas;
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'remito-editado', detalle: 'Remito Nº ' + numRemDest(r.id) + ' editado por admin', usuario });
+    const detalleFecha = fechaCambio ? ' — fecha corregida de ' + fechaBonitaProd(fechaAnterior) + ' a ' + fechaBonitaProd(fecha) : '';
+    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'remito-editado', detalle: 'Remito Nº ' + numRemDest(r.id) + ' editado por admin' + detalleFecha, usuario });
     saveProd();
     remAdminEditId = null;
-    document.getElementById('remdest-fecha').disabled = false;
     document.getElementById('remdest-form-card').style.display = 'none';
     mostrarAccionesRemito(r.id);
     renderRemitosDestinoLista();
