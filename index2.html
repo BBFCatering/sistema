@@ -784,7 +784,11 @@ async function sbRpc(nombreFuncion, params){
     body: JSON.stringify(params || {})
   });
   if(!res.ok) throw new Error(`sbRpc(${nombreFuncion}): HTTP ${res.status} — ${await res.text()}`);
-  return res.json();
+  // Funciones que devuelven void (ej. rpc_set_password) responden 204 sin
+  // cuerpo — parsear como JSON ahí explota. Devolvemos null en ese caso.
+  if(res.status === 204) return null;
+  const texto = await res.text();
+  return texto ? JSON.parse(texto) : null;
 }
 
 let syncTimer = null;
