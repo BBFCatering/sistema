@@ -721,6 +721,127 @@ const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 // Nuevo formato Supabase: sb_publishable va SOLO en apikey, sin Authorization Bearer
 const SB_HEADERS = { 'Content-Type':'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
 
+// ── HELPERS GENÉRICOS DE ACCESO AL ESQUEMA RELACIONAL (PostgREST) ──
+// Reemplazan el patrón viejo de "modificar el blob completo en memoria y
+// subir todo con save()". A partir de la migración relacional (sección 15
+// de la Referencia Técnica), cada módulo pega directo a la tabla que
+// corresponde, en vez de reescribir DB/PDB entero.
+//
+// Todas devuelven la data ya parseada, o lanzan Error con el mensaje de
+// Postgres/PostgREST si algo falla — quien llama debe envolver en
+// try/catch y mostrar el toast correspondiente.
+
+async function sbSelect(tabla, queryString){
+  const url = `${SB_URL}/rest/v1/${tabla}${queryString ? '?' + queryString : ''}`;
+  const res = await fetch(url, { headers: SB_HEADERS });
+  if(!res.ok) throw new Error(`sbSelect(${tabla}): HTTP ${res.status} — ${await res.text()}`);
+  return res.json();
+}
+
+// fila puede ser un objeto o un array de objetos (insert múltiple).
+// Devuelve la(s) fila(s) insertada(s) con los valores generados por la DB
+// (id, defaults, resultado del trigger de nro de OC, etc).
+async function sbInsert(tabla, fila){
+  const res = await fetch(`${SB_URL}/rest/v1/${tabla}`, {
+    method: 'POST',
+    headers: { ...SB_HEADERS, 'Prefer': 'return=representation' },
+    body: JSON.stringify(fila)
+  });
+  if(!res.ok) throw new Error(`sbInsert(${tabla}): HTTP ${res.status} — ${await res.text()}`);
+  return res.json();
+}
+
+// filtroQS es un query string tipo "id=eq.5" (formato PostgREST).
+// cambios es un objeto con las columnas a actualizar.
+async function sbUpdate(tabla, filtroQS, cambios){
+  const res = await fetch(`${SB_URL}/rest/v1/${tabla}?${filtroQS}`, {
+    method: 'PATCH',
+    headers: { ...SB_HEADERS, 'Prefer': 'return=representation' },
+    body: JSON.stringify(cambios)
+  });
+  if(!res.ok) throw new Error(`sbUpdate(${tabla}): HTTP ${res.status} — ${await res.text()}`);
+  return res.json();
+}
+
+// Solo para tablas puente/detalle donde SÍ corresponde borrado físico
+// (ej. líneas hijas que se recrean enteras al editar el padre). Las
+// entidades principales (productos, remitos, OC, registros...) NUNCA se
+// borran así — se anulan con sbUpdate(anulado:true,...), como ya se hacía
+// en el sistema JSONB.
+async function sbDelete(tabla, filtroQS){
+  const res = await fetch(`${SB_URL}/rest/v1/${tabla}?${filtroQS}`, {
+    method: 'DELETE',
+    headers: SB_HEADERS
+  });
+  if(!res.ok) throw new Error(`sbDelete(${tabla}): HTTP ${res.status} — ${await res.text()}`);
+}
+
+// Llama a una función RPC de Postgres (ej. rpc_login, rpc_set_password).
+async function sbRpc(nombreFuncion, params){
+  const res = await fetch(`${SB_URL}/rest/v1/rpc/${nombreFuncion}`, {
+    method: 'POST',
+    headers: SB_HEADERS,
+    body: JSON.stringify(params || {})
+  });
+  if(!res.ok) throw new Error(`sbRpc(${nombreFuncion}): HTTP ${res.status} — ${await res.text()}`);
+  // Funciones que devuelven void (ej. rpc_set_password) responden 204 sin
+  // cuerpo — parsear como JSON ahí explota. Devolvemos null en ese caso.
+  if(res.status === 204) return null;
+  const texto = await res.text();
+  return texto ? JSON.parse(texto) : null;
+}
+
+// ── PRIMITIVAS RELACIONALES DE STOCK (Lotes/Ingreso/Egreso) ──
+// Reemplazan el patrón viejo de mutar DB.lotes/DB.stockSimple en memoria y
+// subir todo con save(). El ajuste de cantidad pasa por una función RPC de
+// Postgres (UPDATE ... SET cantidad = cantidad + delta) para que sea
+// atómico a nivel de fila — así dos usuarios ajustando el mismo lote/stock
+// al mismo tiempo no se pisan (el problema que motivó toda la migración).
+
+// Crea un lote nuevo (ingreso de producto perecedero). Devuelve la fila
+// insertada, con el id e ingreso (timestamp) generados por la base.
+async function crearLote(prodId, provId, cant, venc, temp, loteRef){
+  const fila = {
+    producto_id: prodId, proveedor_id: provId || null, cantidad: cant,
+    cantidad_inicial: cant, vencimiento: venc || null, temp: temp || null,
+    lote_ref: loteRef || null
+  };
+  const [lote] = await sbInsert('lotes', fila);
+  return lote;
+}
+
+// Ajusta la cantidad de un lote existente en +/-delta, de forma atómica.
+// Devuelve la fila actualizada (con la cantidad real resultante).
+async function ajustarLoteCantidad(loteId, delta){
+  return await sbRpc('rpc_ajustar_lote_cantidad', { p_lote_id: loteId, p_delta: delta });
+}
+
+// Ajusta (o crea, si no existía) el stock simple de un producto no
+// perecedero en +/-delta, de forma atómica. Devuelve la fila resultante.
+async function ajustarStockSimple(prodId, delta, unidad){
+  return await sbRpc('rpc_ajustar_stock_simple', { p_producto_id: prodId, p_delta: delta, p_unidad: unidad });
+}
+
+// Inserta una entrada de historial en la tabla relacional. campos acepta:
+// {productoId, nombre, cantidad, unidad, detalle, ocId, remitoId, usuario}.
+// ocId/remitoId solo deben pasarse cuando esa OC/remito YA existe como fila
+// real en las tablas ordenes_compra/remitos (si no, la FK rechaza el
+// insert) — hasta que esos sub-bloques se migren, se dejan en null.
+async function registrarHistorial(tipo, campos){
+  const fila = {
+    tipo,
+    producto_id: campos.productoId || null,
+    oc_id: campos.ocId || null,
+    remito_id: campos.remitoId || null,
+    detalle: {
+      nombre: campos.nombre, cantidad: campos.cantidad, unidad: campos.unidad,
+      detalle: campos.detalle, usuario: campos.usuario || null
+    }
+  };
+  const [row] = await sbInsert('historial', fila);
+  return row;
+}
+
 let syncTimer = null;
 let syncPendiente = false;
 let cargaInicialCompleta = false; // true recién después de leer Supabase por primera vez
@@ -739,6 +860,160 @@ function setSyncStatus(estado){
   const e = estados[estado] || estados.connecting;
   el.textContent = e.text;
   el.style.cssText = `font-size:.75rem;padding:4px 10px;border-radius:20px;${e.style}`;
+}
+
+// Reconstruye DB.productos con el mismo shape que siempre tuvo en memoria
+// (incluido el objeto .precios anidado), pero leyendo de las tablas
+// relacionales productos + producto_proveedor en vez del blob JSONB.
+async function cargarCatalogosStockDesdeSupabase(){
+  const [filasProductos, filasProveedores, filasAlicuotas, filasPrecios] = await Promise.all([
+    sbSelect('productos', 'select=id,nombre,unidad,perecedero,descripcion,activo,baja,alicuota_iva_id'),
+    sbSelect('proveedores', 'select=id,nombre,cuit,tel,email,pago,notas,activo'),
+    sbSelect('alicuotas_iva', 'select=id,valor,activo'),
+    sbSelect('producto_proveedor', 'select=producto_id,proveedor_id,precio,bonificacion,obs')
+  ]);
+
+  const productos = filasProductos.map(p => {
+    const precios = {};
+    filasPrecios.filter(pr => pr.producto_id === p.id).forEach(pr => {
+      precios[pr.proveedor_id] = { precio: pr.precio, bonificacion: pr.bonificacion, obs: pr.obs || '' };
+    });
+    return {
+      id: p.id, nombre: p.nombre, unidad: p.unidad,
+      perecedero: p.perecedero ? 'si' : 'no',
+      desc: p.descripcion || '',
+      activo: p.activo, baja: p.baja,
+      alicuotaIvaId: p.alicuota_iva_id,
+      proveedoresIds: [...new Set(filasPrecios.filter(pr => pr.producto_id === p.id).map(pr => pr.proveedor_id))],
+      precios
+    };
+  });
+
+  const proveedores = filasProveedores.map(p => ({
+    id: p.id, nombre: p.nombre, cuit: p.cuit || '', tel: p.tel || '',
+    email: p.email || '', pago: p.pago || '', notas: p.notas || '', activo: p.activo
+  }));
+
+  const alicuotasIva = filasAlicuotas.map(a => ({ id: a.id, valor: a.valor, activo: a.activo }));
+
+  return { productos, proveedores, alicuotasIva };
+}
+
+// Reconstruye DB.lotes (array) y DB.stockSimple (objeto por productoId) con
+// el mismo shape que siempre tuvieron en memoria, leyendo de las tablas
+// relacionales lotes + stock_simple en vez del blob JSONB.
+async function cargarLotesStockDesdeSupabase(){
+  const [filasLotes, filasStockSimple] = await Promise.all([
+    sbSelect('lotes', 'select=id,producto_id,proveedor_id,cantidad,cantidad_inicial,vencimiento,ingreso,lote_ref,temp'),
+    sbSelect('stock_simple', 'select=producto_id,cantidad,unidad')
+  ]);
+
+  const lotes = filasLotes.map(l => ({
+    id: l.id, productoId: l.producto_id, proveedorId: l.proveedor_id,
+    cantidad: Number(l.cantidad), cantidadInicial: Number(l.cantidad_inicial),
+    vencimiento: l.vencimiento, ingreso: l.ingreso,
+    loteRef: l.lote_ref || '', temp: l.temp || null
+  }));
+
+  const stockSimple = {};
+  filasStockSimple.forEach(s => {
+    stockSimple[s.producto_id] = { cantidad: Number(s.cantidad), unidad: s.unidad };
+  });
+
+  return { lotes, stockSimple };
+}
+
+// Reconstruye DB.ordenesCompra con el mismo shape que siempre tuvo en
+// memoria (id, nro, fecha, proveedorId, lineas[], total, condPago,
+// notasProv, obs, recibida, recepcion, fechaRecepcion, obsRecepcion,
+// anulada, fechaAnulacion, anuladoPor), leyendo de ordenes_compra + oc_lineas
+// en vez del blob JSONB.
+// Reconstruye DB.remitos con el mismo shape que siempre tuvo en memoria
+// (id, nro, fecha, destino, obs, lineas[], fechaCierre, anulado,
+// fechaAnulacion, anuladoPor), leyendo de remitos + remito_lineas en vez
+// del blob JSONB. Los datos de línea que no tienen columna propia (nombre
+// snapshot, loteRef, vencimiento, proveedorId, temp) viven en detalle jsonb.
+// Reconstruye DB.historial con el mismo shape que siempre tuvo en memoria
+// (tipo, productoId, nombre, cantidad, unidad, detalle string, fecha, ocId,
+// remitoId, usuario), leyendo de la tabla relacional historial en vez del
+// blob JSONB. El texto descriptivo (detalle) y los datos snapshot (nombre,
+// cantidad, unidad, usuario) viven en la columna jsonb detalle — se
+// desarman acá para que renderHistorial/renderListadoOC/etc. (que parsean
+// ese texto con extraerNroOCDeDetalle y similares) sigan funcionando sin
+// cambios.
+async function cargarHistorialDesdeSupabase(){
+  const filas = await sbSelect('historial', 'select=*&order=id.desc');
+  return filas.map(h => ({
+    tipo: h.tipo,
+    productoId: h.producto_id,
+    nombre: (h.detalle && h.detalle.nombre) || (h.producto_id ? nomProd(h.producto_id) : ''),
+    cantidad: h.detalle ? h.detalle.cantidad : null,
+    unidad: h.detalle ? h.detalle.unidad : '',
+    detalle: (h.detalle && h.detalle.detalle) || '',
+    fecha: h.fecha,
+    ocId: h.oc_id,
+    remitoId: h.remito_id,
+    usuario: h.detalle ? h.detalle.usuario : null
+  }));
+}
+
+// Reconstruye DB.historialPrecios con el mismo shape que siempre tuvo en
+// memoria, leyendo de la tabla relacional historial_precios.
+async function cargarHistorialPreciosDesdeSupabase(){
+  const filas = await sbSelect('historial_precios', 'select=*&order=id.desc');
+  return filas.map(h => ({
+    fecha: h.fecha, productoId: h.producto_id, proveedorId: h.proveedor_id,
+    precioAnterior: h.precio_anterior!=null?Number(h.precio_anterior):0,
+    precioNuevo: h.precio_nuevo!=null?Number(h.precio_nuevo):0,
+    bonifAnterior: h.bonif_anterior!=null?Number(h.bonif_anterior):0,
+    bonifNueva: h.bonif_nueva!=null?Number(h.bonif_nueva):0
+  }));
+}
+
+async function cargarRemitosDesdeSupabase(){
+  const [filasRemitos, filasLineas] = await Promise.all([
+    sbSelect('remitos', 'select=*&order=id.desc'),
+    sbSelect('remito_lineas', 'select=id,remito_id,producto_id,cantidad,unidad,lote_id,detalle')
+  ]);
+
+  return filasRemitos.map(r => ({
+    id: r.id, nro: r.nro, fecha: r.fecha, destino: r.destino || '', obs: r.obs || '',
+    fechaCierre: r.fecha_cierre,
+    anulado: r.anulado, fechaAnulacion: r.anulado_en, anuladoPor: r.anulado_por_nombre || null,
+    lineas: filasLineas.filter(l => l.remito_id === r.id).map(l => ({
+      productoId: l.producto_id,
+      nombre: (l.detalle && l.detalle.nombre) || nomProd(l.producto_id),
+      unidad: l.unidad, cantidad: Number(l.cantidad),
+      loteId: l.lote_id, loteRef: (l.detalle && l.detalle.loteRef) || null,
+      vencimiento: (l.detalle && l.detalle.vencimiento) || null,
+      proveedorId: (l.detalle && l.detalle.proveedorId) || null,
+      temp: (l.detalle && l.detalle.temp) || null
+    }))
+  }));
+}
+
+async function cargarOCDesdeSupabase(){
+  const [filasOC, filasLineas] = await Promise.all([
+    sbSelect('ordenes_compra', 'select=*&order=id.desc'),
+    sbSelect('oc_lineas', 'select=id,oc_id,producto_id,cantidad,precio,bonificacion')
+  ]);
+
+  return filasOC.map(o => ({
+    id: o.id, nro: o.nro, fecha: o.fecha, proveedorId: o.proveedor_id,
+    lineas: filasLineas.filter(l => l.oc_id === o.id).map(l => ({
+      productoId: l.producto_id, cantidad: Number(l.cantidad),
+      precio: Number(l.precio), bonificacion: Number(l.bonificacion)||0
+    })),
+    total: Number(o.total), condPago: o.cond_pago || '', notasProv: o.notas_prov || '',
+    obs: o.obs || '',
+    recibida: o.estado === 'recibida',
+    recepcion: o.recepcion || null,
+    fechaRecepcion: o.fecha_recepcion,
+    obsRecepcion: o.recepcion ? o.recepcion.obs : null,
+    anulada: o.anulado,
+    fechaAnulacion: o.anulado_en,
+    anuladoPor: o.anulado_por_nombre || null
+  }));
 }
 
 async function cargarDesdeSupabase(){
@@ -760,10 +1035,39 @@ async function cargarDesdeSupabase(){
       if(!DB.remitos)        DB.remitos        = [];
       if(!DB.ordenesCompra)  DB.ordenesCompra  = [];
       if(!DB.historialPrecios) DB.historialPrecios = [];
-      if(!DB.alicuotasIva)   DB.alicuotasIva   = [];
       if(DB.usuarios === undefined) DB.usuarios = null;
-      DB.productos.forEach(p=>{ if(!p.precios) p.precios={}; if(p.alicuotaIvaId===undefined) p.alicuotaIvaId=null; });
-      DB.proveedores.forEach(p=>{ if('alicuotaIvaId' in p) delete p.alicuotaIvaId; });
+
+      // ── Productos / Proveedores / Alícuotas: ya NO vienen del blob JSONB
+      // (sección 15 de la Referencia Técnica) — se pisan acá con lo que
+      // realmente vive en las tablas relacionales.
+      const catalogos = await cargarCatalogosStockDesdeSupabase();
+      DB.productos = catalogos.productos;
+      DB.proveedores = catalogos.proveedores;
+      DB.alicuotasIva = catalogos.alicuotasIva;
+
+      // ── Lotes / Stock Simple: ya NO vienen del blob JSONB — se pisan acá
+      // con lo que realmente vive en las tablas relacionales.
+      const lotesStock = await cargarLotesStockDesdeSupabase();
+      DB.lotes = lotesStock.lotes;
+      DB.stockSimple = lotesStock.stockSimple;
+
+      // ── Órdenes de Compra: ya NO vienen del blob JSONB — se pisan acá con
+      // lo que realmente vive en las tablas relacionales ordenes_compra + oc_lineas.
+      DB.ordenesCompra = await cargarOCDesdeSupabase();
+
+      // ── Remitos: ya NO vienen del blob JSONB — se pisan acá con lo que
+      // realmente vive en las tablas relacionales remitos + remito_lineas.
+      DB.remitos = await cargarRemitosDesdeSupabase();
+
+      // ── Historial / Historial de precios: ya NO vienen del blob JSONB —
+      // se pisan acá con lo que realmente vive en las tablas relacionales
+      // historial + historial_precios. Con esto, Script 0 (Stock) queda
+      // 100% migrado a relacional — el blob stockbbf id='main' sigue
+      // recibiendo el PATCH completo de save() por compatibilidad/backup,
+      // pero ya no es la fuente de lectura de ningún dato de Script 0.
+      DB.historial = await cargarHistorialDesdeSupabase();
+      DB.historialPrecios = await cargarHistorialPreciosDesdeSupabase();
+
       // Recalcular todos los contadores de ID
       idSeq.prod   = maxId('productos');
       idSeq.prov   = maxId('proveedores');
@@ -774,10 +1078,6 @@ async function cargarDesdeSupabase(){
       localStorage.setItem('sf_v3', JSON.stringify(DB));
       renderAll();
     }
-    // Si la nube respondió pero está vacía (primera vez), seguimos con lo
-    // que ya estaba cargado localmente — no hay nada más reciente para traer.
-    // Si la nube respondió pero está vacía (primera vez), seguimos con lo
-    // que ya estaba cargado localmente — no hay nada más reciente para traer.
     setSyncStatus('ok');
   } catch(e){
     // Sin conexión a Supabase: por seguridad, NO seguimos trabajando con la
@@ -793,6 +1093,7 @@ async function cargarDesdeSupabase(){
     cargaInicialCompleta = true;
   }
 }
+
 
 async function guardarEnSupabase(){
   setSyncStatus('saving');
@@ -945,6 +1246,30 @@ function setPrecioProv(productoId, proveedorId, nuevoPrecio, nuevaBonif, nuevaOb
   }
   p.precios[proveedorId] = {precio:nuevoPrecio, bonificacion:nuevaBonif, obs:nuevaObs};
 }
+
+// Igual que setPrecioProv (actualiza el espejo en memoria), pero además
+// persiste el cambio relacionalmente en producto_proveedor + historial_precios
+// — mismo patrón puente ya usado y probado en guardarProducto(). Se usa
+// desde guardarOC(), donde también puede cambiar el precio/bonif. vigente.
+async function actualizarPrecioProveedor(productoId, proveedorId, nuevoPrecio, nuevaBonif, nuevaObs){
+  const p = getProd(productoId);
+  const actual = (p.precios && (p.precios[proveedorId] || p.precios[String(proveedorId)])) || {precio:0,bonificacion:0};
+  nuevoPrecio = Number(nuevoPrecio)||0;
+  nuevaBonif = Number(nuevaBonif)||0;
+  setPrecioProv(productoId, proveedorId, nuevoPrecio, nuevaBonif, nuevaObs);
+  const existentes = await sbSelect('producto_proveedor', `producto_id=eq.${productoId}&proveedor_id=eq.${proveedorId}&select=id`);
+  const fila = { producto_id: productoId, proveedor_id: proveedorId, precio: nuevoPrecio, bonificacion: nuevaBonif, obs: nuevaObs || null };
+  if(existentes.length) await sbUpdate('producto_proveedor', `id=eq.${existentes[0].id}`, fila);
+  else await sbInsert('producto_proveedor', fila);
+  if(actual.precio !== nuevoPrecio || actual.bonificacion !== nuevaBonif){
+    await sbInsert('historial_precios', {
+      producto_id: productoId, proveedor_id: proveedorId,
+      precio_anterior: actual.precio, precio_nuevo: nuevoPrecio,
+      bonif_anterior: actual.bonificacion, bonif_nueva: nuevaBonif
+    });
+  }
+}
+
 function stockTotal(productoId){
   const prod=getProd(productoId);
   if(!prod) return 0;
@@ -1463,14 +1788,26 @@ async function ingresarStock(){
   const temp = (prod.perecedero==='si' && tempRaw) ? tempRaw : null;
 
   const detalleSufijo = (obs?` · Obs: ${obs}`:'') + (temp?` · Temp: ${temp}°C`:'');
-  if(prod.perecedero==='si'){
-    const lote={id:idSeq.lote++,productoId:prodId,proveedorId:provId,cantidad:cant,cantidadInicial:cant,vencimiento:venc,temp,ingreso:new Date().toISOString(),loteRef};
-    DB.lotes.push(lote);
-    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleSufijo}`,fecha:new Date().toISOString()});
-  } else {
-    if(!DB.stockSimple[prodId]) DB.stockSimple[prodId]={cantidad:0,unidad:prod.unidad};
-    DB.stockSimple[prodId].cantidad+=cant;
-    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Proveedor: ${nomProv(provId)}${loteRef?' · '+loteRef:''}${detalleSufijo}`,fecha:new Date().toISOString()});
+  try {
+    if(prod.perecedero==='si'){
+      const loteFila = await crearLote(prodId, provId, cant, venc, temp, loteRef);
+      const lote = {id:loteFila.id, productoId:prodId, proveedorId:provId, cantidad:cant, cantidadInicial:cant, vencimiento:venc, temp, ingreso:loteFila.ingreso, loteRef};
+      DB.lotes.push(lote);
+      const detalleTexto = `Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleSufijo}`;
+      await registrarHistorial('ingreso', {productoId:prodId, nombre:prod.nombre, cantidad:cant, unidad:prod.unidad, detalle:detalleTexto});
+      DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:detalleTexto,fecha:new Date().toISOString()});
+    } else {
+      const stockFila = await ajustarStockSimple(prodId, cant, prod.unidad);
+      if(!DB.stockSimple[prodId]) DB.stockSimple[prodId]={cantidad:0,unidad:prod.unidad};
+      DB.stockSimple[prodId].cantidad = Number(stockFila.cantidad);
+      const detalleTexto = `Proveedor: ${nomProv(provId)}${loteRef?' · '+loteRef:''}${detalleSufijo}`;
+      await registrarHistorial('ingreso', {productoId:prodId, nombre:prod.nombre, cantidad:cant, unidad:prod.unidad, detalle:detalleTexto});
+      DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:detalleTexto,fecha:new Date().toISOString()});
+    }
+  } catch(e){
+    console.warn('Error en ingresarStock:', e);
+    toast('⚠ No se pudo guardar el ingreso','error');
+    return;
   }
 
   save();
@@ -1493,19 +1830,27 @@ async function ingresarStock(){
 // precisión desde Ajustes → Ajuste de Compras. Devuelve una referencia
 // estructurada de lo creado (loteId o stockSimple) para armar el snapshot
 // oc.recepcion.lineas.
-function aplicarIngresoLinea(prodId, provId, cant, venc, loteRef, detalleExtra, temp, ocId){
+async function aplicarIngresoLinea(prodId, provId, cant, venc, loteRef, detalleExtra, temp, ocId){
   const prod=getProd(prodId);
   if(!prod) return null;
   if(prod.perecedero==='si'){
-    const lote={id:idSeq.lote++,productoId:prodId,proveedorId:provId,cantidad:cant,cantidadInicial:cant,vencimiento:venc,temp:temp||null,ingreso:new Date().toISOString(),loteRef};
+    const loteFila = await crearLote(prodId, provId, cant, venc, temp, loteRef);
+    const lote = {id:loteFila.id, productoId:prodId, proveedorId:provId, cantidad:cant, cantidadInicial:cant, vencimiento:venc, temp:temp||null, ingreso:loteFila.ingreso, loteRef};
     DB.lotes.push(lote);
     const detalleTemp = temp ? ` · Temp: ${temp}°C` : '';
-    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleExtra?' · '+detalleExtra:''}${detalleTemp}`,fecha:new Date().toISOString(),ocId:ocId||null});
+    const detalleTexto = `Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleExtra?' · '+detalleExtra:''}${detalleTemp}`;
+    // Ahora que OC (sub-entrega OC) ya existe como fila real en
+    // ordenes_compra, se puede vincular oc_id de forma segura.
+    await registrarHistorial('ingreso', {productoId:prodId, nombre:prod.nombre, cantidad:cant, unidad:prod.unidad, detalle:detalleTexto, ocId:ocId||null});
+    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:detalleTexto,fecha:new Date().toISOString(),ocId:ocId||null});
     return {productoId:prodId, perecedero:'si', loteId:lote.id, cantidad:cant, unidad:prod.unidad, vencimiento:venc, loteRef, temp:temp||null, proveedorId:provId};
   } else {
+    const stockFila = await ajustarStockSimple(prodId, cant, prod.unidad);
     if(!DB.stockSimple[prodId]) DB.stockSimple[prodId]={cantidad:0,unidad:prod.unidad};
-    DB.stockSimple[prodId].cantidad+=cant;
-    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:`Proveedor: ${nomProv(provId)}${loteRef?' · '+loteRef:''}${detalleExtra?' · '+detalleExtra:''}`,fecha:new Date().toISOString(),ocId:ocId||null});
+    DB.stockSimple[prodId].cantidad = Number(stockFila.cantidad);
+    const detalleTexto = `Proveedor: ${nomProv(provId)}${loteRef?' · '+loteRef:''}${detalleExtra?' · '+detalleExtra:''}`;
+    await registrarHistorial('ingreso', {productoId:prodId, nombre:prod.nombre, cantidad:cant, unidad:prod.unidad, detalle:detalleTexto, ocId:ocId||null});
+    DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:detalleTexto,fecha:new Date().toISOString(),ocId:ocId||null});
     return {productoId:prodId, perecedero:'no', loteId:null, cantidad:cant, unidad:prod.unidad, loteRef:loteRef||null, proveedorId:provId};
   }
 }
@@ -1646,7 +1991,7 @@ function agregarLineaIngOC(){
   renderIngOCLineas();
 }
 
-function confirmarIngresoOC(){
+async function confirmarIngresoOC(){
   if(!ingOCActual){ toast('Seleccioná una orden de compra','error'); return; }
   if(!ingOCLineas.length){ toast('No hay líneas para ingresar','error'); return; }
 
@@ -1663,20 +2008,38 @@ function confirmarIngresoOC(){
   const detalleObs = obs ? ` · Obs: ${obs}` : '';
 
   const recepcionLineas = [];
-  ingOCLineas.forEach(l=>{
-    const detalle = l.extra
-      ? `Adicional — no incluido en OC ${ingOCActual.nro}${detalleObs}`
-      : `Ingreso desde OC ${ingOCActual.nro}${detalleObs}`;
-    const ref = aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle, l.perecedero==='si'?(l.temp||null):null, ingOCActual.id);
-    if(ref) recepcionLineas.push(ref);
-  });
+  try {
+    for(const l of ingOCLineas){
+      const detalle = l.extra
+        ? `Adicional — no incluido en OC ${ingOCActual.nro}${detalleObs}`
+        : `Ingreso desde OC ${ingOCActual.nro}${detalleObs}`;
+      const ref = await aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle, l.perecedero==='si'?(l.temp||null):null, ingOCActual.id);
+      if(ref) recepcionLineas.push(ref);
+    }
+  } catch(e){
+    console.warn('Error en confirmarIngresoOC:', e);
+    toast('⚠ No se pudo registrar el ingreso completo — revisá el stock antes de reintentar','error');
+    return;
+  }
 
-  // Marcar la OC como recibida
+  // Marcar la OC como recibida — relacional (tabla ordenes_compra) y espejo
+  const fechaRecepcion = new Date().toISOString();
+  const recepcion = { fecha: fechaRecepcion, obs: obs||null, lineas: recepcionLineas };
+  try {
+    await sbUpdate('ordenes_compra', `id=eq.${ingOCActual.id}`, {
+      estado: 'recibida', fecha_recepcion: fechaRecepcion, recepcion
+    });
+  } catch(e){
+    console.warn('Error marcando OC como recibida:', e);
+    toast('⚠ El stock se ingresó, pero no se pudo marcar la OC como recibida — avisá para revisarlo','error');
+    // No hacemos return: el stock ya se ingresó correctamente, no tiene
+    // sentido dejar la pantalla colgada. Se corrige el estado a mano si hace falta.
+  }
   ingOCActual.recibida = true;
-  ingOCActual.fechaRecepcion = new Date().toISOString();
+  ingOCActual.fechaRecepcion = fechaRecepcion;
   if(obs) ingOCActual.obsRecepcion = obs;
   // Snapshot estructurado de lo recibido (permite modificar/eliminar con precisión desde Ajustes → Ajuste de Compras)
-  ingOCActual.recepcion = { fecha: ingOCActual.fechaRecepcion, obs: obs||null, lineas: recepcionLineas };
+  ingOCActual.recepcion = recepcion;
 
   save();
   toast(`✓ Ingreso registrado desde ${ingOCActual.nro}`);
@@ -1699,7 +2062,7 @@ function cancelarIngresoOC(){
 
 
 // ── EGRESO ────────────────────────────────────────────
-function egresoFIFO(prodId, evt){
+async function egresoFIFO(prodId, evt){
   if(evt) evt.stopPropagation();
   const prod=getProd(prodId); if(!prod) return;
   const qty=parseFloat(document.getElementById('eq-'+prodId).value);
@@ -1707,35 +2070,62 @@ function egresoFIFO(prodId, evt){
   const lotes=DB.lotes.filter(l=>l.productoId===prodId&&l.cantidad>0).sort((a,b)=>new Date(a.vencimiento)-new Date(b.vencimiento));
   const total=lotes.reduce((s,l)=>s+l.cantidad,0);
   if(qty>total){toast(`Stock insuficiente. Disponible: ${total} ${prod.unidad}`,'error');return;}
-  let rest=qty; const det=[];
+  let rest=qty; const det=[]; const ajustes=[];
   for(const l of lotes){
     if(rest<=0) break;
-    const t=Math.min(l.cantidad,rest); l.cantidad-=t; rest-=t;
+    const t=Math.min(l.cantidad,rest); ajustes.push({lote:l, t}); rest-=t;
     det.push(`Lote ${l.loteRef||'#'+l.id}: ${t}`);
+  }
+  try {
+    for(const {lote,t} of ajustes){
+      await ajustarLoteCantidad(lote.id, -t);
+      lote.cantidad -= t;
+    }
+    await registrarHistorial('egreso', {productoId:prodId, nombre:prod.nombre, cantidad:qty, unidad:prod.unidad, detalle:det.join(' | ')});
+  } catch(e){
+    console.warn('Error en egresoFIFO:', e);
+    toast('⚠ No se pudo registrar el egreso completo — recargá la página para ver el stock real','error');
+    return;
   }
   DB.historial.unshift({tipo:'egreso',productoId:prodId,nombre:prod.nombre,cantidad:qty,unidad:prod.unidad,detalle:det.join(' | '),fecha:new Date().toISOString()});
   save(); renderAll(); toast(`✓ Egreso FIFO: ${qty} ${prod.unidad} de ${prod.nombre}`);
 }
 
-function quickEgreso(loteId, evt){
+async function quickEgreso(loteId, evt){
   if(evt) evt.stopPropagation();
   const l=DB.lotes.find(x=>x.id===loteId); if(!l) return;
   const prod=getProd(l.productoId);
   const qty=parseFloat(prompt(`Egresar de "${prod.nombre}"\nLote: ${l.loteRef||'#'+l.id}\nDisponible: ${l.cantidad} ${prod.unidad}\n\n¿Cantidad?`));
   if(!qty||qty<=0) return;
   if(qty>l.cantidad){toast('Supera el stock del lote','error');return;}
-  l.cantidad-=qty;
+  try {
+    await ajustarLoteCantidad(l.id, -qty);
+    l.cantidad-=qty;
+    await registrarHistorial('egreso', {productoId:l.productoId, nombre:prod.nombre, cantidad:qty, unidad:prod.unidad, detalle:`Lote ${l.loteRef||'#'+l.id}`});
+  } catch(e){
+    console.warn('Error en quickEgreso:', e);
+    toast('⚠ No se pudo registrar el egreso','error');
+    return;
+  }
   DB.historial.unshift({tipo:'egreso',productoId:l.productoId,nombre:prod.nombre,cantidad:qty,unidad:prod.unidad,detalle:`Lote ${l.loteRef||'#'+l.id}`,fecha:new Date().toISOString()});
   save(); renderAll(); toast(`✓ Egresadas ${qty} ${prod.unidad} de ${prod.nombre}`);
 }
 
-function egresoSimple(prodId){
+async function egresoSimple(prodId){
   const prod=getProd(prodId); if(!prod) return;
   const st=DB.stockSimple[prodId]||{cantidad:0};
   const qty=parseFloat(prompt(`Egresar "${prod.nombre}"\nStock actual: ${st.cantidad} ${prod.unidad}\n\n¿Cantidad a egresar?`));
   if(!qty||qty<=0) return;
   if(qty>st.cantidad){toast('Stock insuficiente','error');return;}
-  st.cantidad-=qty;
+  try {
+    const stockFila = await ajustarStockSimple(prodId, -qty, st.unidad||prod.unidad);
+    st.cantidad = Number(stockFila.cantidad);
+    await registrarHistorial('egreso', {productoId:prodId, nombre:prod.nombre, cantidad:qty, unidad:prod.unidad, detalle:'Egreso manual'});
+  } catch(e){
+    console.warn('Error en egresoSimple:', e);
+    toast('⚠ No se pudo registrar el egreso','error');
+    return;
+  }
   DB.historial.unshift({tipo:'egreso',productoId:prodId,nombre:prod.nombre,cantidad:qty,unidad:prod.unidad,detalle:'Egreso manual',fecha:new Date().toISOString()});
   save(); renderAll(); toast(`✓ Egresadas ${qty} ${prod.unidad} de ${prod.nombre}`);
 }
@@ -1984,7 +2374,7 @@ function toggleProdPrecioRow(provId){
   if(row) row.style.display = checked ? '' : 'none';
 }
 
-function guardarProducto(){
+async function guardarProducto(){
   if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés guardar cambios','error'); return; }
   const nombre=document.getElementById('prod-nombre').value.trim();
   const unidad=document.getElementById('prod-unidad').value;
@@ -1997,29 +2387,62 @@ function guardarProducto(){
   if(!unidad){toast('Seleccioná una unidad','error');return;}
   if(!provIds.length){toast('Asociá al menos un proveedor','error');return;}
   const datos={nombre,unidad,perecedero,desc,proveedoresIds:provIds,activo:true,alicuotaIvaId:alicSel?parseInt(alicSel):null};
+  const filaTabla = {
+    nombre, unidad, perecedero: perecedero === 'si',
+    descripcion: desc || null, alicuota_iva_id: alicSel ? parseInt(alicSel) : null
+  };
+
   let prod;
-  if(editProdId){ prod=getProd(editProdId); Object.assign(prod,datos); toast(`✓ "${nombre}" actualizado`); }
-  else { prod={id:idSeq.prod++,precios:{},...datos}; DB.productos.push(prod); toast(`✓ "${nombre}" creado`); }
-  if(!prod.precios) prod.precios={};
-  // Guardar precios/bonificaciones por proveedor (con historial de cambios)
-  // Buscar en el modal primero, luego en el documento (por si está en fullscreen)
-  const modalCtx = document.getElementById('modal-producto') || document;
-  provIds.forEach(provId=>{
-    const precioInput = modalCtx.querySelector('#prod-precio-'+provId)
-                     || document.querySelector('#prod-precio-'+provId);
-    const bonifInput  = modalCtx.querySelector('#prod-bonif-'+provId)
-                     || document.querySelector('#prod-bonif-'+provId);
-    if(precioInput){
-      const nuevoPrecio = parseFloat(precioInput.value)||0;
-      const nuevaBonif  = parseFloat(bonifInput ? bonifInput.value : 0)||0;
-      const obsInput = modalCtx.querySelector('#prod-obs-'+provId) || document.querySelector('#prod-obs-'+provId);
-      const nuevaObs = obsInput ? obsInput.value.trim() : '';
-      setPrecioProv(prod.id, provId, nuevoPrecio, nuevaBonif, nuevaObs);
+  try {
+    if(editProdId){
+      prod=getProd(editProdId); Object.assign(prod,datos);
+      await sbUpdate('productos', `id=eq.${editProdId}`, filaTabla);
     } else {
-      // Fallback: leer del formulario directamente via name attr
-      console.warn('No se encontró input precio para proveedor', provId);
+      const [creado] = await sbInsert('productos', { ...filaTabla, activo: true });
+      prod={id:creado.id,precios:{},...datos};
+      DB.productos.push(prod);
+      idSeq.prod = Math.max(idSeq.prod, creado.id + 1);
     }
-  });
+    if(!prod.precios) prod.precios={};
+
+    // Guardar precios/bonificaciones por proveedor (con historial de cambios)
+    const modalCtx = document.getElementById('modal-producto') || document;
+    for(const provId of provIds){
+      const precioInput = modalCtx.querySelector('#prod-precio-'+provId)
+                       || document.querySelector('#prod-precio-'+provId);
+      const bonifInput  = modalCtx.querySelector('#prod-bonif-'+provId)
+                       || document.querySelector('#prod-bonif-'+provId);
+      if(precioInput){
+        const nuevoPrecio = parseFloat(precioInput.value)||0;
+        const nuevaBonif  = parseFloat(bonifInput ? bonifInput.value : 0)||0;
+        const obsInput = modalCtx.querySelector('#prod-obs-'+provId) || document.querySelector('#prod-obs-'+provId);
+        const nuevaObs = obsInput ? obsInput.value.trim() : '';
+        const actual = prod.precios[provId] || prod.precios[String(provId)] || {precio:0,bonificacion:0};
+        setPrecioProv(prod.id, provId, nuevoPrecio, nuevaBonif, nuevaObs);
+        // Upsert en producto_proveedor (tabla puente real)
+        const existentes = await sbSelect('producto_proveedor', `producto_id=eq.${prod.id}&proveedor_id=eq.${provId}&select=id`);
+        const fila = { producto_id: prod.id, proveedor_id: provId, precio: nuevoPrecio, bonificacion: nuevaBonif, obs: nuevaObs || null };
+        if(existentes.length) await sbUpdate('producto_proveedor', `id=eq.${existentes[0].id}`, fila);
+        else await sbInsert('producto_proveedor', fila);
+        // Historial de precios: se sigue guardando en DB.historialPrecios
+        // (blob viejo) hasta que se migre el sub-bloque de historial/informes.
+        if(actual.precio !== nuevoPrecio || actual.bonificacion !== nuevaBonif){
+          await sbInsert('historial_precios', {
+            producto_id: prod.id, proveedor_id: provId,
+            precio_anterior: actual.precio, precio_nuevo: nuevoPrecio,
+            bonif_anterior: actual.bonificacion, bonif_nueva: nuevaBonif
+          });
+        }
+      } else {
+        console.warn('No se encontró input precio para proveedor', provId);
+      }
+    }
+    toast(editProdId ? `✓ "${nombre}" actualizado` : `✓ "${nombre}" creado`);
+  } catch(e){
+    console.warn('Error guardando producto:', e);
+    toast('⚠ No se pudo guardar el producto','error');
+    return;
+  }
   save(); cerrarModal('modal-producto'); renderAll();
 }
 
@@ -2030,7 +2453,10 @@ async function toggleActivoProd(id){
     const en=DB.lotes.filter(l=>l.productoId===id&&l.cantidad>0).length;
     if(en&&!(await confirmModal(`"${p.nombre}" tiene stock activo. ¿Desactivar igualmente?`))) return;
   }
-  p.activo=!p.activo; save(); renderAll(); toast(`${p.nombre} ${p.activo?'activado':'desactivado'}`);
+  const nuevoActivo = !p.activo;
+  try { await sbUpdate('productos', `id=eq.${id}`, { activo: nuevoActivo }); }
+  catch(e){ console.warn('Error actualizando producto:', e); toast('⚠ No se pudo guardar el cambio','error'); return; }
+  p.activo=nuevoActivo; save(); renderAll(); toast(`${p.nombre} ${p.activo?'activado':'desactivado'}`);
 }
 
 // Baja definitiva de un producto INACTIVO (solo admin). El producto desaparece
@@ -2055,10 +2481,18 @@ async function darDeBajaProd(id){
     `Vas a dar de BAJA DEFINITIVA el producto:\n\n"${p.nombre}"\n\nDesaparece del catálogo y de todos los selectores del sistema, y NO se puede revertir desde la aplicación. Los remitos, órdenes de compra y movimientos históricos donde aparece se conservan intactos.\n\n¿Confirmás la baja?`,
     'Dar de baja producto');
   if(!ok) return;
+  try { await sbUpdate('productos', `id=eq.${id}`, { baja: true }); }
+  catch(e){ console.warn('Error dando de baja producto:', e); toast('⚠ No se pudo guardar el cambio','error'); return; }
   p.baja = true;
+  const usuarioNombre = (typeof currentUser!=='undefined'&&currentUser)?currentUser.name:'—';
+  try {
+    await registrarHistorial('producto-baja', {
+      productoId: p.id, detalle: `Producto "${p.nombre}" dado de BAJA definitiva del catálogo`, usuario: usuarioNombre
+    });
+  } catch(e){ console.warn('Error registrando historial de baja:', e); }
   DB.historial.push({ fecha:new Date().toISOString(), tipo:'producto-baja',
     detalle:`Producto "${p.nombre}" dado de BAJA definitiva del catálogo`,
-    usuario:(typeof currentUser!=='undefined'&&currentUser)?currentUser.name:'—' });
+    usuario: usuarioNombre });
   save(); renderAll();
   toast(`"${p.nombre}" dado de baja`);
 }
@@ -2121,19 +2555,41 @@ function abrirModalProveedor(id=null){
   document.getElementById('modal-proveedor').classList.remove('hidden');
 }
 
-function guardarProveedor(){
+async function guardarProveedor(){
   if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés guardar cambios','error'); return; }
   const nombre=document.getElementById('prov-nombre').value.trim();
   if(!nombre){toast('El nombre es obligatorio','error');return;}
   const datos={nombre,cuit:document.getElementById('prov-cuit').value.trim(),tel:document.getElementById('prov-tel').value.trim(),email:document.getElementById('prov-email').value.trim(),pago:document.getElementById('prov-pago').value.trim(),notas:document.getElementById('prov-notas').value.trim()};
-  if(editProvId){ Object.assign(getProv(editProvId),datos); toast(`✓ "${nombre}" actualizado`); }
-  else { DB.proveedores.push({id:idSeq.prov++,activo:true,...datos}); toast(`✓ "${nombre}" agregado`); }
+  const filaTabla = {
+    nombre, cuit: datos.cuit || null, tel: datos.tel || null,
+    email: datos.email || null, pago: datos.pago || null, notas: datos.notas || null
+  };
+  try {
+    if(editProvId){
+      Object.assign(getProv(editProvId),datos);
+      await sbUpdate('proveedores', `id=eq.${editProvId}`, filaTabla);
+      toast(`✓ "${nombre}" actualizado`);
+    } else {
+      const [creado] = await sbInsert('proveedores', { ...filaTabla, activo: true });
+      DB.proveedores.push({id:creado.id,activo:true,...datos});
+      idSeq.prov = Math.max(idSeq.prov, creado.id + 1);
+      toast(`✓ "${nombre}" agregado`);
+    }
+  } catch(e){
+    console.warn('Error guardando proveedor:', e);
+    toast('⚠ No se pudo guardar el proveedor','error');
+    return;
+  }
   save(); cerrarModal('modal-proveedor'); renderAll();
 }
 
-function toggleActivoProv(id){
+async function toggleActivoProv(id){
   if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés modificar proveedores','error'); return; }
-  const p=getProv(id); p.activo=!p.activo; save(); renderAll();
+  const p=getProv(id);
+  const nuevoActivo = !p.activo;
+  try { await sbUpdate('proveedores', `id=eq.${id}`, { activo: nuevoActivo }); }
+  catch(e){ console.warn('Error actualizando proveedor:', e); toast('⚠ No se pudo guardar el cambio','error'); return; }
+  p.activo=nuevoActivo; save(); renderAll();
   toast(`${p.nombre} ${p.activo?'activado':'desactivado'}`);
 }
 
@@ -2370,35 +2826,57 @@ function quitarOCLinea(idx){
   renderOCLineas();
 }
 
-function guardarOC(){
+async function guardarOC(){
   if(!ocEnEdicion || !ocEnEdicion.proveedorId){ toast('Seleccioná un proveedor','error'); return; }
   if(!ocEnEdicion.lineas.length){ toast('Agregá al menos un producto','error'); return; }
   for(const l of ocEnEdicion.lineas){
     if(!l.cantidad || l.cantidad<=0){ toast('Revisá las cantidades','error'); return; }
   }
-  const year = new Date().getFullYear();
-  const nroSec = String(idSeq.oc).padStart(5,'0');
-  const nro = `OC-${year}-${nroSec}`;
   const total = ocEnEdicion.lineas.reduce((s,l)=>s+l.cantidad*precioFinal(l.precio,l.bonificacion),0);
   // Snapshot de condición de pago y notas del proveedor al momento de emitir la orden
   const provOC = getProv(ocEnEdicion.proveedorId);
-  const oc = {
-    id: idSeq.oc++,
-    nro,
-    fecha: new Date().toISOString(),
-    proveedorId: ocEnEdicion.proveedorId,
-    lineas: JSON.parse(JSON.stringify(ocEnEdicion.lineas)),
-    total,
-    condPago: (provOC && provOC.pago) ? provOC.pago : '',
-    notasProv: (provOC && provOC.notas) ? provOC.notas : '',
-    obs: (document.getElementById('oc-obs')?.value || '').trim()
-  };
-  DB.ordenesCompra.unshift(oc);
+  const condPago = (provOC && provOC.pago) ? provOC.pago : '';
+  const notasProv = (provOC && provOC.notas) ? provOC.notas : '';
+  const obsTexto = (document.getElementById('oc-obs')?.value || '').trim();
 
-  // Actualizar precios/bonificaciones del producto si cambiaron en la OC
-  oc.lineas.forEach(l=>{
-    setPrecioProv(l.productoId, oc.proveedorId, l.precio, l.bonificacion);
-  });
+  let oc;
+  try {
+    // nro: no se manda — lo genera el trigger trg_set_oc_nro en la base
+    // (mismo formato OC-AAAA-NNNNN que se usaba antes desde JS).
+    const [ocCreada] = await sbInsert('ordenes_compra', {
+      fecha: new Date().toISOString().slice(0,10),
+      proveedor_id: ocEnEdicion.proveedorId,
+      cond_pago: condPago || null,
+      notas_prov: notasProv || null,
+      obs: obsTexto || null,
+      total,
+      creado_por: (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null
+    });
+
+    const lineasParaGuardar = JSON.parse(JSON.stringify(ocEnEdicion.lineas));
+    await sbInsert('oc_lineas', lineasParaGuardar.map(l => ({
+      oc_id: ocCreada.id, producto_id: l.productoId, cantidad: l.cantidad,
+      precio: l.precio, bonificacion: l.bonificacion||0,
+      subtotal: l.cantidad*precioFinal(l.precio,l.bonificacion)
+    })));
+
+    oc = {
+      id: ocCreada.id, nro: ocCreada.nro, fecha: ocCreada.fecha,
+      proveedorId: ocEnEdicion.proveedorId, lineas: lineasParaGuardar, total,
+      condPago, notasProv, obs: obsTexto, recibida:false
+    };
+    DB.ordenesCompra.unshift(oc);
+
+    // Actualizar precios/bonificaciones del producto si cambiaron en la OC
+    // (relacional: producto_proveedor + historial_precios, además del espejo)
+    for(const l of oc.lineas){
+      await actualizarPrecioProveedor(l.productoId, oc.proveedorId, l.precio, l.bonificacion, null);
+    }
+  } catch(e){
+    console.error('Error al guardar OC:', e);
+    toast('⚠ No se pudo guardar la orden de compra','error');
+    return;
+  }
 
   try {
     save();
@@ -2407,7 +2885,7 @@ function guardarOC(){
   cancelarOC();
   try { renderOCs(); } catch(e){ console.warn('renderOCs:', e); }
   try { renderAll(); } catch(e){ console.warn('renderAll:', e); }
-  toast('✓ Orden ' + nro + ' creada');
+  toast('✓ Orden ' + oc.nro + ' creada');
   try { abrirVerOC(oc.id); } catch(e){ console.warn('abrirVerOC:', e); }
 }
 
@@ -2428,7 +2906,7 @@ function renderOCs(){
       <div>
         <div class="item-name">${oc.nro} — ${nomProv(oc.proveedorId)}</div>
         <div class="item-detail">
-          ${fdt(oc.fecha)} · ${oc.lineas.length} ítem${oc.lineas.length>1?'s':''} · Total: <strong>${fmtMoney(oc.total)}</strong>
+          ${ff(oc.fecha)} · ${oc.lineas.length} ítem${oc.lineas.length>1?'s':''} · Total: <strong>${fmtMoney(oc.total)}</strong>
           ${oc.recibida?' · <span class="badge badge-noperecedero">Recibida</span>':''}
           ${oc.anulada?' · <span class="badge badge-noperecedero">Anulada</span>':''}
         </div>
@@ -3076,26 +3554,51 @@ async function cerrarRemito(){
   if(!remitoLineas.length){ toast('Agregá al menos una línea','error'); return; }
   if(!(await confirmModal(`¿Cerrar remito ${nro} y descontar stock?\n\n${remitoLineas.length} línea(s) — esta acción no se puede deshacer.`))) return;
 
-  const remitoId = idSeq.remito++;
-
-  // Descontar stock
-  remitoLineas.forEach(l => {
-    if(l.loteId){
-      const lote = DB.lotes.find(x=>x.id===l.loteId);
-      if(lote) lote.cantidad -= l.cantidad;
-    } else {
-      if(DB.stockSimple[l.productoId]) DB.stockSimple[l.productoId].cantidad -= l.cantidad;
-    }
-    DB.historial.unshift({
-      tipo:'egreso', productoId:l.productoId, nombre:l.nombre,
-      cantidad:l.cantidad, unidad:l.unidad,
-      detalle:`Remito ${nro}${l.loteRef?' · Lote '+l.loteRef:''}`,
-      fecha:new Date().toISOString(), remitoId
+  let remito;
+  try {
+    const fechaCierre = new Date().toISOString();
+    const [remitoCreado] = await sbInsert('remitos', {
+      nro, fecha, destino, obs: obs || null, fecha_cierre: fechaCierre,
+      creado_por: (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null
     });
-  });
 
-  const remito = { id:remitoId, destino, nro, fecha, obs, lineas:[...remitoLineas], fechaCierre:new Date().toISOString() };
-  DB.remitos.unshift(remito);
+    // Descontar stock (relacional, atómico por línea) + historial ya
+    // vinculado al remito real (remitoId existe desde este punto)
+    for(const l of remitoLineas){
+      if(l.loteId){
+        await ajustarLoteCantidad(l.loteId, -l.cantidad);
+        const lote = DB.lotes.find(x=>x.id===l.loteId);
+        if(lote) lote.cantidad -= l.cantidad;
+      } else {
+        const stockFila = await ajustarStockSimple(l.productoId, -l.cantidad, l.unidad);
+        if(DB.stockSimple[l.productoId]) DB.stockSimple[l.productoId].cantidad = Number(stockFila.cantidad);
+      }
+      await registrarHistorial('egreso', {productoId:l.productoId, nombre:l.nombre, cantidad:l.cantidad, unidad:l.unidad, detalle:`Remito ${nro}${l.loteRef?' · Lote '+l.loteRef:''}`, remitoId: remitoCreado.id});
+    }
+
+    await sbInsert('remito_lineas', remitoLineas.map(l => ({
+      remito_id: remitoCreado.id, producto_id: l.productoId, cantidad: l.cantidad,
+      unidad: l.unidad, lote_id: l.loteId || null,
+      detalle: { nombre: l.nombre, loteRef: l.loteRef||null, vencimiento: l.vencimiento||null, proveedorId: l.proveedorId||null, temp: l.temp||null }
+    })));
+
+    remitoLineas.forEach(l => {
+      DB.historial.unshift({
+        tipo:'egreso', productoId:l.productoId, nombre:l.nombre,
+        cantidad:l.cantidad, unidad:l.unidad,
+        detalle:`Remito ${nro}${l.loteRef?' · Lote '+l.loteRef:''}`,
+        fecha:new Date().toISOString(), remitoId: remitoCreado.id
+      });
+    });
+
+    remito = { id:remitoCreado.id, destino, nro, fecha, obs, lineas:[...remitoLineas], fechaCierre };
+    DB.remitos.unshift(remito);
+  } catch(e){
+    console.warn('Error en cerrarRemito:', e);
+    toast('⚠ No se pudo cerrar el remito completo — revisá el stock antes de reintentar','error');
+    return;
+  }
+
   save();
 
   // Imprimir automáticamente
@@ -3407,14 +3910,31 @@ async function guardarModificacionOcPendiente(){
 
   const obs = document.getElementById('ajocp-edit-obs').value.trim();
   const total = ajOcEditLineas.reduce((s,l)=>s+l.cantidad*precioFinal(l.precio,l.bonificacion),0);
+  const nuevasLineas = JSON.parse(JSON.stringify(ajOcEditLineas));
 
-  oc.lineas = JSON.parse(JSON.stringify(ajOcEditLineas));
+  try {
+    await sbUpdate('ordenes_compra', `id=eq.${oc.id}`, { obs: obs || null, total });
+
+    // Reemplazo completo de líneas: más simple y seguro que diffear
+    await sbDelete('oc_lineas', `oc_id=eq.${oc.id}`);
+    await sbInsert('oc_lineas', nuevasLineas.map(l => ({
+      oc_id: oc.id, producto_id: l.productoId, cantidad: l.cantidad,
+      precio: l.precio, bonificacion: l.bonificacion||0,
+      subtotal: l.cantidad*precioFinal(l.precio,l.bonificacion)
+    })));
+
+    for(const l of nuevasLineas){
+      await actualizarPrecioProveedor(l.productoId, oc.proveedorId, l.precio, l.bonificacion, null);
+    }
+  } catch(e){
+    console.warn('Error modificando OC pendiente:', e);
+    toast('⚠ No se pudo guardar la modificación','error');
+    return;
+  }
+
+  oc.lineas = nuevasLineas;
   oc.total = total;
   oc.obs = obs;
-
-  oc.lineas.forEach(l=>{
-    setPrecioProv(l.productoId, oc.proveedorId, l.precio, l.bonificacion);
-  });
 
   save();
   cancelarModificacionOcPendiente();
@@ -3431,9 +3951,23 @@ async function darDeBajaOcPendienteAdmin(ocId){
 
   if(!(await confirmModal(`¿Dar de baja la orden ${oc.nro} (${nomProv(oc.proveedorId)})? Como todavía no fue recibida, esto no afecta el stock. La orden queda marcada como Anulada.`))) return;
 
+  const nombreUsuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  const idUsuario = (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null;
+  const ahora = new Date().toISOString();
+
+  try {
+    await sbUpdate('ordenes_compra', `id=eq.${oc.id}`, {
+      anulado: true, anulado_en: ahora, anulado_por: idUsuario, anulado_por_nombre: nombreUsuario
+    });
+  } catch(e){
+    console.warn('Error dando de baja OC:', e);
+    toast('⚠ No se pudo dar de baja la orden','error');
+    return;
+  }
+
   oc.anulada = true;
-  oc.fechaAnulacion = new Date().toISOString();
-  oc.anuladoPor = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  oc.fechaAnulacion = ahora;
+  oc.anuladoPor = nombreUsuario;
 
   save();
   renderAll();
@@ -3478,36 +4012,36 @@ function renderAjustesCompras(){
 // oc.recepcion.lineas, guardado con precisión desde esta actualización).
 // Devuelve un array de avisos si el stock ya había sido parcial o totalmente
 // consumido (no se puede llevar a negativo: se revierte lo que quede disponible).
-function revertirIngresoOC(oc){
+async function revertirIngresoOC(oc){
   const avisos = [];
   if(!oc.recepcion) return avisos;
-  oc.recepcion.lineas.forEach(l=>{
+  for(const l of oc.recepcion.lineas){
     const prod = getProd(l.productoId);
     const nombre = prod ? prod.nombre : ('#'+l.productoId);
     if(l.perecedero==='si' && l.loteId){
       const lote = DB.lotes.find(x=>x.id===l.loteId);
       if(lote){
+        const revertirCant = Math.min(lote.cantidad, l.cantidad);
         if(lote.cantidad < l.cantidad){
           avisos.push(`${nombre}: el lote ya estaba parcialmente consumido — se revirtió lo que quedaba (${lote.cantidad} de ${l.cantidad}).`);
-          lote.cantidad = 0;
-        } else {
-          lote.cantidad -= l.cantidad;
         }
+        await ajustarLoteCantidad(lote.id, -revertirCant);
+        lote.cantidad -= revertirCant;
       } else {
         avisos.push(`${nombre}: no se encontró el lote (puede haber sido eliminado) — no se pudo revertir esta línea.`);
       }
     } else {
       const st = DB.stockSimple[l.productoId];
       if(st){
+        const revertirCant = Math.min(st.cantidad, l.cantidad);
         if(st.cantidad < l.cantidad){
           avisos.push(`${nombre}: el stock ya estaba parcialmente consumido — se revirtió lo que quedaba (${st.cantidad} de ${l.cantidad}).`);
-          st.cantidad = 0;
-        } else {
-          st.cantidad -= l.cantidad;
         }
+        const stockFila = await ajustarStockSimple(l.productoId, -revertirCant, st.unidad || (prod?prod.unidad:l.unidad));
+        st.cantidad = Number(stockFila.cantidad);
       }
     }
-  });
+  }
   return avisos;
 }
 
@@ -3566,23 +4100,32 @@ async function guardarModificacionCompra(){
   if(!(await confirmModal(`¿Guardar los cambios en la recepción de ${ajCompraEditOc.nro}? Se revertirá el stock anterior y se aplicará el nuevo.`))) return;
 
   const oc = ajCompraEditOc;
-  const avisosRevert = revertirIngresoOC(oc);
+  const avisosRevert = await revertirIngresoOC(oc);
   DB.historial = (DB.historial||[]).filter(h => !(h.tipo==='ingreso' && h.ocId===oc.id));
 
   const provId = oc.proveedorId;
   const obsPrev = oc.recepcion.obs;
   const detalleObs = obsPrev ? ` · Obs: ${obsPrev}` : '';
   const nuevasLineas = [];
-  ajCompraEditLineas.forEach(l=>{
+  for(const l of ajCompraEditLineas){
     const esAdicional = !oc.lineas.some(ol=>ol.productoId===l.productoId);
     const detalle = esAdicional
       ? `Adicional — no incluido en OC ${oc.nro}${detalleObs}`
       : `Ingreso desde OC ${oc.nro}${detalleObs}`;
-    const ref = aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle, l.perecedero==='si'?(l.temp||null):null, oc.id);
+    const ref = await aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle, l.perecedero==='si'?(l.temp||null):null, oc.id);
     if(ref) nuevasLineas.push(ref);
-  });
+  }
   oc.recepcion = { fecha: new Date().toISOString(), obs: obsPrev, lineas: nuevasLineas };
   oc.fechaRecepcion = oc.recepcion.fecha;
+
+  try {
+    await sbUpdate('ordenes_compra', `id=eq.${oc.id}`, {
+      recepcion: oc.recepcion, fecha_recepcion: oc.fechaRecepcion
+    });
+  } catch(e){
+    console.warn('Error persistiendo recepción modificada:', e);
+    toast('⚠ El stock se ajustó, pero no se pudo guardar el detalle de la recepción — avisá para revisarlo','error');
+  }
 
   save();
   cancelarModificacionCompra();
@@ -3599,13 +4142,22 @@ async function eliminarCompraAdmin(ocId){
 
   if(!(await confirmModal(`¿Eliminar la recepción de ${oc.nro} (${nomProv(oc.proveedorId)})?\n\nSe revertirá el stock que había sumado y la orden volverá a quedar Pendiente para recibirse de nuevo.`))) return;
 
-  const avisos = revertirIngresoOC(oc);
+  const avisos = await revertirIngresoOC(oc);
   DB.historial = (DB.historial||[]).filter(h => !(h.tipo==='ingreso' && h.ocId===oc.id));
 
   oc.recibida = false;
   delete oc.recepcion;
   delete oc.fechaRecepcion;
   delete oc.obsRecepcion;
+
+  try {
+    await sbUpdate('ordenes_compra', `id=eq.${oc.id}`, {
+      estado: 'pendiente', recepcion: null, fecha_recepcion: null
+    });
+  } catch(e){
+    console.warn('Error persistiendo eliminación de recepción:', e);
+    toast('⚠ El stock se revirtió, pero no se pudo actualizar el estado de la OC — avisá para revisarlo','error');
+  }
 
   save();
   renderAll();
@@ -3646,16 +4198,18 @@ function renderAjustesRemitosStock(){
 
 // Devuelve al stock (lotes o stockSimple) todo lo que un remito había descontado.
 // Siempre preciso: los remitos ya guardan loteId/productoId/cantidad estructurados.
-function revertirRemitoStock(remito){
-  remito.lineas.forEach(l=>{
+async function revertirRemitoStock(remito){
+  for(const l of remito.lineas){
     if(l.loteId){
+      await ajustarLoteCantidad(l.loteId, l.cantidad);
       const lote = DB.lotes.find(x=>x.id===l.loteId);
       if(lote) lote.cantidad += l.cantidad;
     } else {
+      const stockFila = await ajustarStockSimple(l.productoId, l.cantidad, l.unidad);
       if(!DB.stockSimple[l.productoId]) DB.stockSimple[l.productoId] = {cantidad:0, unidad:l.unidad};
-      DB.stockSimple[l.productoId].cantidad += l.cantidad;
+      DB.stockSimple[l.productoId].cantidad = Number(stockFila.cantidad);
     }
-  });
+  }
 }
 
 function modificarRemitoAdmin(remitoId){
@@ -3734,28 +4288,47 @@ async function guardarModificacionRemito(){
   if(!(await confirmModal(`¿Guardar los cambios en el remito ${ajRemitoEditRemito.nro}? Se ajustará el stock según las diferencias.`))) return;
 
   const remito = ajRemitoEditRemito;
-  revertirRemitoStock(remito);
+  await revertirRemitoStock(remito);
   DB.historial = (DB.historial||[]).filter(h => !(h.tipo==='egreso' && (h.remitoId===remito.id || (!h.remitoId && h.detalle && h.detalle.indexOf('Remito '+remito.nro)===0))));
 
-  ajRemitoEditLineas.forEach(l=>{
-    if(l.loteId){
-      const lote = DB.lotes.find(x=>x.id===l.loteId);
-      if(lote) lote.cantidad -= l.cantidad;
-    } else {
-      if(!DB.stockSimple[l.productoId]) DB.stockSimple[l.productoId] = {cantidad:0, unidad:l.unidad};
-      DB.stockSimple[l.productoId].cantidad -= l.cantidad;
+  const nuevasLineas = ajRemitoEditLineas.map(l=>({...l}));
+
+  try {
+    await sbUpdate('remitos', `id=eq.${remito.id}`, { destino, obs: obs || null });
+    await sbDelete('remito_lineas', `remito_id=eq.${remito.id}`);
+
+    for(const l of nuevasLineas){
+      if(l.loteId){
+        await ajustarLoteCantidad(l.loteId, -l.cantidad);
+        const lote = DB.lotes.find(x=>x.id===l.loteId);
+        if(lote) lote.cantidad -= l.cantidad;
+      } else {
+        const stockFila = await ajustarStockSimple(l.productoId, -l.cantidad, l.unidad);
+        if(DB.stockSimple[l.productoId]) DB.stockSimple[l.productoId].cantidad = Number(stockFila.cantidad);
+      }
+      await registrarHistorial('egreso', {productoId:l.productoId, nombre:l.nombre, cantidad:l.cantidad, unidad:l.unidad, detalle:`Remito ${remito.nro}${l.loteRef?' · Lote '+l.loteRef:''}`, remitoId: remito.id});
+      DB.historial.unshift({
+        tipo:'egreso', productoId:l.productoId, nombre:l.nombre,
+        cantidad:l.cantidad, unidad:l.unidad,
+        detalle:`Remito ${remito.nro}${l.loteRef?' · Lote '+l.loteRef:''}`,
+        fecha:new Date().toISOString(), remitoId:remito.id
+      });
     }
-    DB.historial.unshift({
-      tipo:'egreso', productoId:l.productoId, nombre:l.nombre,
-      cantidad:l.cantidad, unidad:l.unidad,
-      detalle:`Remito ${remito.nro}${l.loteRef?' · Lote '+l.loteRef:''}`,
-      fecha:new Date().toISOString(), remitoId:remito.id
-    });
-  });
+
+    await sbInsert('remito_lineas', nuevasLineas.map(l => ({
+      remito_id: remito.id, producto_id: l.productoId, cantidad: l.cantidad,
+      unidad: l.unidad, lote_id: l.loteId || null,
+      detalle: { nombre: l.nombre, loteRef: l.loteRef||null, vencimiento: l.vencimiento||null, proveedorId: l.proveedorId||null, temp: l.temp||null }
+    })));
+  } catch(e){
+    console.warn('Error modificando remito:', e);
+    toast('⚠ No se pudo guardar la modificación completa — revisá el stock antes de reintentar','error');
+    return;
+  }
 
   remito.destino = destino;
   remito.obs = obs;
-  remito.lineas = ajRemitoEditLineas.map(l=>({...l}));
+  remito.lineas = nuevasLineas;
   remito.fechaModificacion = new Date().toISOString();
 
   save();
@@ -3772,12 +4345,26 @@ async function eliminarRemitoStockAdmin(remitoId){
 
   if(!(await confirmModal(`¿Eliminar el remito ${remito.nro}? Se devolverá todo el stock que había descontado. El remito quedará marcado como Anulado (no se borra, para mantener la trazabilidad).`))) return;
 
-  revertirRemitoStock(remito);
+  await revertirRemitoStock(remito);
   DB.historial = (DB.historial||[]).filter(h => !(h.tipo==='egreso' && (h.remitoId===remito.id || (!h.remitoId && h.detalle && h.detalle.indexOf('Remito '+remito.nro)===0))));
 
+  const nombreUsuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  const idUsuario = (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null;
+  const ahora = new Date().toISOString();
+
+  try {
+    await sbUpdate('remitos', `id=eq.${remito.id}`, {
+      anulado: true, anulado_en: ahora, anulado_por: idUsuario, anulado_por_nombre: nombreUsuario
+    });
+  } catch(e){
+    console.warn('Error anulando remito:', e);
+    toast('⚠ El stock se devolvió, pero no se pudo marcar el remito como anulado — avisá para revisarlo','error');
+    // No hacemos return: el stock ya se revirtió correctamente.
+  }
+
   remito.anulado = true;
-  remito.fechaAnulacion = new Date().toISOString();
-  remito.anuladoPor = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  remito.fechaAnulacion = ahora;
+  remito.anuladoPor = nombreUsuario;
 
   save();
   renderAll();
@@ -3974,69 +4561,49 @@ const MODULES = [
   { id: 'usuarios', label: 'Usuarios',          icon: 'ti-users',         color: '#FBEAF0', iconColor: '#993556', adminOnly: true },
 ];
 
-let users = [
-  { id: 1, name: 'Admin',  username: 'admin', password: 'Dsnv13579',   role: 'admin',
-    perms: { stock: 'edit', compras: 'edit', ventas: 'edit', produccion: 'edit', usuarios: 'edit' } },
-  { id: 2, name: 'Facu',   username: 'facu',  password: 'Facu02468',   role: 'user',
-    perms: { stock: 'edit', compras: 'edit' } },
-  { id: 3, name: 'Silvia', username: 'silvia',password: 'Silvia02468', role: 'user',
-    perms: { stock: 'edit', compras: 'edit' } },
-  { id: 4, name: 'Elian',  username: 'elian', password: 'Elian02468',  role: 'user',
-    perms: { stock: 'edit', compras: 'edit' } },
-  { id: 5, name: 'Fer',    username: 'fer',   password: 'Fer02468',    role: 'user',
-    perms: { stock: 'read' } },
-];
+let users = [];
 
-// ── Cargar usuarios desde la nube (Supabase, dentro de DB.usuarios) ──
-// Si DB.usuarios ya tiene datos (cargados por cargarDesdeSupabase), usarlos.
-// Si no, usar los locales por defecto y guardarlos como base inicial.
+// ── Cargar usuarios desde las tablas relacionales (usuarios + usuario_permisos) ──
+// A partir de la migración relacional (sección 15 de la Referencia Técnica),
+// ya no existe DB.usuarios ni el blob completo — se trae cada usuario con
+// su fila real y se arma el mismo objeto en memoria {..., perms:{modulo:nivel}}
+// que ya esperaba el resto del código, para no tener que tocar todas las
+// pantallas que leen currentUser.perms[moduloId].
+async function cargarUsuariosDesdeSupabase(){
+  const [filasUsuarios, filasPermisos] = await Promise.all([
+    sbSelect('usuarios', 'activo=eq.true&select=id,name,username,role'),
+    sbSelect('usuario_permisos', 'select=usuario_id,modulo,nivel')
+  ]);
+  return filasUsuarios.map(u => {
+    const perms = {};
+    filasPermisos.filter(p => p.usuario_id === u.id).forEach(p => { perms[p.modulo] = p.nivel; });
+    return { id: u.id, name: u.name, username: u.username, role: u.role, perms };
+  });
+}
+
 (async function inicializarUsuarios(){
   const loginBtn = document.getElementById('loginBtn');
   const original = loginBtn ? loginBtn.textContent : '';
   if(loginBtn){ loginBtn.disabled = true; loginBtn.textContent = 'Cargando...'; }
   try {
-    // Esperamos a que termine la carga REAL desde Supabase (cargarDesdeSupabase
-    // marca cargaInicialCompleta=true recién cuando obtuvo respuesta o falló
-    // definitivamente). Esto evita usar un tiempo fijo arbitrario que podía
-    // cortarse antes de tiempo y pisar los usuarios reales con los de prueba.
-    let intentos = 0;
-    while(typeof cargaInicialCompleta !== 'undefined' && !cargaInicialCompleta && intentos < 100){
-      await new Promise(r => setTimeout(r, 150));
-      intentos++;
-    }
+    users = await cargarUsuariosDesdeSupabase();
 
-    if(DB.usuarios && Array.isArray(DB.usuarios) && DB.usuarios.length){
-      // La nube tiene usuarios reales — los usamos siempre, sin excepción.
-      users = DB.usuarios;
-
-      // ── Migración módulo Producción [NUEVO] ──
-      // Los usuarios guardados en la nube son anteriores a la existencia del
-      // módulo Producción, por lo que ningún admin tendría acceso y no podría
-      // siquiera asignárselo a sí mismo. Solución: a todo usuario con rol
-      // "admin" que no tenga definido el permiso de producción se le asigna
-      // "edit" automáticamente (una sola vez; después queda persistido).
-      let permsProduccionMigrados = false;
-      users.forEach(u => {
-        if(u.role === 'admin' && u.perms && !u.perms.produccion){
-          u.perms.produccion = 'edit';
-          permsProduccionMigrados = true;
-        }
-      });
-      if(permsProduccionMigrados){
-        DB.usuarios = users;
-        try { save(); } catch(e){ console.warn('No se pudo persistir la migración de permisos de Producción:', e); }
+    // ── Migración módulo Producción (vigente desde antes de la migración
+    // relacional): a todo admin sin permiso de producción se le asigna
+    // "edit" automáticamente, una sola vez, y se persiste en la tabla.
+    const migraciones = [];
+    users.forEach(u => {
+      if(u.role === 'admin' && !u.perms.produccion){
+        u.perms.produccion = 'edit';
+        migraciones.push(sbInsert('usuario_permisos', { usuario_id: u.id, modulo: 'produccion', nivel: 'edit' }));
       }
-    } else if(DB.usuarios === null || DB.usuarios === undefined){
-      // Sólo subimos los usuarios locales (de prueba) como base si la nube
-      // respondió y el campo "usuarios" realmente no existe todavía
-      // (primera vez que se usa el sistema). Si hubo un error de conexión,
-      // el overlay de "sin conexión" ya bloqueó la pantalla — no llegamos
-      // a este punto en ese caso porque el login queda inutilizable igual,
-      // pero por seguridad no forzamos ningún guardado acá.
-      console.warn('No se encontraron usuarios en la nube — usando usuarios locales de base (primer uso del sistema).');
+    });
+    if(migraciones.length){
+      try { await Promise.all(migraciones); }
+      catch(e){ console.warn('No se pudo persistir la migración de permisos de Producción:', e); }
     }
   } catch(e){
-    console.warn('Error inicializando usuarios, se usan los locales:', e);
+    console.warn('Error cargando usuarios desde Supabase:', e);
   } finally {
     if(loginBtn){ loginBtn.disabled = false; loginBtn.textContent = original || 'Ingresar'; }
   }
@@ -4831,17 +5398,37 @@ document.getElementById('loginBtn').onclick = doLogin;
 document.getElementById('loginPass').onkeydown = e => { if (e.key === 'Enter') doLogin(); };
 document.getElementById('loginUser').onkeydown = e => { if (e.key === 'Enter') document.getElementById('loginPass').focus(); };
 
-function doLogin() {
+async function doLogin() {
   const un = document.getElementById('loginUser').value.trim();
   const pw = document.getElementById('loginPass').value;
-  const user = users.find(u => u.username === un && u.password === pw);
-  if (user) {
-    currentUser = user;
-    document.getElementById('loginError').textContent = '';
-    document.getElementById('loginPass').value = '';
-    showApp();
-  } else {
-    document.getElementById('loginError').textContent = 'Usuario o contraseña incorrectos.';
+  const loginBtn = document.getElementById('loginBtn');
+  const original = loginBtn.textContent;
+  loginBtn.disabled = true; loginBtn.textContent = 'Verificando...';
+  try {
+    // La contraseña viaja al servidor y se compara ahí contra el hash
+    // bcrypt (rpc_login, sección 15.7) — nunca se compara en el navegador.
+    const resultado = await sbRpc('rpc_login', { p_username: un, p_password: pw });
+    const fila = resultado && resultado[0];
+    if(fila){
+      let user = users.find(u => u.id === fila.id);
+      if(!user){
+        // Por si el login se hizo antes de que cargarUsuariosDesdeSupabase()
+        // terminara — recargamos la lista una vez más.
+        users = await cargarUsuariosDesdeSupabase();
+        user = users.find(u => u.id === fila.id);
+      }
+      currentUser = user || { id: fila.id, name: fila.name, username: fila.username, role: fila.role, perms: {} };
+      document.getElementById('loginError').textContent = '';
+      document.getElementById('loginPass').value = '';
+      showApp();
+    } else {
+      document.getElementById('loginError').textContent = 'Usuario o contraseña incorrectos.';
+    }
+  } catch(e){
+    console.warn('Error en login:', e);
+    document.getElementById('loginError').textContent = 'No se pudo verificar — revisá tu conexión.';
+  } finally {
+    loginBtn.disabled = false; loginBtn.textContent = original;
   }
 }
 
@@ -5157,11 +5744,15 @@ function bindUsersEvents() {
   document.querySelectorAll('.del-btn').forEach(btn => {
     btn.onclick = async () => {
       if (await confirmModal('¿Eliminar este usuario?')) {
-        users = users.filter(u => u.id !== +btn.dataset.id);
-        renderMain();
-        DB.usuarios = users;
+        const id = +btn.dataset.id;
         try {
-          save();
+          // Soft-delete (activo=false), no DELETE físico: un usuario puede
+          // estar referenciado en años de historial (OC/remitos/registros
+          // que cerró o anuló) — igual que el resto del sistema, nunca se
+          // borra realmente (Referencia Técnica, principio de reversión).
+          await sbUpdate('usuarios', `id=eq.${id}`, { activo: false });
+          users = users.filter(u => u.id !== id);
+          renderMain();
           toast2('✓ Usuario eliminado');
         } catch(e) {
           console.warn('Error eliminando usuario:', e);
@@ -5214,7 +5805,7 @@ document.getElementById('modalOverlay').onclick = e => {
   if (e.target === document.getElementById('modalOverlay')) closeModal();
 };
 
-document.getElementById('modalSave').onclick = () => {
+document.getElementById('modalSave').onclick = async () => {
   const name = document.getElementById('mName').value.trim();
   const username = document.getElementById('mUser').value.trim();
   const pass = document.getElementById('mPass').value;
@@ -5222,9 +5813,15 @@ document.getElementById('modalSave').onclick = () => {
   if (!name)     { alert('El nombre es obligatorio.');  document.getElementById('mName').focus(); return; }
   if (!username) { alert('El usuario es obligatorio.'); document.getElementById('mUser').focus(); return; }
 
-  // Verificar usuario duplicado
+  // Verificar usuario duplicado (contra la lista ya cargada en memoria)
   const duplicado = users.find(u => u.username === username && u.id !== editingUser?.id);
   if (duplicado) { alert('Ese nombre de usuario ya existe.'); document.getElementById('mUser').focus(); return; }
+
+  if (!editingUser && !pass) {
+    alert('La contraseña es obligatoria para nuevos usuarios.');
+    document.getElementById('mPass').focus();
+    return;
+  }
 
   // Leer permisos del modal
   const perms = {};
@@ -5232,39 +5829,54 @@ document.getElementById('modalSave').onclick = () => {
     if (sel.value) perms[sel.dataset.perm] = sel.value;
   });
 
-  if (editingUser) {
-    // Editar existente
-    const u = users.find(u => u.id === editingUser.id);
-    u.name     = name;
-    u.username = username;
-    u.perms    = perms;
-    if (pass) u.password = pass;
-    // Si es el usuario actual, actualizamos currentUser también
-    if (u.id === currentUser.id) {
-      currentUser = u;
-      document.getElementById('sidebarName').textContent = u.name;
-      const av = document.getElementById('sidebarAvatar');
-      av.textContent = getInitials(u.name);
-      av.setAttribute('style', avatarStyle(u.name));
-    }
-  } else {
-    // Nuevo usuario
-    if (!pass) { alert('La contraseña es obligatoria para nuevos usuarios.'); document.getElementById('mPass').focus(); return; }
-    users.push({ id: nextId(), name, username, password: pass, role: 'user', perms });
-  }
+  const btnSave = document.getElementById('modalSave');
+  const original = btnSave.textContent;
+  btnSave.disabled = true; btnSave.textContent = 'Guardando...';
 
-  closeModal();
-  renderMain();
-  renderNav(); // por si cambió el módulo activo
-
-  // Persistir usuarios: mismo mecanismo que el resto de los datos (DB + Supabase)
-  DB.usuarios = users;
   try {
-    save(); // guarda en localStorage y dispara sync a Supabase (guardarEnSupabase)
+    let userId;
+    if (editingUser) {
+      // Editar existente
+      userId = editingUser.id;
+      await sbUpdate('usuarios', `id=eq.${userId}`, { name, username });
+      if (pass) await sbRpc('rpc_set_password', { p_usuario_id: userId, p_password: pass });
+
+      // Reemplazar el set de permisos completo: se borran los actuales y se
+      // insertan los del modal (más simple y seguro que comparar diffs).
+      await sbDelete('usuario_permisos', `usuario_id=eq.${userId}`);
+      const filas = Object.entries(perms).map(([modulo, nivel]) => ({ usuario_id: userId, modulo, nivel }));
+      if (filas.length) await sbInsert('usuario_permisos', filas);
+
+      const u = users.find(u => u.id === userId);
+      u.name = name; u.username = username; u.perms = perms;
+      if (u.id === currentUser.id) {
+        currentUser = u;
+        document.getElementById('sidebarName').textContent = u.name;
+        const av = document.getElementById('sidebarAvatar');
+        av.textContent = getInitials(u.name);
+        av.setAttribute('style', avatarStyle(u.name));
+      }
+    } else {
+      // Nuevo usuario — password_hash placeholder, se define de verdad con
+      // rpc_set_password justo después (nunca queda una fila con hash vacío
+      // salvo que la segunda llamada falle, en cuyo caso se avisa igual).
+      const [creado] = await sbInsert('usuarios', { name, username, role: 'user', password_hash: '·', activo: true });
+      userId = creado.id;
+      await sbRpc('rpc_set_password', { p_usuario_id: userId, p_password: pass });
+      const filas = Object.entries(perms).map(([modulo, nivel]) => ({ usuario_id: userId, modulo, nivel }));
+      if (filas.length) await sbInsert('usuario_permisos', filas);
+      users.push({ id: userId, name, username, role: 'user', perms });
+    }
+
+    closeModal();
+    renderMain();
+    renderNav(); // por si cambió el módulo activo
     toast2('✓ Cambios de usuarios guardados');
   } catch(e) {
-    console.warn('Error guardando usuarios:', e);
+    console.warn('Error guardando usuario:', e);
     toast2('⚠ No se pudo guardar el cambio', true);
+  } finally {
+    btnSave.disabled = false; btnSave.textContent = original;
   }
 }
 
@@ -5534,6 +6146,175 @@ function setSyncStatusProd(estado){
   el.style.cssText = `font-size:.75rem;padding:4px 10px;border-radius:20px;${e.style}`;
 }
 
+// Reconstruye PDB.centros, PDB.menus y PDB.productosProd (incluida su
+// receta de semielaborados) con el mismo shape que siempre tuvieron en
+// memoria, leyendo de las tablas relacionales centros, menus, productos_prod,
+// producto_prod_centro y receta_se en vez del blob JSONB (subentregas 1, 2
+// y 3 de la migración de Script 2 — sección 15.12 de la Referencia
+// Técnica). Registros y Stock SE se cargan aparte, en
+// cargarProduccionRegistrosDesdeSupabase (subentrega 4a).
+async function cargarProduccionCatalogosDesdeSupabase(){
+  const [filasCentros, filasMenus, filasPProd, filasPProdCentro, filasRecetaSE] = await Promise.all([
+    sbSelect('centros', 'select=id,numero,nombre,activo'),
+    sbSelect('menus', 'select=id,numero,descripcion,activo'),
+    sbSelect('productos_prod', 'select=id,nombre,tipo,unidad,detalla_mp,cant_elementos,dta_stock_se,orden,detalla_menu,activo,comparte_con_id,proporcion'),
+    sbSelect('producto_prod_centro', 'select=producto_prod_id,centro_id'),
+    sbSelect('receta_se', 'select=producto_prod_id,tipo,ref_producto_id,nombre,precio,cantidad,orden&order=orden.asc')
+  ]);
+  const centros = filasCentros.map(c => ({ id: c.id, numero: c.numero, nombre: c.nombre, activo: c.activo }));
+  const menus = filasMenus.map(m => ({ id: m.id, numero: m.numero, descripcion: m.descripcion, activo: m.activo }));
+  const productosProd = filasPProd.map(p => ({
+    id: p.id, nombre: p.nombre, tipo: p.tipo, unidad: p.unidad,
+    centrosIds: filasPProdCentro.filter(x => x.producto_prod_id === p.id).map(x => x.centro_id),
+    detallaMP: p.detalla_mp, cantElementos: p.cant_elementos, dtaStockSE: p.dta_stock_se,
+    orden: p.orden, detallaMenu: p.detalla_menu, activo: p.activo,
+    comparteConId: p.comparte_con_id, proporcion: p.proporcion,
+    recetaSE: filasRecetaSE.filter(r => r.producto_prod_id === p.id).map(r => r.tipo === 'stock'
+      ? { tipo: 'stock', refId: r.ref_producto_id, cantidad: Number(r.cantidad) }
+      : { tipo: 'manual', nombre: r.nombre || '', precio: r.precio != null ? Number(r.precio) : null, cantidad: Number(r.cantidad) })
+  }));
+  return { centros, menus, productosProd };
+}
+
+// Reconstruye PDB.registros y PDB.stockSemi con el mismo shape que
+// siempre tuvieron en memoria, leyendo de las tablas relacionales
+// registros, registro_lineas, registro_linea_detalles y stock_semi en vez
+// del blob JSONB (subentrega 4a de la migración de Script 2 — sección
+// 15.12 de la Referencia Técnica). Solo se traen registros NO anulados
+// (anulado=false), igual que el sistema los mostraba antes cuando
+// "eliminar" los borraba físicamente — la diferencia ahora es que el dato
+// anulado queda recuperable en la base en vez de perderse para siempre.
+// costoUnit / detalleGuarnicion / costo son snapshots congelados al cierre
+// (nunca se recalculan con precios de hoy) — se leen tal cual quedaron.
+async function cargarProduccionRegistrosDesdeSupabase(){
+  const [filasRegistros, filasLineas, filasDetalles, filasStockSemi] = await Promise.all([
+    sbSelect('registros', 'select=*&anulado=eq.false&order=id.desc'),
+    sbSelect('registro_lineas', 'select=*'),
+    sbSelect('registro_linea_detalles', 'select=*'),
+    sbSelect('stock_semi', 'select=producto_prod_id,cantidad')
+  ]);
+
+  const registros = filasRegistros.map(r => ({
+    id: r.id, fecha: r.fecha, centroId: r.centro_id,
+    novedades: r.novedades || { bpm: '', poes: '', mantenimiento: '', rrhh: '' },
+    estado: r.estado,
+    usuario: r.usuario_nombre || '—',
+    creado: r.creado_en,
+    fechaCierre: r.fecha_cierre,
+    usuarioCierre: r.usuario_cierre_nombre || null,
+    lineas: filasLineas.filter(l => l.registro_id === r.id).map(l => ({
+      productoId: l.producto_prod_id,
+      cantidad: Number(l.cantidad),
+      unidad: l.unidad,
+      menuId: l.menu_id,
+      detalleGuarnicion: l.detalle_guarnicion || '',
+      costoUnit: l.costo_unit != null ? Number(l.costo_unit) : null,
+      detalles: filasDetalles.filter(d => d.registro_linea_id === l.id).map(d => ({
+        refTipo: d.ref_tipo,
+        refId: d.ref_tipo === 'se' ? d.ref_se_id : d.ref_mp_id,
+        nombre: d.nombre,
+        cantidad: Number(d.cantidad),
+        unidad: d.unidad,
+        costo: d.costo != null ? Number(d.costo) : null
+      }))
+    }))
+  }));
+
+  const stockSemi = {};
+  filasStockSemi.forEach(s => { stockSemi[s.producto_prod_id] = Number(s.cantidad); });
+
+  return { registros, stockSemi };
+}
+
+// Reconstruye PDB.destinatarios y PDB.remitosDestino con el mismo shape
+// que siempre tuvieron en memoria, leyendo de las tablas relacionales
+// destinatarios, remitos_destino y remito_destino_lineas en vez del blob
+// JSONB (subentrega 5 de la migración de Script 2 — sección 15.12 de la
+// Referencia Técnica). Solo se traen remitos NO anulados, mismo criterio
+// que Registro Diario (subentrega 4c) — el número igual queda vacante
+// porque la fila sigue existiendo en la base, solo marcada anulada.
+async function cargarProduccionDestinosDesdeSupabase(){
+  const [filasDest, filasRem, filasRemLineas] = await Promise.all([
+    sbSelect('destinatarios', 'select=id,nombre,domicilio,cuit,observacion,activo'),
+    sbSelect('remitos_destino', 'select=*&anulado=eq.false&order=id.desc'),
+    sbSelect('remito_destino_lineas', 'select=remito_destino_id,producto_prod_id,nombre,cantidad,unidad')
+  ]);
+
+  const destinatarios = filasDest.map(d => ({
+    id: d.id, nombre: d.nombre, domicilio: d.domicilio || '', cuit: d.cuit || '',
+    observacion: d.observacion || '', activo: d.activo
+  }));
+
+  const remitosDestino = filasRem.map(r => ({
+    id: r.id, fecha: r.fecha, destinatarioId: r.destinatario_id,
+    destinatario: r.destinatario, domicilio: r.domicilio || '', cuit: r.cuit || '',
+    observacion: r.observacion || '', usuario: r.usuario_nombre || '—', creado: r.creado_en,
+    lineas: filasRemLineas.filter(l => l.remito_destino_id === r.id).map(l => ({
+      productoId: l.producto_prod_id, nombre: l.nombre, unidad: l.unidad, cantidad: Number(l.cantidad)
+    }))
+  }));
+
+  return { destinatarios, remitosDestino };
+}
+
+// Reconstruye PDB.destinatarios y PDB.remitosDestino con el mismo shape
+// que siempre tuvieron en memoria, leyendo de las tablas relacionales
+// destinatarios, remitos_destino y remito_destino_lineas en vez del blob
+// JSONB (subentrega 5 de la migración de Script 2 — sección 15.12 de la
+// Referencia Técnica). Solo se traen remitos NO anulados (anulado=false),
+// mismo criterio que Registros — el número igual "queda vacante" porque la
+// fila sigue existiendo en la base, solo no se muestra.
+async function cargarProduccionDestinosDesdeSupabase(){
+  const [filasDest, filasRem, filasRemLineas] = await Promise.all([
+    sbSelect('destinatarios', 'select=id,nombre,domicilio,cuit,observacion,activo'),
+    sbSelect('remitos_destino', 'select=*&anulado=eq.false&order=id.desc'),
+    sbSelect('remito_destino_lineas', 'select=remito_destino_id,producto_prod_id,nombre,cantidad,unidad')
+  ]);
+
+  const destinatarios = filasDest.map(d => ({
+    id: d.id, nombre: d.nombre, domicilio: d.domicilio || '', cuit: d.cuit || '',
+    observacion: d.observacion || '', activo: d.activo
+  }));
+
+  const remitosDestino = filasRem.map(r => ({
+    id: r.id, fecha: r.fecha, destinatarioId: r.destinatario_id, destinatario: r.destinatario,
+    domicilio: r.domicilio || '', cuit: r.cuit || '', observacion: r.observacion || '',
+    usuario: r.usuario_nombre || '—', creado: r.creado_en,
+    lineas: filasRemLineas.filter(l => l.remito_destino_id === r.id).map(l => ({
+      productoId: l.producto_prod_id, nombre: l.nombre, unidad: l.unidad, cantidad: Number(l.cantidad)
+    }))
+  }));
+
+  return { destinatarios, remitosDestino };
+}
+
+// Inserta una entrada de historial en la tabla relacional "historial_prod"
+// y la refleja también en PDB.historialProd para que la UI (que sigue
+// leyendo el array en memoria) se actualice al instante — subentrega 6 de
+// la migración de Script 2 (sección 15.12), mismo espíritu que
+// registrarHistorial en Script 0. Si la escritura a la tabla falla, igual
+// se refleja localmente (con timestamp del cliente): el historial es
+// auxiliar/auditoría y no debe hacer fallar una operación principal que ya
+// se guardó correctamente en su propia tabla.
+async function registrarHistorialProd(tipo, detalle, usuario){
+  const usuarioId = (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null;
+  try {
+    const [fila] = await sbInsert('historial_prod', { tipo, detalle, usuario_id: usuarioId, usuario_nombre: usuario });
+    PDB.historialProd.push({ ts: fila.ts, tipo: fila.tipo, detalle: fila.detalle, usuario: fila.usuario_nombre });
+  } catch(e){
+    console.warn('No se pudo registrar en historial_prod (se refleja solo localmente):', e);
+    PDB.historialProd.push({ ts: new Date().toISOString(), tipo, detalle, usuario });
+  }
+}
+
+// Reconstruye PDB.historialProd con el mismo shape que siempre tuvo en
+// memoria, leyendo de la tabla relacional historial_prod en vez del blob
+// JSONB (subentrega 6 — última de Script 2, sección 15.12).
+async function cargarProduccionHistorialDesdeSupabase(){
+  const filas = await sbSelect('historial_prod', 'select=*&order=id.desc');
+  return filas.map(h => ({ ts: h.ts, tipo: h.tipo, detalle: h.detalle || '', usuario: h.usuario_nombre || '—' }));
+}
+
 async function cargarProdDesdeSupabase(){
   setSyncStatusProd('loading');
   try {
@@ -5556,6 +6337,36 @@ async function cargarProdDesdeSupabase(){
       // datos (mismo criterio que el módulo de Stock).
       PDB = rows[0].data;
       migrarPDB();
+
+      // ── Centros, Menús, Productos de Producción y sus Recetas de
+      // semielaborados: ya NO vienen del blob JSONB (subentregas 1, 2 y 3
+      // de la migración de Script 2 — sección 15.12 de la Referencia
+      // Técnica) — se pisan acá con lo que realmente vive en las tablas
+      // relacionales.
+      const catalogosProd = await cargarProduccionCatalogosDesdeSupabase();
+      PDB.centros = catalogosProd.centros;
+      PDB.menus = catalogosProd.menus;
+      PDB.productosProd = catalogosProd.productosProd;
+
+      // ── Registro Diario y Stock SE: ya NO vienen del blob JSONB
+      // (subentrega 4a de la migración de Script 2 — sección 15.12) — se
+      // pisan acá con lo que realmente vive en las tablas relacionales.
+      const registrosProd = await cargarProduccionRegistrosDesdeSupabase();
+      PDB.registros = registrosProd.registros;
+      PDB.stockSemi = registrosProd.stockSemi;
+
+      // ── Destinatarios y Remitos Destino: ya NO vienen del blob JSONB
+      // (subentrega 5 de la migración de Script 2 — sección 15.12) — se
+      // pisan acá con lo que realmente vive en las tablas relacionales.
+      const destinosProd = await cargarProduccionDestinosDesdeSupabase();
+      PDB.destinatarios = destinosProd.destinatarios;
+      PDB.remitosDestino = destinosProd.remitosDestino;
+
+      // ── Historial de Producción: ya NO viene del blob JSONB (subentrega
+      // 6, la última de Script 2 — sección 15.12) — se pisa acá con lo que
+      // realmente vive en la tabla relacional historial_prod.
+      PDB.historialProd = await cargarProduccionHistorialDesdeSupabase();
+
       recalcularPIdSeq();
       localStorage.setItem('bbf_prod_v1', JSON.stringify(PDB));
       renderAllProd();
@@ -5690,25 +6501,43 @@ function opcionesDetalle(fuente){
 // Los productos "elaborados" y los detalles informativos de MP no tocan stock.
 // El stock PUEDE quedar negativo (decisión de diseño: la diferencia queda
 // visible en rojo en vez de ocultarse).
-function aplicarImpactoRegistro(r, signo, contexto, usuario){
-  (r.lineas || []).forEach(l => {
+// Ajusta (o crea, si no existía) el stock simple de un semielaborado en
+// +/-delta, de forma atómica vía RPC de Postgres — mismo patrón que
+// ajustarStockSimple en Script 0 (subentrega 4b de la migración de Script 2,
+// sección 15.12). Devuelve la fila resultante {producto_prod_id, cantidad}.
+async function ajustarStockSemi(productoProdId, delta){
+  return await sbRpc('rpc_ajustar_stock_semi', { p_producto_prod_id: productoProdId, p_delta: delta });
+}
+
+// Aplica (signo=+1) o revierte (signo=-1) TODO el impacto de un registro
+// sobre el stock simple de semielaborados, dejando rastro en el historial.
+// A partir de la subentrega 4c (sección 15.12), el ajuste ya no muta
+// PDB.stockSemi directo — pasa por la RPC rpc_ajustar_stock_semi (atómica
+// a nivel de fila), y PDB.stockSemi se actualiza con el valor real que
+// devuelve la base. Se usa desde el camino admin (modificar/eliminar un
+// registro cerrado) — el cierre de un registro nuevo tiene su propia
+// lógica equivalente en guardarYCerrarRegistro (subentrega 4b).
+async function aplicarImpactoRegistro(r, signo, contexto, usuario){
+  for(const l of (r.lineas || [])){
     const p = pprodById(l.productoId);
     if(p && p.tipo === 'semielaborado' && l.cantidad > 0){
-      PDB.stockSemi[l.productoId] = (PDB.stockSemi[l.productoId] || 0) + (signo * l.cantidad);
-      PDB.historialProd.push({ ts: new Date().toISOString(),
-        tipo: signo > 0 ? 'ingreso-semielab' : 'reversion-ingreso-semielab',
-        detalle: (signo > 0 ? 'Ingreso +' : 'Reversión -') + l.cantidad + ' ' + l.unidad + ' de ' + p.nombre + ' — ' + contexto,
-        usuario });
+      const actualizado = await ajustarStockSemi(l.productoId, signo * l.cantidad);
+      PDB.stockSemi[l.productoId] = Number(actualizado.cantidad);
+      await registrarHistorialProd(
+        signo > 0 ? 'ingreso-semielab' : 'reversion-ingreso-semielab',
+        (signo > 0 ? 'Ingreso +' : 'Reversión -') + l.cantidad + ' ' + l.unidad + ' de ' + p.nombre + ' — ' + contexto,
+        usuario);
     }
-    (l.detalles || []).forEach(d => {
-      if(d.refTipo !== 'se') return;
-      PDB.stockSemi[d.refId] = (PDB.stockSemi[d.refId] || 0) - (signo * d.cantidad);
-      PDB.historialProd.push({ ts: new Date().toISOString(),
-        tipo: signo > 0 ? 'egreso-semielab' : 'reversion-egreso-semielab',
-        detalle: (signo > 0 ? 'Consumo -' : 'Reversión +') + d.cantidad + ' ' + d.unidad + ' de ' + d.nombre + ' — ' + contexto,
-        usuario });
-    });
-  });
+    for(const d of (l.detalles || [])){
+      if(d.refTipo !== 'se') continue;
+      const actualizado = await ajustarStockSemi(d.refId, -(signo * d.cantidad));
+      PDB.stockSemi[d.refId] = Number(actualizado.cantidad);
+      await registrarHistorialProd(
+        signo > 0 ? 'egreso-semielab' : 'reversion-egreso-semielab',
+        (signo > 0 ? 'Consumo -' : 'Reversión +') + d.cantidad + ' ' + d.unidad + ' de ' + d.nombre + ' — ' + contexto,
+        usuario);
+    }
+  }
 }
 
 // ── HTML DEL MÓDULO ──────────────────────────────────
@@ -6786,21 +7615,60 @@ async function guardarYCerrarRegistro(){
     const contexto = 'modificación admin registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId);
     const fechaAnterior = r.fecha;
 
-    // Revertir impacto anterior. Nota: los registros "abiertos" heredados de
-    // la primera versión del módulo nunca impactaron stock → nada que revertir.
-    if(r.estado === 'cerrado') aplicarImpactoRegistro(r, -1, contexto, usuario);
     calcularCostosLineas(lineas); // nueva foto: costos con precios de hoy
-    r.fecha = nuevaFecha;
-    r.lineas = lineas;
-    r.novedades = novedades;
-    aplicarImpactoRegistro(r, +1, contexto, usuario);
 
-    r.estado = 'cerrado';
-    r.fechaCierre = r.fechaCierre || new Date().toISOString();
-    r.usuarioCierre = r.usuarioCierre || usuario;
-    const detalleFecha = fechaCambio ? ' — fecha corregida de ' + fechaBonitaProd(fechaAnterior) + ' a ' + fechaBonitaProd(nuevaFecha) : '';
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'registro-modificado-admin',
-      detalle: 'Registro ' + fechaBonitaProd(nuevaFecha) + ' · ' + centroNombre(r.centroId) + ' modificado por admin (' + lineas.length + ' líneas)' + detalleFecha, usuario });
+    // Reemplaza el patrón viejo de mutar PDB.registros en memoria y subir
+    // todo con saveProd() — a partir de la subentrega 4c de la migración de
+    // Script 2 (sección 15.12), la edición admin de un registro cerrado
+    // reescribe la cabecera, resincroniza líneas/detalles (borrar +
+    // reinsertar, igual que producto_prod_centro/receta_se — las líneas
+    // hijas se recrean enteras, no se editan fila por fila) y ajusta el
+    // stock SE revirtiendo el impacto viejo y aplicando el nuevo, ambos
+    // vía la RPC atómica.
+    try {
+      // Revertir impacto anterior contra las cantidades YA guardadas en r
+      // (r.lineas todavía tiene el estado viejo en este punto). Nota: los
+      // registros "abiertos" heredados de la primera versión del módulo
+      // nunca impactaron stock → nada que revertir.
+      if(r.estado === 'cerrado') await aplicarImpactoRegistro(r, -1, contexto, usuario);
+
+      await sbUpdate('registros', `id=eq.${r.id}`, { fecha: nuevaFecha, novedades });
+
+      await sbDelete('registro_lineas', `registro_id=eq.${r.id}`); // cascade borra también registro_linea_detalles
+      for(const l of lineas){
+        const [lineaCreada] = await sbInsert('registro_lineas', {
+          registro_id: r.id, producto_prod_id: l.productoId,
+          cantidad: l.cantidad, unidad: l.unidad, menu_id: l.menuId,
+          detalle_guarnicion: l.detalleGuarnicion || null,
+          costo_unit: l.costoUnit
+        });
+        if(l.detalles && l.detalles.length){
+          await sbInsert('registro_linea_detalles', l.detalles.map(d => ({
+            registro_linea_id: lineaCreada.id,
+            ref_tipo: d.refTipo,
+            ref_se_id: d.refTipo === 'se' ? d.refId : null,
+            ref_mp_id: d.refTipo === 'mp' ? d.refId : null,
+            nombre: d.nombre, cantidad: d.cantidad, unidad: d.unidad, costo: d.costo
+          })));
+        }
+      }
+
+      r.fecha = nuevaFecha;
+      r.lineas = lineas;
+      r.novedades = novedades;
+      await aplicarImpactoRegistro(r, +1, contexto, usuario); // aplica el nuevo impacto (usa r.lineas ya actualizado)
+
+      r.estado = 'cerrado';
+      r.fechaCierre = r.fechaCierre || new Date().toISOString();
+      r.usuarioCierre = r.usuarioCierre || usuario;
+      const detalleFecha = fechaCambio ? ' — fecha corregida de ' + fechaBonitaProd(fechaAnterior) + ' a ' + fechaBonitaProd(nuevaFecha) : '';
+      await registrarHistorialProd('registro-modificado-admin',
+        'Registro ' + fechaBonitaProd(nuevaFecha) + ' · ' + centroNombre(r.centroId) + ' modificado por admin (' + lineas.length + ' líneas)' + detalleFecha, usuario);
+    } catch(e){
+      console.warn('Error modificando registro:', e);
+      toastProd('⚠ No se pudo modificar el registro — revisá la conexión e intentá de nuevo. Si alguna parte ya se guardó, avisá para revisar en Supabase antes de reintentar.', 'error');
+      return;
+    }
 
     limpiarFormRegistro();
     saveProd();
@@ -6840,23 +7708,73 @@ async function guardarYCerrarRegistro(){
   if(!ok) return;
 
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  const usuarioId = (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null;
   const ahora = new Date().toISOString();
 
-  calcularCostosLineas(lineas); // snapshot de costos al cierre
+  calcularCostosLineas(lineas); // snapshot de costos al cierre — nunca se recalcula después
 
-  const nuevo = {
-    id: pIdSeq.reg++,
-    fecha, centroId, novedades, lineas,
-    estado: 'cerrado',
-    usuario,
-    creado: ahora,
-    fechaCierre: ahora,
-    usuarioCierre: usuario
-  };
-  PDB.registros.push(nuevo);
-  aplicarImpactoRegistro(nuevo, +1, 'cierre registro ' + fechaBonitaProd(fecha) + ' · ' + centroNombre(centroId), usuario);
-  PDB.historialProd.push({ ts: ahora, tipo: 'registro-cerrado',
-    detalle: 'Registro ' + fechaBonitaProd(fecha) + ' · ' + centroNombre(centroId) + ' guardado y CERRADO (' + lineas.length + ' líneas)', usuario });
+  // Reemplaza el patrón viejo de mutar PDB.registros en memoria y subir todo
+  // con saveProd() — a partir de la subentrega 4b de la migración de
+  // Script 2 (sección 15.12), el cierre de un registro nuevo escribe
+  // directo contra las tablas relacionales "registros", "registro_lineas"
+  // y "registro_linea_detalles", y ajusta el stock de semielaborados de
+  // forma atómica vía la RPC rpc_ajustar_stock_semi (mismo criterio que
+  // Lotes/Ingreso/Egreso en Script 0: el UPDATE es atómico a nivel de fila,
+  // así dos cierres simultáneos en distintos centros no se pisan).
+  try {
+    const [regCreado] = await sbInsert('registros', {
+      fecha, centro_id: centroId, novedades, estado: 'cerrado',
+      usuario_id: usuarioId, usuario_nombre: usuario,
+      fecha_cierre: ahora, usuario_cierre_id: usuarioId, usuario_cierre_nombre: usuario
+    });
+
+    for(const l of lineas){
+      const [lineaCreada] = await sbInsert('registro_lineas', {
+        registro_id: regCreado.id, producto_prod_id: l.productoId,
+        cantidad: l.cantidad, unidad: l.unidad, menu_id: l.menuId,
+        detalle_guarnicion: l.detalleGuarnicion || null,
+        costo_unit: l.costoUnit
+      });
+      if(l.detalles && l.detalles.length){
+        await sbInsert('registro_linea_detalles', l.detalles.map(d => ({
+          registro_linea_id: lineaCreada.id,
+          ref_tipo: d.refTipo,
+          ref_se_id: d.refTipo === 'se' ? d.refId : null,
+          ref_mp_id: d.refTipo === 'mp' ? d.refId : null,
+          nombre: d.nombre, cantidad: d.cantidad, unidad: d.unidad, costo: d.costo
+        })));
+      }
+    }
+
+    // Impacto en stock SE: producción de semielaborados suma, consumo resta.
+    for(const l of lineas){
+      const p = pprodById(l.productoId);
+      if(p && p.tipo === 'semielaborado' && l.cantidad > 0){
+        const actualizado = await ajustarStockSemi(l.productoId, l.cantidad);
+        PDB.stockSemi[l.productoId] = Number(actualizado.cantidad);
+      }
+      for(const d of (l.detalles || [])){
+        if(d.refTipo !== 'se') continue;
+        const actualizado = await ajustarStockSemi(d.refId, -d.cantidad);
+        PDB.stockSemi[d.refId] = Number(actualizado.cantidad);
+      }
+    }
+
+    const nuevo = {
+      id: regCreado.id, fecha, centroId, novedades, lineas,
+      estado: 'cerrado', usuario,
+      creado: regCreado.creado_en || ahora,
+      fechaCierre: ahora, usuarioCierre: usuario
+    };
+    PDB.registros.push(nuevo);
+    pIdSeq.reg = Math.max(pIdSeq.reg, regCreado.id + 1);
+    await registrarHistorialProd('registro-cerrado',
+      'Registro ' + fechaBonitaProd(fecha) + ' · ' + centroNombre(centroId) + ' guardado y CERRADO (' + lineas.length + ' líneas)', usuario);
+  } catch(e){
+    console.warn('Error guardando registro:', e);
+    toastProd('⚠ No se pudo guardar el registro — revisá la conexión e intentá de nuevo. Si alguna parte ya se guardó, avisá para revisar en Supabase antes de reintentar.', 'error');
+    return;
+  }
 
   limpiarFormRegistro();
   saveProd();
@@ -6908,14 +7826,34 @@ async function eliminarRegistroAdmin(id){
   if(!ok) return;
 
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
-  if(r.estado === 'cerrado'){
-    aplicarImpactoRegistro(r, -1, 'eliminación registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId), usuario);
+  const usuarioId = (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null;
+
+  // Reemplaza el patrón viejo de PDB.registros.filter(...) (borrado físico)
+  // — a partir de la subentrega 4c de la migración de Script 2 (sección
+  // 15.12), "eliminar" pasa a ser soft-delete (anulado=true), como ya rige
+  // en el resto del sistema (nunca borrado físico). El comportamiento
+  // visible NO cambia: el registro anulado sigue sin traerse al cargar
+  // PDB.registros (ver cargarProduccionRegistrosDesdeSupabase), así que
+  // desaparece de la pantalla igual que antes — la diferencia es que el
+  // dato queda recuperable en la base ante un error, en vez de perderse.
+  try {
+    if(r.estado === 'cerrado'){
+      await aplicarImpactoRegistro(r, -1, 'eliminación registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId), usuario);
+    }
+    await sbUpdate('registros', `id=eq.${id}`, {
+      anulado: true, anulado_en: new Date().toISOString(),
+      anulado_por: usuarioId, anulado_por_nombre: usuario
+    });
+  } catch(e){
+    console.warn('Error eliminando registro:', e);
+    toastProd('⚠ No se pudo eliminar el registro — revisá la conexión e intentá de nuevo', 'error');
+    return;
   }
   if(regAdminEditId === id) limpiarFormRegistro();
 
   PDB.registros = PDB.registros.filter(x => x.id !== id);
-  PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'registro-eliminado',
-    detalle: 'Registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId) + ' eliminado por admin', usuario });
+  await registrarHistorialProd('registro-eliminado',
+    'Registro ' + fechaBonitaProd(r.fecha) + ' · ' + centroNombre(r.centroId) + ' eliminado por admin', usuario);
   saveProd();
   renderAllProd();
   renderAjustesProd();
@@ -7726,13 +8664,31 @@ async function eliminarRemitoAdmin(id){
   const ok = await confirmModal('¿Eliminar el remito Nº ' + numRemDest(r.id) + ' — ' + r.destinatario + '? Esta acción no se puede deshacer. El número ' + numRemDest(r.id) + ' quedará vacante (no se reutiliza).', 'Eliminar remito');
   if(!ok) return;
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
+  const usuarioId = (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null;
+
+  // Reemplaza el patrón viejo de PDB.remitosDestino.filter(...) (borrado
+  // físico) — a partir de la subentrega 5 (sección 15.12), "eliminar" pasa
+  // a ser soft-delete (anulado=true), mismo criterio que Registro Diario.
+  // El comportamiento visible no cambia (el remito anulado no se trae al
+  // cargar — ver cargarProduccionDestinosDesdeSupabase), y el número sigue
+  // sin reutilizarse porque la fila sigue existiendo en la base.
+  try {
+    await sbUpdate('remitos_destino', `id=eq.${id}`, {
+      anulado: true, anulado_en: new Date().toISOString(),
+      anulado_por: usuarioId, anulado_por_nombre: usuario
+    });
+  } catch(e){
+    console.warn('Error eliminando remito:', e);
+    toastProd('⚠ No se pudo eliminar el remito — revisá la conexión e intentá de nuevo', 'error');
+    return;
+  }
   if(remAdminEditId === id){
     remAdminEditId = null;
     document.getElementById('remdest-fecha').disabled = false;
     document.getElementById('remdest-form-card').style.display = 'none';
   }
   PDB.remitosDestino = PDB.remitosDestino.filter(x => x.id !== id);
-  PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'remito-eliminado', detalle: 'Remito Nº ' + numRemDest(r.id) + ' (' + r.destinatario + ') eliminado por admin', usuario });
+  await registrarHistorialProd('remito-eliminado', 'Remito Nº ' + numRemDest(r.id) + ' (' + r.destinatario + ') eliminado por admin', usuario);
   saveProd();
   renderRemitosDestinoLista();
   renderAjustesRemitos();
@@ -7814,7 +8770,7 @@ function cerrarFormPProd(){
   document.getElementById('pprod-form-card').style.display = 'none';
 }
 
-function guardarPProd(){
+async function guardarPProd(){
   if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
   const nombre = document.getElementById('pprod-nombre').value.trim();
   const tipo   = document.getElementById('pprod-tipo').value;
@@ -7841,6 +8797,8 @@ function guardarPProd(){
 
   // Costo unitario (solo semielaborados): NO se tipea — se calcula siempre
   // desde la receta (formRecetaSE), armada en el modal "Editar receta".
+  // A partir de la subentrega 3 (sección 15.12), recetaSE se persiste en la
+  // tabla relacional "receta_se" — ver más abajo, dentro del try.
   const recetaSE = (tipo === 'semielaborado') ? JSON.parse(JSON.stringify(formRecetaSE)) : [];
 
   if(centrosIds.length === 0){ toastProd('Asociá el producto a al menos un centro de elaboración', 'error'); return; }
@@ -7867,27 +8825,71 @@ function guardarPProd(){
     if(ocupado){
       toastProd('"' + principal.nombre + '" ya tiene a "' + ocupado.nombre + '" como asociado (la relación es 1 a 1)', 'error'); return;
     }
-    const esPrincipal = PDB.productosProd.find(z => z.comparteConId === editPProdId);
-    if(esPrincipal){
-      toastProd('Este producto es principal de "' + esPrincipal.nombre + '" — no puede a la vez ser asociado de otro', 'error'); return;
+    // Esta comprobación solo tiene sentido al EDITAR (editPProdId real): si
+    // editPProdId es null (alta de un producto nuevo), el producto todavía
+    // no existe y por lo tanto no puede ser principal de nadie — correr la
+    // búsqueda igual encontraba cualquier producto con comparteConId===null
+    // (el valor por defecto de casi todos) y bloqueaba altas legítimas.
+    if(editPProdId){
+      const esPrincipal = PDB.productosProd.find(z => z.comparteConId === editPProdId);
+      if(esPrincipal){
+        toastProd('Este producto es principal de "' + esPrincipal.nombre + '" — no puede a la vez ser asociado de otro', 'error'); return;
+      }
     }
   }
 
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
 
-  if(editPProdId){
-    const p = pprodById(editPProdId);
-    if(!p) return;
-    p.nombre = nombre; p.tipo = tipo; p.unidad = unidad; p.centrosIds = centrosIds;
-    p.detallaMP = detallaMP; p.cantElementos = cantElementos; p.dtaStockSE = dtaStockSE;
-    p.orden = orden; p.recetaSE = recetaSE; p.detallaMenu = detallaMenu;
-    p.comparteConId = comparteConId; p.proporcion = proporcion;
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-editado', detalle: 'Producto "' + nombre + '" editado', usuario });
-    toastProd('✓ Producto actualizado');
-  } else {
-    PDB.productosProd.push({ id: pIdSeq.pprod++, nombre, tipo, unidad, centrosIds, detallaMP, cantElementos, dtaStockSE, orden, recetaSE, detallaMenu, comparteConId, proporcion, activo: true });
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'producto-creado', detalle: 'Producto "' + nombre + '" (' + tipo + ') creado', usuario });
-    toastProd('✓ Producto creado');
+  const filaTabla = {
+    nombre, tipo, unidad,
+    detalla_mp: detallaMP, cant_elementos: cantElementos, dta_stock_se: dtaStockSE,
+    orden, detalla_menu: detallaMenu,
+    comparte_con_id: comparteConId, proporcion
+  };
+
+  // Reemplaza el patrón viejo de mutar PDB.productosProd en memoria y subir
+  // todo con saveProd() — a partir de la subentrega 2 de la migración de
+  // Script 2 (sección 15.12), Productos de Producción pega directo contra
+  // la tabla relacional "productos_prod" y su tabla puente
+  // "producto_prod_centro" (mismo patrón que guardarProveedor en Script 0).
+  // La tabla puente se resincroniza completa (borrar + reinsertar) porque
+  // es una relación N a N sin historial propio — no aplica el criterio de
+  // "nunca borrado físico" que sí rige para entidades principales.
+  // Desde la subentrega 3, "receta_se" se resincroniza con el mismo
+  // criterio (borrar + reinsertar): la receta completa se reemplaza cada
+  // vez que se guarda el producto, no hay edición fila por fila contra la
+  // tabla — coincide con cómo ya funcionaba formRecetaSE en memoria.
+  const recetaFilas = recetaSE.map((r, i) => r.tipo === 'stock'
+    ? { tipo: 'stock', ref_producto_id: r.refId, nombre: null, precio: null, cantidad: r.cantidad, orden: i }
+    : { tipo: 'manual', ref_producto_id: null, nombre: r.nombre, precio: r.precio, cantidad: r.cantidad, orden: i });
+  try {
+    if(editPProdId){
+      const p = pprodById(editPProdId);
+      if(!p) return;
+      await sbUpdate('productos_prod', `id=eq.${editPProdId}`, filaTabla);
+      await sbDelete('producto_prod_centro', `producto_prod_id=eq.${editPProdId}`);
+      await sbInsert('producto_prod_centro', centrosIds.map(centroId => ({ producto_prod_id: editPProdId, centro_id: centroId })));
+      await sbDelete('receta_se', `producto_prod_id=eq.${editPProdId}`);
+      if(recetaFilas.length) await sbInsert('receta_se', recetaFilas.map(f => ({ ...f, producto_prod_id: editPProdId })));
+      p.nombre = nombre; p.tipo = tipo; p.unidad = unidad; p.centrosIds = centrosIds;
+      p.detallaMP = detallaMP; p.cantElementos = cantElementos; p.dtaStockSE = dtaStockSE;
+      p.orden = orden; p.recetaSE = recetaSE; p.detallaMenu = detallaMenu;
+      p.comparteConId = comparteConId; p.proporcion = proporcion;
+      await registrarHistorialProd('producto-editado', 'Producto "' + nombre + '" editado', usuario);
+      toastProd('✓ Producto actualizado');
+    } else {
+      const [creado] = await sbInsert('productos_prod', { ...filaTabla, activo: true });
+      await sbInsert('producto_prod_centro', centrosIds.map(centroId => ({ producto_prod_id: creado.id, centro_id: centroId })));
+      if(recetaFilas.length) await sbInsert('receta_se', recetaFilas.map(f => ({ ...f, producto_prod_id: creado.id })));
+      PDB.productosProd.push({ id: creado.id, nombre, tipo, unidad, centrosIds, detallaMP, cantElementos, dtaStockSE, orden, recetaSE, detallaMenu, comparteConId, proporcion, activo: true });
+      pIdSeq.pprod = Math.max(pIdSeq.pprod, creado.id + 1);
+      await registrarHistorialProd('producto-creado', 'Producto "' + nombre + '" (' + tipo + ') creado', usuario);
+      toastProd('✓ Producto creado');
+    }
+  } catch(e){
+    console.warn('Error guardando producto de producción:', e);
+    toastProd('⚠ No se pudo guardar el producto', 'error');
+    return;
   }
   cerrarFormPProd();
   saveProd();
@@ -7902,7 +8904,10 @@ async function toggleActivoPProd(id){
   const accion = p.activo ? 'desactivar' : 'reactivar';
   const ok = await confirmModal('¿Seguro que querés ' + accion + ' el producto "' + p.nombre + '"?', (p.activo ? 'Desactivar' : 'Reactivar') + ' producto');
   if(!ok) return;
-  p.activo = !p.activo;
+  const nuevoActivo = !p.activo;
+  try { await sbUpdate('productos_prod', `id=eq.${id}`, { activo: nuevoActivo }); }
+  catch(e){ console.warn('Error actualizando producto de producción:', e); toastProd('⚠ No se pudo guardar el cambio', 'error'); return; }
+  p.activo = nuevoActivo;
   saveProd();
   renderAllProd();
   onPRegChange();
@@ -8315,6 +9320,10 @@ async function cerrarRemitoDestino(){
   // Modo edición (admin, desde Ajuste de Remitos): ahora también se puede
   // corregir la fecha (además de destinatario, domicilio, CUIT, observación
   // y líneas). Es documental — no hay impacto de stock que revertir/reaplicar.
+  // Reemplaza el patrón viejo de mutar en memoria y subir todo con
+  // saveProd() — a partir de la subentrega 5 (sección 15.12), actualiza la
+  // cabecera en "remitos_destino" y resincroniza "remito_destino_lineas"
+  // (borrar + reinsertar, con CASCADE — mismo patrón que Registro Diario).
   if(remAdminEditId !== null){
     if(!isAdminProd()){ toastProd('Solo un administrador puede modificar remitos', 'error'); return; }
     const r = remitoDestinoById(remAdminEditId);
@@ -8326,15 +9335,31 @@ async function cerrarRemitoDestino(){
     const ok = await confirmModal('¿Guardar los cambios del remito Nº ' + numRemDest(r.id) + '?' + msgFecha, 'Modificar remito');
     if(!ok) return;
     const fechaAnterior = r.fecha;
-    r.fecha = fecha;
-    r.destinatarioId = destId;
-    r.destinatario = d.nombre;
-    r.domicilio = document.getElementById('remdest-domicilio').value.trim();
-    r.cuit = document.getElementById('remdest-cuit').value.trim();
-    r.observacion = document.getElementById('remdest-obs').value.trim();
-    r.lineas = lineas;
-    const detalleFecha = fechaCambio ? ' — fecha corregida de ' + fechaBonitaProd(fechaAnterior) + ' a ' + fechaBonitaProd(fecha) : '';
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'remito-editado', detalle: 'Remito Nº ' + numRemDest(r.id) + ' editado por admin' + detalleFecha, usuario });
+    const domicilio = document.getElementById('remdest-domicilio').value.trim();
+    const cuit = document.getElementById('remdest-cuit').value.trim();
+    const observacion = document.getElementById('remdest-obs').value.trim();
+    try {
+      await sbUpdate('remitos_destino', `id=eq.${r.id}`, {
+        fecha, destinatario_id: destId, destinatario: d.nombre, domicilio, cuit, observacion
+      });
+      await sbDelete('remito_destino_lineas', `remito_destino_id=eq.${r.id}`);
+      await sbInsert('remito_destino_lineas', lineas.map(l => ({
+        remito_destino_id: r.id, producto_prod_id: l.productoId, nombre: l.nombre, cantidad: l.cantidad, unidad: l.unidad
+      })));
+      r.fecha = fecha;
+      r.destinatarioId = destId;
+      r.destinatario = d.nombre;
+      r.domicilio = domicilio;
+      r.cuit = cuit;
+      r.observacion = observacion;
+      r.lineas = lineas;
+      const detalleFecha = fechaCambio ? ' — fecha corregida de ' + fechaBonitaProd(fechaAnterior) + ' a ' + fechaBonitaProd(fecha) : '';
+      await registrarHistorialProd('remito-editado', 'Remito Nº ' + numRemDest(r.id) + ' editado por admin' + detalleFecha, usuario);
+    } catch(e){
+      console.warn('Error modificando remito:', e);
+      toastProd('⚠ No se pudo modificar el remito — revisá la conexión e intentá de nuevo', 'error');
+      return;
+    }
     saveProd();
     remAdminEditId = null;
     document.getElementById('remdest-form-card').style.display = 'none';
@@ -8348,20 +9373,38 @@ async function cerrarRemitoDestino(){
   const ok = await confirmModal('¿Cerrar y emitir el remito para "' + d.nombre + '" con ' + lineas.length + ' línea(s)? No se puede deshacer.', 'Emitir remito');
   if(!ok) return;
 
-  const remito = {
-    id: pIdSeq.remitoDestino++,
-    fecha,
-    destinatarioId: destId,
-    destinatario: d.nombre, // snapshot: si después cambian el destinatario, el remito emitido no se altera
-    domicilio: document.getElementById('remdest-domicilio').value.trim(),
-    cuit: document.getElementById('remdest-cuit').value.trim(),
-    observacion: document.getElementById('remdest-obs').value.trim(),
-    lineas,
-    usuario,
-    creado: new Date().toISOString()
-  };
-  PDB.remitosDestino.push(remito);
-  PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'remito-emitido', detalle: 'Remito Nº ' + numRemDest(remito.id) + ' emitido para "' + d.nombre + '" (' + lineas.length + ' línea(s))', usuario });
+  const domicilio = document.getElementById('remdest-domicilio').value.trim();
+  const cuit = document.getElementById('remdest-cuit').value.trim();
+  const observacion = document.getElementById('remdest-obs').value.trim();
+  const usuarioId = (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null;
+
+  // Reemplaza el patrón viejo de mutar PDB.remitosDestino en memoria y
+  // subir todo con saveProd() — a partir de la subentrega 5 (sección
+  // 15.12), la emisión inserta directo contra "remitos_destino" +
+  // "remito_destino_lineas".
+  let remito;
+  try {
+    const [remCreado] = await sbInsert('remitos_destino', {
+      fecha, destinatario_id: destId,
+      destinatario: d.nombre, // snapshot: si después cambian el destinatario, el remito emitido no se altera
+      domicilio, cuit, observacion,
+      usuario_id: usuarioId, usuario_nombre: usuario
+    });
+    await sbInsert('remito_destino_lineas', lineas.map(l => ({
+      remito_destino_id: remCreado.id, producto_prod_id: l.productoId, nombre: l.nombre, cantidad: l.cantidad, unidad: l.unidad
+    })));
+    remito = {
+      id: remCreado.id, fecha, destinatarioId: destId, destinatario: d.nombre,
+      domicilio, cuit, observacion, lineas, usuario, creado: remCreado.creado_en || new Date().toISOString()
+    };
+    PDB.remitosDestino.push(remito);
+    pIdSeq.remitoDestino = Math.max(pIdSeq.remitoDestino, remCreado.id + 1);
+    await registrarHistorialProd('remito-emitido', 'Remito Nº ' + numRemDest(remito.id) + ' emitido para "' + d.nombre + '" (' + lineas.length + ' línea(s))', usuario);
+  } catch(e){
+    console.warn('Error emitiendo remito:', e);
+    toastProd('⚠ No se pudo emitir el remito — revisá la conexión e intentá de nuevo', 'error');
+    return;
+  }
   saveProd();
 
   document.getElementById('remdest-form-card').style.display = 'none';
@@ -8647,7 +9690,7 @@ function exportarRemitoDestinoPDF(id){
   toastProd('✓ PDF del remito descargado');
 }
 
-function guardarMenu(){
+async function guardarMenu(){
   if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
   const numRaw = document.getElementById('menu-numero').value.trim();
   const descripcion = document.getElementById('menu-descripcion').value.trim();
@@ -8666,17 +9709,30 @@ function guardarMenu(){
     return;
   }
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
-  if(editMenuId){
-    const m = menuById(editMenuId);
-    if(!m) return;
-    m.numero = numero; m.descripcion = descripcion;
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'menu-editado', detalle: 'Menú ' + menuLabel(m) + ' editado', usuario });
-    toastProd('✓ Menú actualizado');
-  } else {
-    const m = { id: pIdSeq.menu++, numero, descripcion, activo: true };
-    PDB.menus.push(m);
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'menu-creado', detalle: 'Menú ' + menuLabel(m) + ' creado', usuario });
-    toastProd('✓ Menú creado');
+
+  // Reemplaza el patrón viejo de mutar PDB.menus en memoria y subir todo con
+  // saveProd() — a partir de la subentrega 1 de la migración de Script 2
+  // (sección 15.12), Menús pega directo contra la tabla relacional "menus".
+  try {
+    if(editMenuId){
+      const m = menuById(editMenuId);
+      if(!m) return;
+      await sbUpdate('menus', `id=eq.${editMenuId}`, { numero, descripcion });
+      m.numero = numero; m.descripcion = descripcion;
+      await registrarHistorialProd('menu-editado', 'Menú ' + menuLabel(m) + ' editado', usuario);
+      toastProd('✓ Menú actualizado');
+    } else {
+      const [creado] = await sbInsert('menus', { numero, descripcion, activo: true });
+      const m = { id: creado.id, numero, descripcion, activo: true };
+      PDB.menus.push(m);
+      pIdSeq.menu = Math.max(pIdSeq.menu, creado.id + 1);
+      await registrarHistorialProd('menu-creado', 'Menú ' + menuLabel(m) + ' creado', usuario);
+      toastProd('✓ Menú creado');
+    }
+  } catch(e){
+    console.warn('Error guardando menú:', e);
+    toastProd('⚠ No se pudo guardar el menú', 'error');
+    return;
   }
   cerrarFormMenu();
   saveProd();
@@ -8691,7 +9747,10 @@ async function toggleActivoMenu(id){
   const accion = m.activo ? 'desactivar' : 'reactivar';
   const ok = await confirmModal('¿Seguro que querés ' + accion + ' el menú ' + menuLabel(m) + '?', (m.activo ? 'Desactivar' : 'Reactivar') + ' menú');
   if(!ok) return;
-  m.activo = !m.activo;
+  const nuevoActivo = !m.activo;
+  try { await sbUpdate('menus', `id=eq.${id}`, { activo: nuevoActivo }); }
+  catch(e){ console.warn('Error actualizando menú:', e); toastProd('⚠ No se pudo guardar el cambio', 'error'); return; }
+  m.activo = nuevoActivo;
   saveProd();
   renderMenus();
   onPRegChange();
@@ -8744,7 +9803,7 @@ function cerrarFormDestinatario(){
   document.getElementById('destinatario-form-card').style.display = 'none';
 }
 
-function guardarDestinatario(){
+async function guardarDestinatario(){
   if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
   const nombre = document.getElementById('dest-nombre').value.trim();
   const domicilio = document.getElementById('dest-domicilio').value.trim();
@@ -8754,16 +9813,30 @@ function guardarDestinatario(){
   const duplicado = PDB.destinatarios.find(d => d.nombre.toLowerCase() === nombre.toLowerCase() && d.id !== editDestinatarioId);
   if(duplicado){ toastProd('Ya existe un destinatario con ese nombre', 'error'); return; }
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
-  if(editDestinatarioId){
-    const d = destinatarioById(editDestinatarioId);
-    if(!d) return;
-    d.nombre = nombre; d.domicilio = domicilio; d.cuit = cuit; d.observacion = observacion;
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'destinatario-editado', detalle: 'Destinatario "' + nombre + '" editado', usuario });
-    toastProd('✓ Destinatario actualizado');
-  } else {
-    PDB.destinatarios.push({ id: pIdSeq.destinatario++, nombre, domicilio, cuit, observacion, activo: true });
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'destinatario-creado', detalle: 'Destinatario "' + nombre + '" creado', usuario });
-    toastProd('✓ Destinatario creado');
+
+  // Reemplaza el patrón viejo de mutar PDB.destinatarios en memoria y subir
+  // todo con saveProd() — a partir de la subentrega 5 de la migración de
+  // Script 2 (sección 15.12), Destinatarios pega directo contra la tabla
+  // relacional "destinatarios" (mismo patrón que Centros/Menús).
+  try {
+    if(editDestinatarioId){
+      const d = destinatarioById(editDestinatarioId);
+      if(!d) return;
+      await sbUpdate('destinatarios', `id=eq.${editDestinatarioId}`, { nombre, domicilio, cuit, observacion });
+      d.nombre = nombre; d.domicilio = domicilio; d.cuit = cuit; d.observacion = observacion;
+      await registrarHistorialProd('destinatario-editado', 'Destinatario "' + nombre + '" editado', usuario);
+      toastProd('✓ Destinatario actualizado');
+    } else {
+      const [creado] = await sbInsert('destinatarios', { nombre, domicilio, cuit, observacion, activo: true });
+      PDB.destinatarios.push({ id: creado.id, nombre, domicilio, cuit, observacion, activo: true });
+      pIdSeq.destinatario = Math.max(pIdSeq.destinatario, creado.id + 1);
+      await registrarHistorialProd('destinatario-creado', 'Destinatario "' + nombre + '" creado', usuario);
+      toastProd('✓ Destinatario creado');
+    }
+  } catch(e){
+    console.warn('Error guardando destinatario:', e);
+    toastProd('⚠ No se pudo guardar el destinatario', 'error');
+    return;
   }
   cerrarFormDestinatario();
   saveProd();
@@ -8777,7 +9850,10 @@ async function toggleActivoDestinatario(id){
   const accion = d.activo ? 'desactivar' : 'reactivar';
   const ok = await confirmModal('¿Seguro que querés ' + accion + ' a "' + d.nombre + '"?', (d.activo ? 'Desactivar' : 'Reactivar') + ' destinatario');
   if(!ok) return;
-  d.activo = !d.activo;
+  const nuevoActivo = !d.activo;
+  try { await sbUpdate('destinatarios', `id=eq.${id}`, { activo: nuevoActivo }); }
+  catch(e){ console.warn('Error actualizando destinatario:', e); toastProd('⚠ No se pudo guardar el cambio', 'error'); return; }
+  d.activo = nuevoActivo;
   saveProd();
   renderDestinatarios();
   toastProd('✓ Destinatario ' + (d.activo ? 'reactivado' : 'desactivado'));
@@ -8855,20 +9931,34 @@ async function aplicarAjusteStockSemi(){
     '\nStock resultante: ' + stockNuevo + ' ' + p.unidad + (motivo ? ('\n\nMotivo: ' + motivo) : '');
   if(!(await confirmModal(msg, 'Ajustar stock'))) return;
 
-  PDB.stockSemi[prodId] = stockNuevo;
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
-  PDB.historialProd.push({
-    ts: new Date().toISOString(), tipo: 'ajuste-stock-se',
-    detalle: '"' + p.nombre + '": ' + signo + cantidad + ' ' + p.unidad + ' (de ' + stockAnterior + ' a ' + stockNuevo + ')' + (motivo ? ' — Motivo: ' + motivo : ''),
-    usuario: usuario
-  });
+
+  // Reemplaza el patrón viejo de mutar PDB.stockSemi en memoria y subir
+  // todo con saveProd() — a partir de la subentrega 4c de la migración de
+  // Script 2 (sección 15.12), el ajuste manual pasa por la misma RPC
+  // atómica que usa el cierre/edición de registros. El stock resultante se
+  // toma de lo que devuelve la base (autoritativo), no del cálculo local.
+  let stockReal;
+  try {
+    const actualizado = await ajustarStockSemi(prodId, cantidad);
+    stockReal = Number(actualizado.cantidad);
+    PDB.stockSemi[prodId] = stockReal;
+  } catch(e){
+    console.warn('Error ajustando stock SE:', e);
+    toastProd('⚠ No se pudo aplicar el ajuste — revisá la conexión e intentá de nuevo', 'error');
+    return;
+  }
+
+  await registrarHistorialProd('ajuste-stock-se',
+    '"' + p.nombre + '": ' + signo + cantidad + ' ' + p.unidad + ' (de ' + stockAnterior + ' a ' + stockReal + ')' + (motivo ? ' — Motivo: ' + motivo : ''),
+    usuario);
 
   saveProd();
   document.getElementById('ajse-cantidad').value = '';
   document.getElementById('ajse-motivo').value = '';
   renderAjusteStockSemi();
   renderStockSemi();
-  toastProd('✓ Stock de "' + p.nombre + '" ajustado a ' + stockNuevo + ' ' + p.unidad);
+  toastProd('✓ Stock de "' + p.nombre + '" ajustado a ' + stockReal + ' ' + p.unidad);
 }
 
 function renderStockSemi(){
@@ -8928,7 +10018,7 @@ function cerrarFormCentro(){
   document.getElementById('centro-form-card').style.display = 'none';
 }
 
-function guardarCentro(){
+async function guardarCentro(){
   if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
   const numRaw = document.getElementById('centro-numero').value.trim();
   const nombre = document.getElementById('centro-nombre').value.trim();
@@ -8943,16 +10033,29 @@ function guardarCentro(){
 
   const usuario = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '—';
 
-  if(editCentroId){
-    const c = PDB.centros.find(x => x.id === editCentroId);
-    if(!c) return;
-    c.numero = numero; c.nombre = nombre;
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'centro-editado', detalle: 'Centro "' + nombre + '" editado', usuario });
-    toastProd('✓ Centro actualizado');
-  } else {
-    PDB.centros.push({ id: pIdSeq.centro++, numero, nombre, activo: true });
-    PDB.historialProd.push({ ts: new Date().toISOString(), tipo: 'centro-creado', detalle: 'Centro "' + nombre + '" creado', usuario });
-    toastProd('✓ Centro creado');
+  // Reemplaza el patrón viejo de mutar PDB.centros en memoria y subir todo
+  // con saveProd() — a partir de la subentrega 1 de la migración de Script 2
+  // (sección 15.12), Centros pega directo contra la tabla relacional
+  // "centros" (mismo patrón que guardarProveedor en Script 0).
+  try {
+    if(editCentroId){
+      const c = PDB.centros.find(x => x.id === editCentroId);
+      if(!c) return;
+      await sbUpdate('centros', `id=eq.${editCentroId}`, { numero, nombre });
+      c.numero = numero; c.nombre = nombre;
+      await registrarHistorialProd('centro-editado', 'Centro "' + nombre + '" editado', usuario);
+      toastProd('✓ Centro actualizado');
+    } else {
+      const [creado] = await sbInsert('centros', { numero, nombre, activo: true });
+      PDB.centros.push({ id: creado.id, numero, nombre, activo: true });
+      pIdSeq.centro = Math.max(pIdSeq.centro, creado.id + 1);
+      await registrarHistorialProd('centro-creado', 'Centro "' + nombre + '" creado', usuario);
+      toastProd('✓ Centro creado');
+    }
+  } catch(e){
+    console.warn('Error guardando centro:', e);
+    toastProd('⚠ No se pudo guardar el centro', 'error');
+    return;
   }
   cerrarFormCentro();
   saveProd();
@@ -8968,7 +10071,10 @@ async function toggleActivoCentro(id){
     (c.activo ? '\n\nNo aparecerá más como opción en el Registro Diario (los registros históricos no se pierden).' : ''),
     (c.activo ? 'Desactivar' : 'Reactivar') + ' centro');
   if(!ok) return;
-  c.activo = !c.activo;
+  const nuevoActivo = !c.activo;
+  try { await sbUpdate('centros', `id=eq.${id}`, { activo: nuevoActivo }); }
+  catch(e){ console.warn('Error actualizando centro:', e); toastProd('⚠ No se pudo guardar el cambio', 'error'); return; }
+  c.activo = nuevoActivo;
   saveProd();
   renderAllProd();
   toastProd('✓ Centro ' + (c.activo ? 'reactivado' : 'desactivado'));
