@@ -677,6 +677,21 @@
 
 <script>
 
+// ── GUARD ANTI DOBLE-SUBMIT ──────────────────────────
+// Evita que una acción crítica (guardar OC, cerrar remito, etc.) se
+// dispare dos veces por doble click o Enter repetido mientras la
+// primera ejecución todavía está en curso (ej: conexión lenta).
+// Compartido entre los 3 bloques script (mismo scope global).
+const _procesando = new Set();
+function bloquear(clave){
+  if(_procesando.has(clave)) return false;
+  _procesando.add(clave);
+  return true;
+}
+function desbloquear(clave){
+  _procesando.delete(clave);
+}
+
 // ── DATA ──────────────────────────────────────────────
 let DB = JSON.parse(localStorage.getItem('sf_v3')||'null') || {
   productos:[],   // {id,nombre,unidad,perecedero,proveedoresIds[],desc,activo,precios:{provId:{precio,bonificacion}},alicuotaIvaId}
@@ -1992,6 +2007,19 @@ function agregarLineaIngOC(){
 }
 
 async function confirmarIngresoOC(){
+  if(!bloquear('confirmarIngresoOC')) return;
+  const btnConfirmarIngresoOC = document.getElementById('btn-confirmar-ingreso-oc');
+  const textoOrigConfirmarIngresoOC = btnConfirmarIngresoOC ? btnConfirmarIngresoOC.textContent : '';
+  if(btnConfirmarIngresoOC){ btnConfirmarIngresoOC.disabled = true; btnConfirmarIngresoOC.textContent = 'Registrando...'; }
+  try {
+    await confirmarIngresoOCImpl();
+  } finally {
+    desbloquear('confirmarIngresoOC');
+    if(btnConfirmarIngresoOC){ btnConfirmarIngresoOC.disabled = false; btnConfirmarIngresoOC.textContent = textoOrigConfirmarIngresoOC; }
+  }
+}
+
+async function confirmarIngresoOCImpl(){
   if(!ingOCActual){ toast('Seleccioná una orden de compra','error'); return; }
   if(!ingOCLineas.length){ toast('No hay líneas para ingresar','error'); return; }
 
@@ -2827,6 +2855,19 @@ function quitarOCLinea(idx){
 }
 
 async function guardarOC(){
+  if(!bloquear('guardarOC')) return;
+  const btnGuardarOC = document.getElementById('btn-guardar-oc');
+  const textoOrigGuardarOC = btnGuardarOC ? btnGuardarOC.textContent : '';
+  if(btnGuardarOC){ btnGuardarOC.disabled = true; btnGuardarOC.textContent = 'Guardando...'; }
+  try {
+    await guardarOCImpl();
+  } finally {
+    desbloquear('guardarOC');
+    if(btnGuardarOC){ btnGuardarOC.disabled = false; btnGuardarOC.textContent = textoOrigGuardarOC; }
+  }
+}
+
+async function guardarOCImpl(){
   if(!ocEnEdicion || !ocEnEdicion.proveedorId){ toast('Seleccioná un proveedor','error'); return; }
   if(!ocEnEdicion.lineas.length){ toast('Agregá al menos un producto','error'); return; }
   for(const l of ocEnEdicion.lineas){
@@ -3544,6 +3585,19 @@ function renderLineasBorrador(){
 function quitarLinea(i){ remitoLineas.splice(i,1); renderLineasBorrador(); }
 
 async function cerrarRemito(){
+  if(!bloquear('cerrarRemito')) return;
+  const btnCerrarRemito = document.getElementById('btn-cerrar-remito');
+  const textoOrigCerrarRemito = btnCerrarRemito ? btnCerrarRemito.textContent : '';
+  if(btnCerrarRemito){ btnCerrarRemito.disabled = true; btnCerrarRemito.textContent = 'Cerrando...'; }
+  try {
+    await cerrarRemitoImpl();
+  } finally {
+    desbloquear('cerrarRemito');
+    if(btnCerrarRemito){ btnCerrarRemito.disabled = false; btnCerrarRemito.textContent = textoOrigCerrarRemito; }
+  }
+}
+
+async function cerrarRemitoImpl(){
   const destino = document.getElementById('rem-destino').value;
   const nro = document.getElementById('rem-nro').value.trim();
   const fecha = document.getElementById('rem-fecha').value;
@@ -4911,7 +4965,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
               <label style="font-size:.78rem;color:var(--muted);display:block;margin-bottom:4px">Observaciones de recepción (opcional)</label>
               <textarea id="ingoc-observaciones" rows="2" placeholder="Ej: mercadería en buen estado, faltaron 3 unidades, llegó sin factura..." style="width:100%;resize:vertical;font-size:.85rem;"></textarea>
             </div>
-            <button class="btn btn-primary" onclick="confirmarIngresoOC()">✓ Confirmar ingreso</button>
+            <button class="btn btn-primary" id="btn-confirmar-ingreso-oc" onclick="confirmarIngresoOC()">✓ Confirmar ingreso</button>
             <button class="btn btn-secondary" onclick="cancelarIngresoOC()">Cancelar</button>
           </div>
         </div>
@@ -4989,7 +5043,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
       </div>
       <!-- BOTONES FINALES -->
       <div id="rem-acciones" class="rem-acciones-hidden" style="gap:10px;flex-wrap:wrap">
-        <button class="btn btn-primary" onclick="cerrarRemito()">✔ Cerrar y descontar stock</button>
+        <button class="btn btn-primary" id="btn-cerrar-remito" onclick="cerrarRemito()">✔ Cerrar y descontar stock</button>
         <button class="btn btn-secondary" onclick="imprimirRemito()">🖨 Imprimir borrador</button>
         <button class="btn btn-danger" onclick="cancelarRemito()">✕ Cancelar remito</button>
       </div>
@@ -5071,7 +5125,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
 
         <div class="modal-footer" style="margin-top:16px">
           <button class="btn btn-secondary" onclick="cancelarOC()">Cancelar</button>
-          <button class="btn btn-primary" onclick="guardarOC()">Guardar orden de compra</button>
+          <button class="btn btn-primary" id="btn-guardar-oc" onclick="guardarOC()">Guardar orden de compra</button>
         </div>
       </div>
     </div>
@@ -6768,7 +6822,7 @@ const prodModuleHTML = '' +
 '        <div class="card-title" style="margin-bottom:8px">Productos elaborados</div>' +
 '        <div id="remdest-lineas"></div>' +
 '        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">' +
-'          <button class="btn btn-primary" onclick="cerrarRemitoDestino()">✔ Cerrar y emitir remito</button>' +
+'          <button class="btn btn-primary" id="btn-cerrar-remito-destino" onclick="cerrarRemitoDestino()">✔ Cerrar y emitir remito</button>' +
 '          <button class="btn btn-secondary" onclick="cerrarFormRemitoDestino()">Cancelar</button>' +
 '        </div>' +
 '      </div>' +
@@ -7575,6 +7629,19 @@ function resumenImpactoSemis(lineas){
 // resume el impacto en el stock de semielaborados. Si hay una edición de
 // admin en curso (regAdminEditId), en cambio se actualiza ese registro.
 async function guardarYCerrarRegistro(){
+  if(!bloquear('guardarYCerrarRegistro')) return;
+  const btnGuardarRegistro = document.getElementById('btn-guardar-registro');
+  const textoOrigGuardarRegistro = btnGuardarRegistro ? btnGuardarRegistro.textContent : '';
+  if(btnGuardarRegistro){ btnGuardarRegistro.disabled = true; btnGuardarRegistro.textContent = 'Guardando...'; }
+  try {
+    await guardarYCerrarRegistroImpl();
+  } finally {
+    desbloquear('guardarYCerrarRegistro');
+    if(btnGuardarRegistro){ btnGuardarRegistro.disabled = false; btnGuardarRegistro.textContent = textoOrigGuardarRegistro; }
+  }
+}
+
+async function guardarYCerrarRegistroImpl(){
   if(isReadonlyProd){ toastProd('Modo solo lectura — no podés registrar', 'error'); return; }
 
   // ── Camino B: modificación de un registro cerrado (SOLO ADMIN, vía Ajustes) ──
@@ -9300,6 +9367,19 @@ function renderRemDestLineas(prefillLineas){
 }
 
 async function cerrarRemitoDestino(){
+  if(!bloquear('cerrarRemitoDestino')) return;
+  const btnCerrarRemitoDestino = document.getElementById('btn-cerrar-remito-destino');
+  const textoOrigCerrarRemitoDestino = btnCerrarRemitoDestino ? btnCerrarRemitoDestino.textContent : '';
+  if(btnCerrarRemitoDestino){ btnCerrarRemitoDestino.disabled = true; btnCerrarRemitoDestino.textContent = 'Cerrando...'; }
+  try {
+    await cerrarRemitoDestinoImpl();
+  } finally {
+    desbloquear('cerrarRemitoDestino');
+    if(btnCerrarRemitoDestino){ btnCerrarRemitoDestino.disabled = false; btnCerrarRemitoDestino.textContent = textoOrigCerrarRemitoDestino; }
+  }
+}
+
+async function cerrarRemitoDestinoImpl(){
   if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); return; }
   const fecha = document.getElementById('remdest-fecha').value;
   const destId = parseInt(document.getElementById('remdest-dest-id').value) || null;
