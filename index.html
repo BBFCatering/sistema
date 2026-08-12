@@ -4479,45 +4479,12 @@ function extraerNroOCDeDetalle(detalle){
 }
 
 // ── BACKUP / RESTORE ──────────────────────────────────
-function exportarBackup(){
-  const fecha = new Date().toISOString().slice(0,10);
-  const nombre = `stockbbf-backup-${fecha}.json`;
-  const blob = new Blob([JSON.stringify(DB, null, 2)], {type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = nombre; a.click();
-  URL.revokeObjectURL(url);
-  toast(`✓ Backup descargado: ${nombre}`);
-}
-
-function importarBackup(event){
-  const file = event.target.files[0];
-  if(!file) return;
-  const reader = new FileReader();
-  reader.onload = async e => {
-    try {
-      const parsed = JSON.parse(e.target.result);
-      // Validación básica
-      if(!parsed.productos || !parsed.proveedores || !parsed.lotes){
-        toast('Archivo inválido — no parece un backup de Stock BBF','error'); return;
-      }
-      if(!(await confirmModal(`¿Restaurar backup del archivo "${file.name}"?\n\nEsto reemplazará todos los datos actuales.`))) return;
-      DB = parsed;
-      // Recalcular contadores
-      idSeq.prod = DB.productos.length ? Math.max(...DB.productos.map(x=>x.id),0)+1 : 1;
-      idSeq.prov = DB.proveedores.length ? Math.max(...DB.proveedores.map(x=>x.id),0)+1 : 1;
-      idSeq.lote = DB.lotes.length ? Math.max(...DB.lotes.map(x=>x.id),0)+1 : 1;
-      idSeq.remito = DB.remitos&&DB.remitos.length ? Math.max(...DB.remitos.map(x=>x.id),0)+1 : 1;
-      if(!DB.remitos) DB.remitos=[];
-      save(); renderAll();
-      toast(`✓ Backup restaurado correctamente`);
-    } catch(err) {
-      toast('Error al leer el archivo. Verificá que sea un backup válido.','error');
-    }
-  };
-  reader.readAsText(file);
-  event.target.value = ''; // reset input
-}
+// exportarBackup()/importarBackup() (Stock) se sacaron en agosto 2026 —
+// consolidados en el módulo "Backup" único del sidebar (ver Script 1:
+// backupModuloHTML / generarBackupCompleto()). El restore quedaba roto
+// desde antes igual (sección 15.15 de la Referencia Técnica) — se
+// rehará más adelante, junto con el módulo Backup, contra las tablas
+// relacionales reales.
 
 // ── INIT ──────────────────────────────────────────────
 function renderAll(){
@@ -4640,6 +4607,10 @@ const MODULES = [
   // { id: 'reportes', label: 'Reportes', icon: 'ti-report', color: '#FBEAF0', iconColor: '#993556' },
   { id: 'usuarios', label: 'Usuarios',          icon: 'ti-users',         color: '#FBEAF0', iconColor: '#993556', adminOnly: true },
   { id: 'ajustes',  label: 'Ajustes',           icon: 'ti-settings',      color: '#FFF1D6', iconColor: '#8A5A00', adminOnly: true },
+  // 'backup' NO es adminOnly a propósito — se rige por su propio permiso
+  // en usuario_permisos (migración 27), independiente del rol admin, para
+  // que David/Alejandro puedan generarlo sin necesitar la cuenta admin.
+  { id: 'backup',   label: 'Backup',            icon: 'ti-device-floppy', color: '#EEF0F4', iconColor: '#475569' },
 ];
 
 let users = [];
@@ -4711,9 +4682,6 @@ async function cargarUsuariosDesdeSupabase(){
 const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
   <div id="stock-stats-bar" style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:10px 16px;border-bottom:1px solid #2a3045;background:#181c27;flex-wrap:wrap;">
     <span id="sync-indicator" style="font-size:.75rem;padding:4px 10px;border-radius:20px;background:rgba(107,116,153,.15);color:#6b7499;">🔄 Conectando...</span>
-    <button onclick="exportarBackup()" id="btn-backup" style="padding:6px 14px;border-radius:8px;border:1px solid #2a3045;background:#1e2334;color:#e8ecf4;font-size:.75rem;cursor:pointer;">💾 Backup</button>
-    <button onclick="document.getElementById('import-file').click()" id="btn-restore" style="padding:6px 14px;border-radius:8px;border:1px solid #2a3045;background:#1e2334;color:#e8ecf4;font-size:.75rem;cursor:pointer;">📂 Restaurar</button>
-    <input type="file" id="import-file" accept=".json" style="display:none" onchange="importarBackup(event)">
     <div style="display:flex;gap:16px;margin-left:12px;">
       <div style="text-align:center"><div style="font-family:'Syne',sans-serif;font-weight:700;font-size:1.05rem" id="stat-prods">0</div><div style="font-size:.62rem;color:#6b7499;text-transform:uppercase;letter-spacing:1px">Productos</div></div>
       <div style="text-align:center"><div style="font-family:'Syne',sans-serif;font-weight:700;font-size:1.05rem" id="stat-lotes">0</div><div style="font-size:.62rem;color:#6b7499;text-transform:uppercase;letter-spacing:1px">Lotes</div></div>
@@ -5469,6 +5437,24 @@ const ajustesModuloHTML = `<div class="stock-module" id="ajustes-module-wrap">
   </div>
 </div>`;
 
+// ── MÓDULO BACKUP (único para todo el sistema, agosto 2026) ──
+// Pantalla aislada, propia (mismo patrón que Ajustes) — NO reabre Stock
+// ni Producción. Reemplaza a exportarBackup()/exportarBackupProd(),
+// que hacían un backup por módulo por separado.
+const backupModuloHTML = `<div class="stock-module" id="backup-module-wrap">
+  <div class="container">
+    <div class="section-title">💾 Backup completo del sistema</div>
+    <div style="font-size:.8rem;color:var(--muted);margin:10px 0 22px;max-width:560px;line-height:1.5">
+      Genera un único archivo con una copia completa de Stock y Producción — se lee todo fresco desde la base en el momento de generarlo, no depende de qué módulo tengas abierto ni de cuándo fue el último F5.
+    </div>
+    <div class="card" style="max-width:420px">
+      <button class="btn btn-primary" id="btn-generar-backup" onclick="generarBackupCompleto()" style="width:100%;font-size:.85rem;padding:12px">💾 Generar Backup Completo</button>
+      <div id="backup-status" style="font-size:.74rem;color:var(--muted);margin-top:12px;min-height:1.2em"></div>
+    </div>
+  </div>
+  <div id="toast-backup" class="toast"></div>
+</div>`;
+
 let currentUser  = null;
 let activeModule = null;
 let editingUser  = null;  // null = nuevo usuario
@@ -5598,6 +5584,8 @@ function showApp() {
       const tabInicial = sessionStorage.getItem('bbf_ajustes_tab_inicial');
       sessionStorage.removeItem('bbf_ajustes_tab_inicial');
       switchAjustesTop(tabInicial === 'produccion' ? 'produccion' : 'stock');
+    } else if(moduloPendiente === 'backup'){
+      abrirFullscreenBackup(perm);
     }
     return;
   }
@@ -5795,6 +5783,13 @@ function renderMain() {
   // Etapa 2 sumará Producción y una sección de Generales.
   if (activeModule === 'ajustes') {
     forzarRecargaYAbrir('ajustes');
+    return;
+  }
+
+  // Módulo BACKUP (único para todo el sistema, agosto 2026) — pantalla
+  // aislada propia, mismo mecanismo de recarga forzada que el resto.
+  if (activeModule === 'backup') {
+    forzarRecargaYAbrir('backup');
     return;
   }
 
@@ -6097,6 +6092,84 @@ function openFullscreen(modName, moduleHTML, perm, initialTab) {
     cargarDesdeSupabase();
     if (initialTab) switchTab(initialTab);
   } catch(e) { console.warn('Stock init:', e); }
+}
+
+// Apertura del módulo Backup — pantalla aislada propia, no pasa por
+// openFullscreen() porque esa función asume el contexto de Stock (llama
+// renderAll()/cargarDesdeSupabase() fijo). Acá no se precarga nada al
+// abrir: los datos se traen recién al tocar "Generar Backup Completo",
+// siempre frescos en ese momento.
+function abrirFullscreenBackup(perm){
+  const overlay = document.getElementById('fullscreen-overlay');
+  const contentEl = document.getElementById('fullscreen-content');
+  const nameEl = document.getElementById('fs-module-name');
+  const logoWrap = document.getElementById('fs-logo-wrap');
+  const userInfoEl = document.getElementById('fs-user-info');
+  const readonlyTagEl = document.getElementById('fs-readonly-tag');
+
+  const sidebarLogo = document.querySelector('.sidebar-logo');
+  if (sidebarLogo) logoWrap.innerHTML = sidebarLogo.innerHTML;
+
+  nameEl.textContent = 'Backup';
+  if (userInfoEl) userInfoEl.textContent = currentUser ? currentUser.name : '';
+  if (readonlyTagEl) readonlyTagEl.innerHTML = '';
+
+  contentEl.innerHTML = backupModuloHTML;
+  overlay.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+function toastBackup(msg, t){
+  const el = document.getElementById('toast-backup');
+  if(!el) return;
+  el.textContent = msg;
+  el.className = `toast ${t||'success'} show`;
+  setTimeout(()=>{ el.className = 'toast'; }, 3200);
+}
+
+// Junta Stock + Producción en un solo JSON. Vuelve a leer todo desde
+// Supabase en el momento (cargarDesdeSupabase()/cargarProdDesdeSupabase(),
+// las mismas funciones que usan los módulos Stock y Producción al
+// abrirse) — no depende de lo que haya quedado en memoria de una
+// navegación anterior. Usa el guard bloquear()/desbloquear() (sección
+// 0.A de la Referencia Técnica) para evitar doble-click mientras corre.
+async function generarBackupCompleto(){
+  if(!bloquear('backup')) return;
+  const btn = document.getElementById('btn-generar-backup');
+  const status = document.getElementById('backup-status');
+  if(btn){ btn.disabled = true; btn.textContent = 'Generando...'; }
+  try {
+    if(status) status.textContent = 'Leyendo Stock...';
+    await cargarDesdeSupabase();
+    if(status) status.textContent = 'Leyendo Producción...';
+    await cargarProdDesdeSupabase();
+    if(status) status.textContent = 'Armando el archivo...';
+
+    const backup = {
+      version: 1,
+      generadoEn: new Date().toISOString(),
+      generadoPor: currentUser ? currentUser.name : null,
+      stock: DB,
+      produccion: PDB
+    };
+    const fecha = new Date().toISOString().slice(0,10);
+    const nombre = `bbf-backup-completo-${fecha}.json`;
+    const blob = new Blob([JSON.stringify(backup, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = nombre; a.click();
+    URL.revokeObjectURL(url);
+
+    if(status) status.textContent = '';
+    toastBackup(`✓ Backup descargado: ${nombre}`);
+  } catch(e){
+    console.warn('Error generando backup completo:', e);
+    if(status) status.textContent = '';
+    toastBackup('No se pudo generar el backup — revisá la conexión', 'error');
+  } finally {
+    desbloquear('backup');
+    if(btn){ btn.disabled = false; btn.textContent = '💾 Generar Backup Completo'; }
+  }
 }
 
 function closeFullscreen() {
@@ -6690,9 +6763,6 @@ const prodModuleHTML = '' +
 '<div class="stock-module" id="prod-module-wrap">' +
 '  <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:10px 16px;border-bottom:1px solid #2a3045;background:#181c27;flex-wrap:wrap;">' +
 '    <span id="prod-sync-indicator" style="font-size:.75rem;padding:4px 10px;border-radius:20px;background:rgba(107,116,153,.15);color:#6b7499;">🔄 Conectando...</span>' +
-'    <button onclick="exportarBackupProd()" id="btn-backup-prod" style="padding:6px 14px;border-radius:8px;border:1px solid #2a3045;background:#1e2334;color:#e8ecf4;font-size:.75rem;cursor:pointer;">💾 Backup</button>' +
-'    <button onclick="document.getElementById(\'import-file-prod\').click()" id="btn-restore-prod" style="padding:6px 14px;border-radius:8px;border:1px solid #2a3045;background:#1e2334;color:#e8ecf4;font-size:.75rem;cursor:pointer;">📂 Restaurar</button>' +
-'    <input type="file" id="import-file-prod" accept=".json" style="display:none" onchange="importarBackupProd(event)">' +
 '    <div style="display:flex;gap:16px;margin-left:12px;">' +
 '      <div style="text-align:center"><div style="font-family:\'Syne\',sans-serif;font-weight:700;font-size:1.05rem" id="stat-p-regs">0</div><div style="font-size:.62rem;color:#6b7499;text-transform:uppercase;letter-spacing:1px">Registros</div></div>' +
 '      <div style="text-align:center"><div style="font-family:\'Syne\',sans-serif;font-weight:700;font-size:1.05rem" id="stat-p-prods">0</div><div style="font-size:.62rem;color:#6b7499;text-transform:uppercase;letter-spacing:1px">Productos</div></div>' +
@@ -10246,55 +10316,19 @@ function renderCentros(){
     </thead><tbody>${filas}</tbody></table>`;
 }
 
-// ── BACKUP / RESTORE (independiente del backup de Stock) ──
-function exportarBackupProd(){
-  const fecha = new Date().toISOString().split('T')[0];
-  const nombre = 'bbf-produccion-backup-' + fecha + '.json';
-  const blob = new Blob([JSON.stringify(PDB, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = nombre;
-  a.click();
-  URL.revokeObjectURL(a.href);
-  toastProd('✓ Backup de Producción descargado');
-}
-
-function importarBackupProd(ev){
-  if(isReadonlyProd){ toastProd('Modo solo lectura', 'error'); ev.target.value = ''; return; }
-  const file = ev.target.files[0];
-  if(!file) return;
-  const reader = new FileReader();
-  reader.onload = async function(e){
-    try {
-      const data = JSON.parse(e.target.result);
-      if(!data || typeof data !== 'object' || !Array.isArray(data.registros)){
-        toastProd('El archivo no parece un backup válido de Producción', 'error');
-        return;
-      }
-      const ok = await confirmModal('Vas a REEMPLAZAR todos los datos de Producción por los del backup.\n\n¿Continuar?', 'Restaurar backup de Producción');
-      if(!ok) return;
-      PDB = data;
-      migrarPDB();
-      recalcularPIdSeq();
-      saveProd();
-      renderAllProd();
-      onPRegChange();
-      toastProd('✓ Backup de Producción restaurado');
-    } catch(err){
-      console.warn('Error importando backup Producción:', err);
-      toastProd('No se pudo leer el archivo', 'error');
-    }
-  };
-  reader.readAsText(file);
-  ev.target.value = '';
-}
+// exportarBackupProd()/importarBackupProd() se sacaron en agosto 2026 —
+// consolidados en el módulo "Backup" único del sidebar (ver Script 1:
+// backupModuloHTML / generarBackupCompleto()). El restore quedaba roto
+// desde antes igual (sección 15.15 de la Referencia Técnica) — se
+// rehará más adelante, junto con el módulo Backup, contra las tablas
+// relacionales reales.
 
 // ── MODO SOLO LECTURA ────────────────────────────────
 function applyReadonlyModeProd(){
   if(!isReadonlyProd) return;
   const wrap = document.getElementById('prod-module-wrap');
   if(!wrap) return;
-  ['btn-nuevo-pprod','btn-nuevo-centro','btn-guardar-registro','btn-limpiar-registro','btn-cancelar-admin-edit','btn-restore-prod'].forEach(id => {
+  ['btn-nuevo-pprod','btn-nuevo-centro','btn-guardar-registro','btn-limpiar-registro','btn-cancelar-admin-edit'].forEach(id => {
     const el = document.getElementById(id);
     if(el) el.style.display = 'none';
   });
