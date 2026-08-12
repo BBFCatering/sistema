@@ -730,11 +730,36 @@ const SB_HEADERS = { 'Content-Type':'application/json', 'apikey': SB_KEY, 'Autho
 // Postgres/PostgREST si algo falla — quien llama debe envolver en
 // try/catch y mostrar el toast correspondiente.
 
+// Pagina automáticamente con offset creciente hasta recibir una página
+// vacía, para que el tope de filas por request de la API de Supabase
+// (Project Settings > Data API > Max Rows) nunca corte resultados en
+// silencio cuando una tabla crece más allá de ese tope (bug detectado
+// agosto 2026: historial ya superaba el tope y "Ingresos Stock" perdía
+// todo lo anterior al último bloque de filas — ver Referencia Técnica).
+// El offset solo da resultados estables con un orden determinístico, así
+// que si el orden pedido no incluye "id" (PK simple en todas las tablas
+// del sistema) se agrega como criterio de desempate.
 async function sbSelect(tabla, queryString){
-  const url = `${SB_URL}/rest/v1/${tabla}${queryString ? '?' + queryString : ''}`;
-  const res = await fetch(url, { headers: SB_HEADERS });
-  if(!res.ok) throw new Error(`sbSelect(${tabla}): HTTP ${res.status} — ${await res.text()}`);
-  return res.json();
+  let qs = queryString || '';
+  const mOrder = qs.match(/(^|&)order=([^&]*)/);
+  if(!mOrder){
+    qs = qs ? `${qs}&order=id.asc` : 'order=id.asc';
+  } else if(!/(^|,)id\.(asc|desc)/.test(mOrder[2])){
+    qs = qs.replace(/(^|&)order=([^&]*)/, `$1order=${mOrder[2]},id.asc`);
+  }
+
+  let offset = 0;
+  let todas = [];
+  while(true){
+    const url = `${SB_URL}/rest/v1/${tabla}?${qs}&offset=${offset}`;
+    const res = await fetch(url, { headers: SB_HEADERS });
+    if(!res.ok) throw new Error(`sbSelect(${tabla}): HTTP ${res.status} — ${await res.text()}`);
+    const pagina = await res.json();
+    if(!pagina.length) break;
+    todas = todas.concat(pagina);
+    offset += pagina.length;
+  }
+  return todas;
 }
 
 // fila puede ser un objeto o un array de objetos (insert múltiple).
