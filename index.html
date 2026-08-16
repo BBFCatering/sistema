@@ -311,6 +311,7 @@
   .alert-item{display:flex;align-items:center;gap:10px;padding:11px 16px;border-radius:8px;margin-bottom:7px;font-size:0.81rem;border-left:3px solid;}
   .alert-item.warn{background:rgba(255,184,48,.08);border-color:var(--warn);color:var(--warn);}
   .alert-item.danger{background:rgba(255,77,106,.1);border-color:var(--danger);color:var(--danger);}
+  .alert-item.ok{background:rgba(0,229,160,.08);border-color:var(--accent);color:var(--accent);}
   .alert-dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex-shrink:0;animation:pulse 1.5s infinite;}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
   .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:20px;}
@@ -434,6 +435,23 @@
   .rem-acciones-visible { display: flex !important; }
   .toast.success{border-color:var(--accent);}.toast.error{border-color:var(--danger);}
   .hint{font-size:.72rem;color:var(--muted);margin-top:6px;}
+  /* ── VENTAS MODULE (Script 3) — solo lo que no cubre el CSS compartido ── */
+  .vt-chk{display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--muted);text-transform:none;letter-spacing:0;white-space:nowrap;cursor:pointer;}
+  .vt-chk input{width:auto;}
+  .vt-autocomplete-wrap{position:relative;}
+  .vt-autocomplete-list{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--surface2);border:1px solid var(--border);border-radius:8px;max-height:220px;overflow-y:auto;z-index:50;display:none;box-shadow:0 8px 20px rgba(0,0,0,.35);}
+  .vt-autocomplete-list.show{display:block;}
+  .vt-autocomplete-item{padding:9px 12px;font-size:.84rem;cursor:pointer;border-bottom:1px solid var(--border);}
+  .vt-autocomplete-item:last-child{border-bottom:none;}
+  .vt-autocomplete-item:hover{background:var(--surface);color:var(--accent);}
+  .vt-autocomplete-empty{padding:9px 12px;font-size:.78rem;color:var(--muted);}
+  .vt-alerta-empresa{font-weight:700;flex:none;white-space:nowrap;}
+  .vt-alerta-fecha{opacity:.75;flex:none;white-space:nowrap;font-size:.72rem;}
+  .vt-alerta-nota{opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;}
+  @media (max-width:480px){
+    #ventas-module-wrap .alert-item{flex-direction:column;align-items:flex-start;gap:2px;}
+    .vt-alerta-nota{white-space:normal;}
+  }
   @media(max-width:700px){
     .lotes-header,.lote-row{grid-template-columns:1fr 80px 110px;}
     .lotes-header span:nth-child(n+4),.lote-row>*:nth-child(n+4){display:none;}
@@ -694,7 +712,12 @@ if(!DB.remitos) DB.remitos=[];
 if(!DB.ordenesCompra) DB.ordenesCompra=[];
 if(!DB.historialPrecios) DB.historialPrecios=[];
 if(!DB.alicuotasIva) DB.alicuotasIva=[];
-if(DB.usuarios === undefined) DB.usuarios = null;
+// Campo legado de antes de la migración a relacional (Referencia Técnica,
+// hallazgo agosto 2026): DB.usuarios podía traer contraseñas en texto
+// plano arrastradas de localStorage viejo. Se borra activamente, no solo
+// se comprueba si es undefined — así no puede resucitar ni exportarse
+// por accidente (ver generarBackupCompleto()).
+delete DB.usuarios;
 DB.productos.forEach(p=>{ if(!p.precios) p.precios={}; if(p.alicuotaIvaId===undefined) p.alicuotaIvaId=null; });
 // La alícuota de IVA pasó de ser un dato del proveedor a ser un dato del
 // producto (un mismo proveedor puede facturar productos con distinta
@@ -1059,7 +1082,7 @@ async function cargarDesdeSupabase(){
       if(!DB.remitos)        DB.remitos        = [];
       if(!DB.ordenesCompra)  DB.ordenesCompra  = [];
       if(!DB.historialPrecios) DB.historialPrecios = [];
-      if(DB.usuarios === undefined) DB.usuarios = null;
+      delete DB.usuarios; // campo legado con contraseñas en texto plano — ver nota más arriba
 
       // ── Productos / Proveedores / Alícuotas: ya NO vienen del blob JSONB
       // (sección 15 de la Referencia Técnica) — se pisan acá con lo que
@@ -5586,6 +5609,8 @@ function showApp() {
       switchAjustesTop(tabInicial === 'produccion' ? 'produccion' : 'stock');
     } else if(moduloPendiente === 'backup'){
       abrirFullscreenBackup(perm);
+    } else if(moduloPendiente === 'ventas'){
+      abrirFullscreenVentas(perm);
     }
     return;
   }
@@ -5790,6 +5815,14 @@ function renderMain() {
   // aislada propia, mismo mecanismo de recarga forzada que el resto.
   if (activeModule === 'backup') {
     forzarRecargaYAbrir('backup');
+    return;
+  }
+
+  // Módulo VENTAS — script independiente (Script 3), registro de
+  // conversaciones + catálogo de clientes. Mismo mecanismo de recarga
+  // forzada que Producción y Backup.
+  if (activeModule === 'ventas') {
+    forzarRecargaYAbrir('ventas');
     return;
   }
 
@@ -6145,11 +6178,18 @@ async function generarBackupCompleto(){
     await cargarProdDesdeSupabase();
     if(status) status.textContent = 'Armando el archivo...';
 
+    // Defensa extra (además del borrado activo en cargarDesdeSupabase()):
+    // nunca exportar DB.usuarios, el campo legado de antes de la
+    // migración que llegó a tener contraseñas en texto plano. Se copia
+    // DB para no tocar el objeto real que usa el resto de la app.
+    const stockParaExportar = { ...DB };
+    delete stockParaExportar.usuarios;
+
     const backup = {
       version: 1,
       generadoEn: new Date().toISOString(),
       generadoPor: currentUser ? currentUser.name : null,
-      stock: DB,
+      stock: stockParaExportar,
       produccion: PDB
     };
     const fecha = new Date().toISOString().slice(0,10);
@@ -6180,6 +6220,7 @@ function closeFullscreen() {
   // Resetear también el modo solo lectura del módulo Producción (Script 2).
   // Guard con typeof por si este archivo se ejecuta sin el Script 2 cargado.
   if (typeof isReadonlyProd !== 'undefined') isReadonlyProd = false;
+  if (typeof isReadonlyVentas !== 'undefined') isReadonlyVentas = false;
 }
 
 // ── PANTALLA COMPLETA DEL NAVEGADOR (equivalente a F11) ──
@@ -10389,6 +10430,687 @@ function openFullscreenProduccion(perm){
     onPRegChange();
     cargarProdDesdeSupabase();
   } catch(e){ console.warn('Producción init:', e); }
+}
+
+</script>
+
+<script>
+/* ════════════════════════════════════════════
+   SCRIPT 3 — MÓDULO VENTAS
+════════════════════════════════════════════ */
+const ventasModuloHTML = `<div class="stock-module" id="ventas-module-wrap">
+  <div id="ventas-stats-bar" style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:10px 16px;border-bottom:1px solid #2a3045;background:#181c27;flex-wrap:wrap;">
+    <div style="display:flex;gap:16px;margin-left:12px;">
+      <div style="text-align:center"><div style="font-family:'Syne',sans-serif;font-weight:700;font-size:1.05rem" id="stat-v-clientes">0</div><div style="font-size:.62rem;color:#6b7499;text-transform:uppercase;letter-spacing:1px">Clientes</div></div>
+      <div style="text-align:center"><div style="font-family:'Syne',sans-serif;font-weight:700;font-size:1.05rem" id="stat-v-activas">0</div><div style="font-size:.62rem;color:#6b7499;text-transform:uppercase;letter-spacing:1px">Activas</div></div>
+      <div style="text-align:center"><div style="font-family:'Syne',sans-serif;font-weight:700;font-size:1.05rem;color:#ffb830" id="stat-v-alertas">0</div><div style="font-size:.62rem;color:#6b7499;text-transform:uppercase;letter-spacing:1px">Alertas</div></div>
+    </div>
+  </div>
+  <div class="container">
+  <div class="tabs">
+    <button class="tab active" onclick="switchTabVentas('registro')">📝 Registro conversación</button>
+    <button class="tab" onclick="switchTabVentas('listados')">📋 Listados</button>
+    <button class="tab" onclick="switchTabVentas('clientes')">🏢 Clientes</button>
+  </div>
+
+  <div id="ventas-alerts-banner" class="alerts-banner"></div>
+
+  <!-- REGISTRO CONVERSACIÓN -->
+  <div id="panelv-registro" class="panel active">
+    <div class="card">
+      <div class="card-title">Registro de conversación</div>
+      <div class="form-grid">
+        <div><label>Fecha de la conversación <span class="req">*</span></label><input type="date" id="vt-fecha-conversacion"></div>
+        <div><label>Nombre del contacto <span class="req">*</span></label><input type="text" id="vt-nombre-contacto" placeholder="Ej: Juan Pérez"></div>
+      </div>
+
+      <label style="margin-top:16px">Empresa (cliente) <span class="req">*</span></label>
+      <div class="vt-autocomplete-wrap">
+        <input type="text" id="vt-cliente-search" placeholder="Buscar empresa..." autocomplete="off"
+               oninput="ventasClienteInputCambio()" onfocus="ventasMostrarSugerenciasCliente()">
+        <input type="hidden" id="vt-cliente">
+        <div class="vt-autocomplete-list" id="vt-cliente-sugerencias"></div>
+      </div>
+      <div class="hint">¿No está en la lista? Dala de alta primero en la pestaña "🏢 Clientes".</div>
+
+      <label style="margin-top:16px">Notas</label>
+      <textarea id="vt-notas" placeholder="Qué se habló, próximos pasos, contexto..."></textarea>
+
+      <div class="form-grid" style="margin-top:16px">
+        <div id="vt-proximo-wrap">
+          <label>Próximo contacto <span class="req">*</span></label>
+          <input type="date" id="vt-fecha-proximo">
+        </div>
+        <div>
+          <label class="vt-chk" style="margin-top:24px">
+            <input type="checkbox" id="vt-cerrar-check" onchange="ventasToggleCerrar()">
+            Cerrar este tema (queda concluido)
+          </label>
+          <div id="vt-cerrar-fecha-wrap" style="display:none;margin-top:8px">
+            <label>Fecha de cierre</label>
+            <input type="date" id="vt-fecha-cierre">
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:18px">
+        <button class="btn btn-primary" id="vt-btn-guardar" onclick="ventasGuardarConversacion()">Guardar conversación</button>
+        <button class="btn btn-secondary" id="vt-btn-cancelar-edicion" style="display:none" onclick="ventasCancelarEdicion()">Cancelar edición</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LISTADOS -->
+  <div id="panelv-listados" class="panel">
+    <div class="search-bar"><span class="search-icon">🔍</span><input type="text" id="vt-search" placeholder="Buscar por contacto o empresa..." oninput="ventasRenderConversaciones()"></div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
+      <select id="vt-filtro-estado" onchange="ventasRenderConversaciones()" style="width:auto;min-width:170px">
+        <option value="">Todos los estados</option>
+        <option value="potencial">Cliente potencial</option>
+        <option value="actual">Cliente actual</option>
+        <option value="no_cliente">No cliente</option>
+      </select>
+      <label class="vt-chk"><input type="checkbox" id="vt-mostrar-cerradas" checked onchange="ventasRenderConversaciones()"> Ver cerradas</label>
+      <label class="vt-chk"><input type="checkbox" id="vt-mostrar-anuladas" onchange="ventasRenderConversaciones()"> Ver anuladas</label>
+      <button class="btn btn-sm btn-secondary" onclick="ventasExportarPDF()">📄 Exportar PDF</button>
+    </div>
+    <div id="vt-lista" class="item-list"></div>
+  </div>
+
+  <!-- CLIENTES -->
+  <div id="panelv-clientes" class="panel">
+    <div class="card">
+      <div class="card-title">Alta / edición de cliente</div>
+      <div class="form-grid">
+        <div><label>Nombre de la empresa <span class="req">*</span></label><input type="text" id="vtcli-nombre" placeholder="Ej: Comirsa SA"></div>
+        <div><label>Estado <span class="req">*</span></label>
+          <select id="vtcli-estado">
+            <option value="">— Seleccionar —</option>
+            <option value="potencial">Cliente potencial</option>
+            <option value="actual">Cliente actual</option>
+            <option value="no_cliente">No cliente</option>
+          </select>
+        </div>
+        <div><label>Email</label><input type="text" id="vtcli-email" placeholder="contacto@empresa.com"></div>
+        <div><label>Teléfono</label><input type="text" id="vtcli-tel" placeholder="Ej: 11-2345-6789"></div>
+      </div>
+      <label style="margin-top:16px">Notas</label>
+      <textarea id="vtcli-notas" placeholder="Datos generales del cliente..."></textarea>
+      <label class="vt-chk" style="margin-top:14px">
+        <input type="checkbox" id="vtcli-activo" checked> Cliente activo
+      </label>
+
+      <div style="margin-top:18px">
+        <button class="btn btn-primary" id="vtcli-btn-guardar" onclick="ventasGuardarCliente()">Crear cliente</button>
+        <button class="btn btn-secondary" id="vtcli-btn-cancelar" style="display:none" onclick="ventasCancelarEdicionCliente()">Cancelar edición</button>
+      </div>
+    </div>
+
+    <div class="section-title" style="margin-bottom:14px">Clientes cargados</div>
+    <div class="search-bar"><span class="search-icon">🔍</span><input type="text" id="vt-cli-search" placeholder="Buscar cliente..." oninput="ventasRenderClientes()"></div>
+    <div id="vt-cli-lista" class="item-list"></div>
+  </div>
+
+  </div>
+</div>
+<div id="toast-ventas" class="toast"></div>`
+
+/* ════════════════════════════════════════════
+   MÓDULO VENTAS (Script 3)
+   Registro de conversaciones con clientes potenciales/actuales,
+   semáforo de seguimiento y catálogo de clientes.
+   Reutiliza sbSelect/sbInsert/sbUpdate, currentUser, confirmModal
+   y el sistema de PDF (jsPDF+autoTable) ya definidos en Script 0/1.
+════════════════════════════════════════════ */
+let VT_CLIENTES = [];
+let VT_CONVERSACIONES = [];
+let vtEditandoId = null;      // id de conversación en edición, o null = alta nueva
+let vtCliEditandoId = null;   // id de cliente en edición, o null = alta nueva
+let isReadonlyVentas = false;
+
+// ── HELPERS ───────────────────────────────────────────
+function ventasHoy(){ return new Date().toISOString().split('T')[0]; }
+function ventasFf(iso){ if(!iso) return ''; const [y,m,d] = iso.split('-'); return `${d}/${m}/${y}`; }
+function ventasDias(fecha){
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const f = new Date(fecha+'T00:00:00');
+  return Math.round((hoy - f) / 86400000);
+}
+function escVt(s){
+  return (s==null?'':String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function vtCliente(id){ return VT_CLIENTES.find(c => c.id === id); }
+const ESTADO_LBL_VT = {potencial:'Cliente potencial', actual:'Cliente actual', no_cliente:'No cliente'};
+
+// Semáforo: solo sobre filas activas (no cerradas, no anuladas) con
+// fecha_proximo_contacto ya vencida (hoy o antes). Antes de la fecha, sin alerta.
+function ventasSemaforo(r){
+  if(r.anulado || r.fecha_cierre || !r.fecha_proximo_contacto) return null;
+  const d = ventasDias(r.fecha_proximo_contacto);
+  if(d < 0) return null;
+  if(d <= 2) return 'ok';
+  if(d <= 7) return 'warn';
+  return 'danger';
+}
+
+// ── TABS ──────────────────────────────────────────────
+function switchTabVentas(tab){
+  const wrap = document.getElementById('ventas-module-wrap');
+  if(!wrap) return;
+  const tabs = ['registro','listados','clientes'];
+  wrap.querySelectorAll('.tabs .tab').forEach((t,i) => t.classList.toggle('active', tabs[i] === tab));
+  wrap.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  const panel = document.getElementById('panelv-' + tab);
+  if(panel) panel.classList.add('active');
+}
+
+// ── TOAST ─────────────────────────────────────────────
+function ventasToast(msg, tipo){
+  const el = document.getElementById('toast-ventas');
+  if(!el) return;
+  el.textContent = msg;
+  el.className = `toast ${tipo === 'error' ? 'error' : 'success'} show`;
+  setTimeout(() => { el.className = 'toast'; }, 3200);
+}
+
+// ── CARGA ─────────────────────────────────────────────
+async function ventasCargarTodo(){
+  try{
+    [VT_CLIENTES, VT_CONVERSACIONES] = await Promise.all([
+      sbSelect('clientes', ''),
+      sbSelect('ventas_conversaciones', '')
+    ]);
+    ventasRenderConversaciones();
+    ventasRenderClientes();
+    ventasActualizarHeader();
+  }catch(e){
+    console.error(e);
+    ventasToast('No se pudo cargar la información — revisá la conexión', 'error');
+  }
+}
+
+// ── STATS + BANNER DE ALERTAS (header) ────────────────
+function ventasAlertasActivas(){
+  const activos = VT_CONVERSACIONES.filter(r => !r.anulado && !r.fecha_cierre);
+  const alertas = activos.filter(r => ventasSemaforo(r) !== null);
+  const orden = {danger:0, warn:1, ok:2};
+  alertas.sort((a,b) => orden[ventasSemaforo(a)] - orden[ventasSemaforo(b)] || ventasDias(b.fecha_proximo_contacto) - ventasDias(a.fecha_proximo_contacto));
+  return alertas;
+}
+
+function ventasActualizarStats(){
+  const elCli = document.getElementById('stat-v-clientes');
+  const elAct = document.getElementById('stat-v-activas');
+  const elAle = document.getElementById('stat-v-alertas');
+  if(!elCli || !elAct || !elAle) return;
+  elCli.textContent = VT_CLIENTES.filter(c => c.activo).length;
+  const activos = VT_CONVERSACIONES.filter(r => !r.anulado && !r.fecha_cierre);
+  elAct.textContent = activos.length;
+  elAle.textContent = ventasAlertasActivas().length;
+}
+
+function ventasRenderAlertasBanner(){
+  const el = document.getElementById('ventas-alerts-banner');
+  if(!el) return;
+  const alertas = ventasAlertasActivas();
+  el.innerHTML = alertas.map(r => {
+    const c = vtCliente(r.cliente_id);
+    return `<div class="alert-item ${ventasSemaforo(r)}" style="cursor:pointer" onclick="ventasEditarConversacion(${r.id})">
+      <span class="alert-dot"></span>
+      <span class="vt-alerta-empresa">${c ? escVt(c.nombre) : '—'}</span>
+      <span class="vt-alerta-fecha">Últ. contacto: ${ventasFf(r.fecha_conversacion)}</span>
+      <span class="vt-alerta-nota">${escVt(r.notas || '')}</span>
+    </div>`;
+  }).join('');
+}
+
+function ventasActualizarHeader(){
+  ventasActualizarStats();
+  ventasRenderAlertasBanner();
+}
+
+// ═══════════════════ AUTOCOMPLETAR EMPRESA ═══════════════════
+function ventasSetClienteSeleccionado(id){
+  const hidden = document.getElementById('vt-cliente');
+  const search = document.getElementById('vt-cliente-search');
+  const c = id ? vtCliente(parseInt(id)) : null;
+  hidden.value = c ? c.id : '';
+  search.value = c ? c.nombre : '';
+}
+
+function ventasMostrarSugerenciasCliente(){
+  const q = document.getElementById('vt-cliente-search').value.toLowerCase().trim();
+  const lista = document.getElementById('vt-cliente-sugerencias');
+  const activos = VT_CLIENTES.filter(c => c.activo).sort((a,b) => a.nombre.localeCompare(b.nombre));
+  const filtrados = q ? activos.filter(c => c.nombre.toLowerCase().includes(q)) : activos;
+  lista.innerHTML = filtrados.length
+    ? filtrados.map(c => `<div class="vt-autocomplete-item" onmousedown="ventasSeleccionarCliente(${c.id})">${escVt(c.nombre)}</div>`).join('')
+    : `<div class="vt-autocomplete-empty">Sin resultados — dalo de alta en "🏢 Clientes"</div>`;
+  lista.classList.add('show');
+}
+
+function ventasClienteInputCambio(){
+  document.getElementById('vt-cliente').value = ''; // se invalida hasta que elija una sugerencia
+  ventasMostrarSugerenciasCliente();
+}
+
+function ventasSeleccionarCliente(id){
+  ventasSetClienteSeleccionado(id);
+  document.getElementById('vt-cliente-sugerencias').classList.remove('show');
+}
+
+document.addEventListener('click', (e) => {
+  if(!e.target.closest('.vt-autocomplete-wrap')){
+    const lista = document.getElementById('vt-cliente-sugerencias');
+    if(lista) lista.classList.remove('show');
+  }
+});
+
+// ═══════════════════ CLIENTES ═══════════════════
+function ventasLimpiarFormularioCliente(){
+  document.getElementById('vtcli-nombre').value = '';
+  document.getElementById('vtcli-estado').value = '';
+  document.getElementById('vtcli-email').value = '';
+  document.getElementById('vtcli-tel').value = '';
+  document.getElementById('vtcli-notas').value = '';
+  document.getElementById('vtcli-activo').checked = true;
+  document.getElementById('vtcli-btn-guardar').textContent = 'Crear cliente';
+  document.getElementById('vtcli-btn-cancelar').style.display = 'none';
+  vtCliEditandoId = null;
+}
+
+async function ventasGuardarCliente(){
+  if(isReadonlyVentas){ ventasToast('Modo solo lectura', 'error'); return; }
+  const nombre = document.getElementById('vtcli-nombre').value.trim();
+  const estado = document.getElementById('vtcli-estado').value;
+  const email = document.getElementById('vtcli-email').value.trim();
+  const tel = document.getElementById('vtcli-tel').value.trim();
+  const notas = document.getElementById('vtcli-notas').value.trim();
+  const activo = document.getElementById('vtcli-activo').checked;
+
+  if(!nombre){ ventasToast('Falta el nombre de la empresa','error'); return; }
+  if(!estado){ ventasToast('Seleccioná un estado','error'); return; }
+
+  const btn = document.getElementById('vtcli-btn-guardar');
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Guardando...';
+  try{
+    const payload = { nombre, estado, email: email || null, tel: tel || null, notas: notas || null, activo };
+    if(vtCliEditandoId){
+      await sbUpdate('clientes', `id=eq.${vtCliEditandoId}`, payload);
+      ventasToast('Cliente actualizado');
+    } else {
+      await sbInsert('clientes', payload);
+      ventasToast('Cliente creado');
+    }
+    ventasLimpiarFormularioCliente();
+    VT_CLIENTES = await sbSelect('clientes', '');
+    ventasRenderClientes();
+    ventasRenderConversaciones();
+    ventasActualizarHeader();
+  }catch(e){
+    console.error(e);
+    ventasToast('No se pudo guardar el cliente','error');
+  }finally{
+    btn.disabled = false; btn.textContent = original;
+  }
+}
+
+function ventasEditarCliente(id){
+  const c = vtCliente(id);
+  if(!c) return;
+  vtCliEditandoId = id;
+  document.getElementById('vtcli-nombre').value = c.nombre;
+  document.getElementById('vtcli-estado').value = c.estado;
+  document.getElementById('vtcli-email').value = c.email || '';
+  document.getElementById('vtcli-tel').value = c.tel || '';
+  document.getElementById('vtcli-notas').value = c.notas || '';
+  document.getElementById('vtcli-activo').checked = c.activo;
+  document.getElementById('vtcli-btn-guardar').textContent = 'Guardar cambios';
+  document.getElementById('vtcli-btn-cancelar').style.display = '';
+  const wrap = document.getElementById('ventas-module-wrap');
+  if(wrap) wrap.scrollIntoView({block:'start'});
+}
+
+function ventasCancelarEdicionCliente(){
+  ventasLimpiarFormularioCliente();
+}
+
+function ventasRenderClientes(){
+  const buscador = document.getElementById('vt-cli-search');
+  const q = (buscador ? buscador.value : '').toLowerCase().trim();
+  let lista = VT_CLIENTES.filter(c => !q || c.nombre.toLowerCase().includes(q));
+  lista.sort((a,b) => a.nombre.localeCompare(b.nombre));
+
+  const el = document.getElementById('vt-cli-lista');
+  if(!el) return;
+  el.innerHTML = lista.length ? lista.map(c => `
+    <div class="item-card${c.activo ? '' : ' inactivo'}">
+      <div>
+        <div class="item-name">${escVt(c.nombre)}${!c.activo ? ' <span class="badge badge-neutral">Inactivo</span>' : ''}</div>
+        <div class="item-detail">${ESTADO_LBL_VT[c.estado] || c.estado}${c.email ? ' · '+escVt(c.email) : ''}${c.tel ? ' · '+escVt(c.tel) : ''}</div>
+      </div>
+      ${!isReadonlyVentas ? `<div class="item-actions"><button class="btn btn-sm btn-secondary" onclick="ventasEditarCliente(${c.id})">Editar</button></div>` : ''}
+    </div>`).join('') : `<div class="empty-state"><div class="icon">🏢</div><p>No hay clientes cargados todavía.</p></div>`;
+}
+
+// ═══════════════════ CONVERSACIONES ═══════════════════
+function ventasToggleCerrar(){
+  const cerrar = document.getElementById('vt-cerrar-check').checked;
+  document.getElementById('vt-cerrar-fecha-wrap').style.display = cerrar ? '' : 'none';
+  document.getElementById('vt-proximo-wrap').style.display = cerrar ? 'none' : '';
+  if(cerrar && !document.getElementById('vt-fecha-cierre').value){
+    document.getElementById('vt-fecha-cierre').value = ventasHoy();
+  }
+}
+
+function ventasLimpiarFormulario(){
+  document.getElementById('vt-fecha-conversacion').value = ventasHoy();
+  document.getElementById('vt-nombre-contacto').value = '';
+  ventasSetClienteSeleccionado(null);
+  document.getElementById('vt-notas').value = '';
+  document.getElementById('vt-fecha-proximo').value = '';
+  document.getElementById('vt-fecha-cierre').value = '';
+  document.getElementById('vt-cerrar-check').checked = false;
+  ventasToggleCerrar();
+  document.getElementById('vt-btn-guardar').textContent = 'Guardar conversación';
+  document.getElementById('vt-btn-cancelar-edicion').style.display = 'none';
+  vtEditandoId = null;
+}
+
+async function ventasGuardarConversacion(){
+  if(isReadonlyVentas){ ventasToast('Modo solo lectura', 'error'); return; }
+  const fecha_conversacion = document.getElementById('vt-fecha-conversacion').value;
+  const nombre_contacto = document.getElementById('vt-nombre-contacto').value.trim();
+  const cliente_id = document.getElementById('vt-cliente').value;
+  const notas = document.getElementById('vt-notas').value.trim();
+  const cerrarAhora = document.getElementById('vt-cerrar-check').checked;
+  const fecha_proximo_contacto = document.getElementById('vt-fecha-proximo').value;
+  const fecha_cierre = document.getElementById('vt-fecha-cierre').value;
+
+  if(!fecha_conversacion){ ventasToast('Falta la fecha de conversación','error'); return; }
+  if(!nombre_contacto){ ventasToast('Falta el nombre del contacto','error'); return; }
+  if(!cliente_id){ ventasToast('Seleccioná la empresa (cliente)','error'); return; }
+  if(cerrarAhora && !fecha_cierre){ ventasToast('Falta la fecha de cierre','error'); return; }
+  if(!cerrarAhora && !fecha_proximo_contacto){ ventasToast('Falta la fecha de próximo contacto','error'); return; }
+
+  const btn = document.getElementById('vt-btn-guardar');
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Guardando...';
+  try{
+    const payload = {
+      fecha_conversacion, nombre_contacto,
+      cliente_id: parseInt(cliente_id),
+      notas: notas || null,
+      fecha_proximo_contacto: cerrarAhora ? null : fecha_proximo_contacto,
+      fecha_cierre: cerrarAhora ? fecha_cierre : null
+    };
+    const usuarioId = (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null;
+    if(vtEditandoId){
+      await sbUpdate('ventas_conversaciones', `id=eq.${vtEditandoId}`, payload);
+      ventasToast('Cambios guardados');
+    } else {
+      payload.usuario_id = usuarioId;
+      await sbInsert('ventas_conversaciones', payload);
+      ventasToast('Conversación registrada');
+    }
+    ventasLimpiarFormulario();
+    VT_CONVERSACIONES = await sbSelect('ventas_conversaciones', '');
+    ventasRenderConversaciones();
+    ventasActualizarHeader();
+  }catch(e){
+    console.error(e);
+    ventasToast('No se pudo guardar — revisá la conexión','error');
+  }finally{
+    btn.disabled = false; btn.textContent = original;
+  }
+}
+
+function ventasEditarConversacion(id){
+  const r = VT_CONVERSACIONES.find(x => x.id === id);
+  if(!r) return;
+  vtEditandoId = id;
+  document.getElementById('vt-fecha-conversacion').value = r.fecha_conversacion;
+  document.getElementById('vt-nombre-contacto').value = r.nombre_contacto;
+  ventasSetClienteSeleccionado(r.cliente_id);
+  document.getElementById('vt-notas').value = r.notas || '';
+  if(r.fecha_cierre){
+    document.getElementById('vt-cerrar-check').checked = true;
+    document.getElementById('vt-fecha-cierre').value = r.fecha_cierre;
+    document.getElementById('vt-fecha-proximo').value = '';
+  } else {
+    document.getElementById('vt-cerrar-check').checked = false;
+    document.getElementById('vt-fecha-proximo').value = r.fecha_proximo_contacto || '';
+    document.getElementById('vt-fecha-cierre').value = '';
+  }
+  ventasToggleCerrar();
+  document.getElementById('vt-btn-guardar').textContent = 'Guardar cambios';
+  document.getElementById('vt-btn-cancelar-edicion').style.display = '';
+  switchTabVentas('registro');
+  const wrap = document.getElementById('ventas-module-wrap');
+  if(wrap) wrap.scrollIntoView({block:'start'});
+}
+
+function ventasCancelarEdicion(){
+  ventasLimpiarFormulario();
+}
+
+function ventasReabrir(id){
+  ventasEditarConversacion(id);
+  document.getElementById('vt-cerrar-check').checked = false;
+  ventasToggleCerrar();
+  ventasToast('Ingresá la próxima fecha de contacto y guardá para reabrir');
+}
+
+async function ventasCerrarHoy(id){
+  if(isReadonlyVentas){ ventasToast('Modo solo lectura', 'error'); return; }
+  try{
+    await sbUpdate('ventas_conversaciones', `id=eq.${id}`, { fecha_cierre: ventasHoy() });
+    const row = VT_CONVERSACIONES.find(r => r.id === id);
+    if(row) row.fecha_cierre = ventasHoy();
+    ventasRenderConversaciones();
+    ventasActualizarHeader();
+    ventasToast('Marcado como cerrado');
+  }catch(e){
+    console.error(e);
+    ventasToast('No se pudo actualizar','error');
+  }
+}
+
+async function ventasAnularConversacion(id){
+  if(isReadonlyVentas){ ventasToast('Modo solo lectura', 'error'); return; }
+  const ok = await confirmModal('¿Anular este registro? Va a dejar de aparecer en el listado activo.', 'Anular conversación');
+  if(!ok) return;
+  try{
+    const usuarioId = (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null;
+    await sbUpdate('ventas_conversaciones', `id=eq.${id}`, { anulado: true, fecha_anulacion: new Date().toISOString(), anulado_por: usuarioId });
+    const row = VT_CONVERSACIONES.find(r => r.id === id);
+    if(row){ row.anulado = true; }
+    ventasRenderConversaciones();
+    ventasActualizarHeader();
+    ventasToast('Registro anulado');
+  }catch(e){
+    console.error(e);
+    ventasToast('No se pudo anular','error');
+  }
+}
+
+// ── ORDEN Y FILTRADO ──────────────────────────────────
+function ventasRank(r){
+  const s = ventasSemaforo(r);
+  if(s === 'danger') return 0;
+  if(s === 'warn') return 1;
+  if(s === 'ok') return 2;
+  if(!r.fecha_cierre && !r.anulado && r.fecha_proximo_contacto) return 3;
+  return 4;
+}
+function ventasOrden(a, b){
+  const ra = ventasRank(a), rb = ventasRank(b);
+  if(ra !== rb) return ra - rb;
+  if(ra <= 2) return ventasDias(b.fecha_proximo_contacto) - ventasDias(a.fecha_proximo_contacto);
+  if(ra === 3) return new Date(a.fecha_proximo_contacto) - new Date(b.fecha_proximo_contacto);
+  return new Date(b.fecha_conversacion) - new Date(a.fecha_conversacion);
+}
+
+function ventasFilasFiltradas(){
+  const q = (document.getElementById('vt-search').value || '').toLowerCase().trim();
+  const filtroEstado = document.getElementById('vt-filtro-estado').value;
+  const mostrarCerradas = document.getElementById('vt-mostrar-cerradas').checked;
+  const mostrarAnuladas = document.getElementById('vt-mostrar-anuladas').checked;
+
+  let filas = VT_CONVERSACIONES.filter(r => {
+    if(r.anulado) return mostrarAnuladas;
+    if(r.fecha_cierre) return mostrarCerradas;
+    return true;
+  });
+  if(filtroEstado) filas = filas.filter(r => { const c = vtCliente(r.cliente_id); return c && c.estado === filtroEstado; });
+  if(q) filas = filas.filter(r => {
+    const c = vtCliente(r.cliente_id);
+    return (r.nombre_contacto||'').toLowerCase().includes(q) || (c && c.nombre.toLowerCase().includes(q));
+  });
+  filas.sort(ventasOrden);
+  return filas;
+}
+
+// ── RENDER LISTADO ────────────────────────────────────
+function ventasCard(r){
+  const c = vtCliente(r.cliente_id);
+  const sem = ventasSemaforo(r);
+  const estadoLbl = c ? (ESTADO_LBL_VT[c.estado] || c.estado) : '—';
+
+  let semLabel, badgeClass;
+  if(r.anulado){ semLabel = 'Anulada'; badgeClass = 'badge-neutral'; }
+  else if(r.fecha_cierre){ semLabel = `Cerrado ${ventasFf(r.fecha_cierre)}`; badgeClass = 'badge-neutral'; }
+  else if(sem === 'danger'){ semLabel = `Atrasado ${ventasDias(r.fecha_proximo_contacto)}d`; badgeClass = 'badge-danger'; }
+  else if(sem === 'warn'){ semLabel = `Atrasado ${ventasDias(r.fecha_proximo_contacto)}d`; badgeClass = 'badge-warn'; }
+  else if(sem === 'ok'){ semLabel = ventasDias(r.fecha_proximo_contacto) === 0 ? 'Hoy' : `Atrasado ${ventasDias(r.fecha_proximo_contacto)}d`; badgeClass = 'badge-ok'; }
+  else if(r.fecha_proximo_contacto){ semLabel = `Próx: ${ventasFf(r.fecha_proximo_contacto)}`; badgeClass = 'badge-neutral'; }
+  else { semLabel = 'Sin próx. fecha'; badgeClass = 'badge-neutral'; }
+
+  const acciones = (!r.anulado && !isReadonlyVentas) ? `
+    <div class="item-actions">
+      <button class="btn btn-sm btn-secondary" onclick="ventasEditarConversacion(${r.id})">Editar</button>
+      ${r.fecha_cierre
+        ? `<button class="btn btn-sm btn-secondary" onclick="ventasReabrir(${r.id})">Reabrir</button>`
+        : `<button class="btn btn-sm btn-secondary" onclick="ventasCerrarHoy(${r.id})">Cerrar hoy</button>`}
+      <button class="btn btn-sm btn-danger" onclick="ventasAnularConversacion(${r.id})">Anular</button>
+    </div>` : '';
+
+  return `<div class="item-card${r.anulado ? ' inactivo' : ''}">
+    <div>
+      <div class="item-name">${c ? escVt(c.nombre) : '(cliente eliminado)'} <span class="badge ${badgeClass}" style="margin-left:6px">${semLabel}</span></div>
+      <div class="item-detail">${escVt(r.nombre_contacto)} · ${ventasFf(r.fecha_conversacion)} · ${estadoLbl}${r.notas ? '<br>'+escVt(r.notas) : ''}</div>
+    </div>
+    ${acciones}
+  </div>`;
+}
+
+function ventasRenderConversaciones(){
+  const filas = ventasFilasFiltradas();
+  const el = document.getElementById('vt-lista');
+  if(!el) return;
+  el.innerHTML = filas.length
+    ? filas.map(ventasCard).join('')
+    : `<div class="empty-state"><div class="icon">📋</div><p>No hay conversaciones que coincidan con el filtro.</p></div>`;
+}
+
+// ── EXPORTAR PDF (reusa jsPDF + autoTable ya cargados en el sistema) ──
+function ventasProximoOCierreTexto(r){
+  if(r.fecha_cierre) return `Cerrado ${ventasFf(r.fecha_cierre)}`;
+  if(r.fecha_proximo_contacto) return ventasFf(r.fecha_proximo_contacto);
+  return '—';
+}
+
+function ventasExportarPDF(){
+  if(typeof window.jspdf === 'undefined'){
+    ventasToast('Cargando generador de PDF, intentá de nuevo en unos segundos...','error');
+    return;
+  }
+  const filas = ventasFilasFiltradas();
+  if(!filas.length){ ventasToast('No hay conversaciones para exportar con este filtro','error'); return; }
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation:'landscape' });
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(14);
+  doc.text('BBF Ventas — Listado de conversaciones', 14, 15);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(9);
+  doc.setTextColor(110,110,110);
+  doc.text(`Generado: ${new Date().toLocaleDateString('es-AR')} ${new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'})} — ${filas.length} registro(s)`, 14, 21);
+
+  const body = filas.map(r => {
+    const c = vtCliente(r.cliente_id);
+    const sem = ventasSemaforo(r);
+    const alerta = r.anulado ? 'Anulada' : r.fecha_cierre ? 'Cerrada'
+      : sem === 'danger' ? 'Rojo' : sem === 'warn' ? 'Amarillo' : sem === 'ok' ? 'Verde' : '—';
+    return [
+      c ? c.nombre : '—',
+      r.nombre_contacto || '—',
+      ventasFf(r.fecha_conversacion),
+      alerta,
+      ventasProximoOCierreTexto(r),
+      r.notas || ''
+    ];
+  });
+
+  doc.autoTable({
+    startY: 27,
+    head: [['Empresa','Contacto','Fecha conv.','Alerta','Próx./Cierre','Notas']],
+    body,
+    theme: 'grid',
+    headStyles: { fillColor:[29,158,117], textColor:255 },
+    styles: { fontSize:8 },
+    columnStyles: { 5:{cellWidth:80} },
+    didParseCell: function(data){
+      if(data.section === 'body' && data.column.index === 3){
+        const v = data.cell.raw;
+        if(v === 'Rojo'){ data.cell.styles.fillColor = [255,77,106]; data.cell.styles.textColor = 255; }
+        else if(v === 'Amarillo'){ data.cell.styles.fillColor = [255,184,48]; data.cell.styles.textColor = [45,32,0]; }
+        else if(v === 'Verde'){ data.cell.styles.fillColor = [0,200,140]; data.cell.styles.textColor = 255; }
+      }
+    }
+  });
+
+  doc.save(`ventas_conversaciones_${ventasHoy()}.pdf`);
+  ventasToast('PDF generado');
+}
+
+// ── APERTURA DEL MÓDULO (mismo patrón que Backup/Producción) ──
+function abrirFullscreenVentas(perm){
+  const overlay = document.getElementById('fullscreen-overlay');
+  const contentEl = document.getElementById('fullscreen-content');
+  const nameEl = document.getElementById('fs-module-name');
+  const logoWrap = document.getElementById('fs-logo-wrap');
+  const userInfoEl = document.getElementById('fs-user-info');
+  const readonlyTagEl = document.getElementById('fs-readonly-tag');
+
+  const sidebarLogo = document.querySelector('.sidebar-logo');
+  if(sidebarLogo) logoWrap.innerHTML = sidebarLogo.innerHTML;
+
+  nameEl.textContent = 'Ventas';
+  if(userInfoEl) userInfoEl.textContent = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.name : '';
+
+  if(readonlyTagEl){
+    readonlyTagEl.innerHTML = perm === 'read'
+      ? '<span class="fullscreen-readonly-tag"><i class="ti ti-eye" style="font-size:12px"></i> Solo lectura — podés consultar pero no registrar movimientos</span>'
+      : '';
+  }
+
+  contentEl.innerHTML = ventasModuloHTML;
+  overlay.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+
+  try {
+    isReadonlyVentas = (perm === 'read');
+    const btnGuardarConv = document.getElementById('vt-btn-guardar');
+    const btnGuardarCli = document.getElementById('vtcli-btn-guardar');
+    if(btnGuardarConv) btnGuardarConv.style.display = isReadonlyVentas ? 'none' : '';
+    if(btnGuardarCli) btnGuardarCli.style.display = isReadonlyVentas ? 'none' : '';
+    document.getElementById('vt-fecha-conversacion').value = ventasHoy();
+    ventasToggleCerrar();
+    ventasCargarTodo();
+  } catch(e){ console.warn('Ventas init:', e); }
 }
 
 </script>
