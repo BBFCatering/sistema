@@ -5626,7 +5626,8 @@ function renderWelcome() {
   const content = document.getElementById('mainContent');
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
-  permPill.className = 'perm-pill'; permPill.innerHTML = '';
+  permPill.className = '';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0081</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -10534,6 +10535,15 @@ const ventasModuloHTML = `<div class="stock-module" id="ventas-module-wrap">
         <div><label>Email</label><input type="text" id="vtcli-email" placeholder="contacto@empresa.com"></div>
         <div><label>Teléfono</label><input type="text" id="vtcli-tel" placeholder="Ej: 11-2345-6789"></div>
       </div>
+      <label style="margin-top:16px">Personas de contacto</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:2;min-width:120px"><input type="text" id="vtcli-contacto1-nombre" placeholder="Nombre 1"></div>
+        <div style="flex:0 0 70px"><input type="text" id="vtcli-contacto1-cargo" placeholder="Cargo" maxlength="12"></div>
+        <div style="flex:2;min-width:120px"><input type="text" id="vtcli-contacto2-nombre" placeholder="Nombre 2"></div>
+        <div style="flex:0 0 70px"><input type="text" id="vtcli-contacto2-cargo" placeholder="Cargo" maxlength="12"></div>
+        <div style="flex:2;min-width:120px"><input type="text" id="vtcli-contacto3-nombre" placeholder="Nombre 3"></div>
+        <div style="flex:0 0 70px"><input type="text" id="vtcli-contacto3-cargo" placeholder="Cargo" maxlength="12"></div>
+      </div>
       <label style="margin-top:16px">Notas</label>
       <textarea id="vtcli-notas" placeholder="Datos generales del cliente..."></textarea>
       <label class="vt-chk" style="margin-top:14px">
@@ -10712,6 +10722,12 @@ function ventasLimpiarFormularioCliente(){
   document.getElementById('vtcli-estado').value = '';
   document.getElementById('vtcli-email').value = '';
   document.getElementById('vtcli-tel').value = '';
+  document.getElementById('vtcli-contacto1-nombre').value = '';
+  document.getElementById('vtcli-contacto1-cargo').value = '';
+  document.getElementById('vtcli-contacto2-nombre').value = '';
+  document.getElementById('vtcli-contacto2-cargo').value = '';
+  document.getElementById('vtcli-contacto3-nombre').value = '';
+  document.getElementById('vtcli-contacto3-cargo').value = '';
   document.getElementById('vtcli-notas').value = '';
   document.getElementById('vtcli-activo').checked = true;
   document.getElementById('vtcli-btn-guardar').textContent = 'Crear cliente';
@@ -10725,6 +10741,12 @@ async function ventasGuardarCliente(){
   const estado = document.getElementById('vtcli-estado').value;
   const email = document.getElementById('vtcli-email').value.trim();
   const tel = document.getElementById('vtcli-tel').value.trim();
+  const contacto1Nombre = document.getElementById('vtcli-contacto1-nombre').value.trim();
+  const contacto1Cargo = document.getElementById('vtcli-contacto1-cargo').value.trim();
+  const contacto2Nombre = document.getElementById('vtcli-contacto2-nombre').value.trim();
+  const contacto2Cargo = document.getElementById('vtcli-contacto2-cargo').value.trim();
+  const contacto3Nombre = document.getElementById('vtcli-contacto3-nombre').value.trim();
+  const contacto3Cargo = document.getElementById('vtcli-contacto3-cargo').value.trim();
   const notas = document.getElementById('vtcli-notas').value.trim();
   const activo = document.getElementById('vtcli-activo').checked;
 
@@ -10735,7 +10757,11 @@ async function ventasGuardarCliente(){
   const original = btn.textContent;
   btn.disabled = true; btn.textContent = 'Guardando...';
   try{
-    const payload = { nombre, estado, email: email || null, tel: tel || null, notas: notas || null, activo };
+    const payload = { nombre, estado, email: email || null, tel: tel || null,
+      contacto1_nombre: contacto1Nombre || null, contacto1_cargo: contacto1Cargo || null,
+      contacto2_nombre: contacto2Nombre || null, contacto2_cargo: contacto2Cargo || null,
+      contacto3_nombre: contacto3Nombre || null, contacto3_cargo: contacto3Cargo || null,
+      notas: notas || null, activo };
     if(vtCliEditandoId){
       await sbUpdate('clientes', `id=eq.${vtCliEditandoId}`, payload);
       ventasToast('Cliente actualizado');
@@ -10764,6 +10790,12 @@ function ventasEditarCliente(id){
   document.getElementById('vtcli-estado').value = c.estado;
   document.getElementById('vtcli-email').value = c.email || '';
   document.getElementById('vtcli-tel').value = c.tel || '';
+  document.getElementById('vtcli-contacto1-nombre').value = c.contacto1_nombre || '';
+  document.getElementById('vtcli-contacto1-cargo').value = c.contacto1_cargo || '';
+  document.getElementById('vtcli-contacto2-nombre').value = c.contacto2_nombre || '';
+  document.getElementById('vtcli-contacto2-cargo').value = c.contacto2_cargo || '';
+  document.getElementById('vtcli-contacto3-nombre').value = c.contacto3_nombre || '';
+  document.getElementById('vtcli-contacto3-cargo').value = c.contacto3_cargo || '';
   document.getElementById('vtcli-notas').value = c.notas || '';
   document.getElementById('vtcli-activo').checked = c.activo;
   document.getElementById('vtcli-btn-guardar').textContent = 'Guardar cambios';
@@ -10784,14 +10816,22 @@ function ventasRenderClientes(){
 
   const el = document.getElementById('vt-cli-lista');
   if(!el) return;
-  el.innerHTML = lista.length ? lista.map(c => `
+  el.innerHTML = lista.length ? lista.map(c => {
+    const contactos = [
+      c.contacto1_nombre ? escVt(c.contacto1_nombre) + (c.contacto1_cargo ? ' ('+escVt(c.contacto1_cargo)+')' : '') : null,
+      c.contacto2_nombre ? escVt(c.contacto2_nombre) + (c.contacto2_cargo ? ' ('+escVt(c.contacto2_cargo)+')' : '') : null,
+      c.contacto3_nombre ? escVt(c.contacto3_nombre) + (c.contacto3_cargo ? ' ('+escVt(c.contacto3_cargo)+')' : '') : null
+    ].filter(Boolean).join(' · ');
+    return `
     <div class="item-card${c.activo ? '' : ' inactivo'}">
       <div>
         <div class="item-name">${escVt(c.nombre)}${!c.activo ? ' <span class="badge badge-neutral">Inactivo</span>' : ''}</div>
         <div class="item-detail">${ESTADO_LBL_VT[c.estado] || c.estado}${c.email ? ' · '+escVt(c.email) : ''}${c.tel ? ' · '+escVt(c.tel) : ''}</div>
+        ${contactos ? `<div class="item-detail">${contactos}</div>` : ''}
       </div>
       ${!isReadonlyVentas ? `<div class="item-actions"><button class="btn btn-sm btn-secondary" onclick="ventasEditarCliente(${c.id})">Editar</button></div>` : ''}
-    </div>`).join('') : `<div class="empty-state"><div class="icon">🏢</div><p>No hay clientes cargados todavía.</p></div>`;
+    </div>`;
+  }).join('') : `<div class="empty-state"><div class="icon">🏢</div><p>No hay clientes cargados todavía.</p></div>`;
 }
 
 // ═══════════════════ CONVERSACIONES ═══════════════════
