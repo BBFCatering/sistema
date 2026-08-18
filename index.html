@@ -696,9 +696,11 @@ function desbloquear(clave){
 
 // ── DATA ──────────────────────────────────────────────
 let DB = JSON.parse(localStorage.getItem('sf_v3')||'null') || {
-  productos:[],   // {id,nombre,unidad,perecedero,proveedoresIds[],desc,activo,precios:{provId:{precio,bonificacion}},alicuotaIvaId}
+  productos:[],   // {id,nombre,unidad,perecedero,proveedoresIds[],desc,activo,precios:{provId:{precio,bonificacion}},alicuotaIvaId,rubroId,subrubroId}
   proveedores:[], // {id,nombre,cuit,tel,email,pago,notas,activo}
   alicuotasIva:[], // {id, valor:Number (ej 21, 10.5), activo} — catálogo de alícuotas de IVA para asignar a productos
+  rubros:[],      // {id, nombre, activo} — catálogo de rubros para clasificar productos
+  subrubros:[],   // {id, rubroId, nombre, activo} — catálogo de sub-rubros, cada uno pertenece a un rubro
   lotes:[],       // {id,productoId,proveedorId,cantidad,cantidadInicial,vencimiento,ingreso,loteRef}
   stockSimple:{}, // {productoId: {cantidad,unidad}}  — para no perecederos
   remitos:[],     // {id,nro,fecha,obs,lineas[],fechaCierre}
@@ -712,6 +714,8 @@ if(!DB.remitos) DB.remitos=[];
 if(!DB.ordenesCompra) DB.ordenesCompra=[];
 if(!DB.historialPrecios) DB.historialPrecios=[];
 if(!DB.alicuotasIva) DB.alicuotasIva=[];
+if(!DB.rubros) DB.rubros=[];
+if(!DB.subrubros) DB.subrubros=[];
 // Campo legado de antes de la migración a relacional (Referencia Técnica,
 // hallazgo agosto 2026): DB.usuarios podía traer contraseñas en texto
 // plano arrastradas de localStorage viejo. Se borra activamente, no solo
@@ -730,9 +734,11 @@ let idSeq = {
   lote:   maxId('lotes'),
   remito: DB.remitos.length ? Math.max(...DB.remitos.map(x=>x.id)) + 1 : 1,
   oc:     Math.max(252, DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id)) + 1 : 1),
-  alicuota: maxId('alicuotasIva')
+  alicuota: maxId('alicuotasIva'),
+  rubro: maxId('rubros'),
+  subrubro: maxId('subrubros')
 };
-let editProdId=null, editProvId=null;
+let editProdId=null, editProvId=null, editRubroId=null, editSubrubroId=null;
 let ocEnEdicion=null; // {proveedorId, lineas:[{productoId,cantidad,precio,bonificacion}]}
 
 function maxId(k){ return DB[k].length ? Math.max(...DB[k].map(x=>x.id),0)+1 : 1; }
@@ -913,11 +919,13 @@ function setSyncStatus(estado){
 // (incluido el objeto .precios anidado), pero leyendo de las tablas
 // relacionales productos + producto_proveedor en vez del blob JSONB.
 async function cargarCatalogosStockDesdeSupabase(){
-  const [filasProductos, filasProveedores, filasAlicuotas, filasPrecios] = await Promise.all([
-    sbSelect('productos', 'select=id,nombre,unidad,perecedero,descripcion,activo,baja,alicuota_iva_id'),
+  const [filasProductos, filasProveedores, filasAlicuotas, filasPrecios, filasRubros, filasSubrubros] = await Promise.all([
+    sbSelect('productos', 'select=id,nombre,unidad,perecedero,descripcion,activo,baja,alicuota_iva_id,rubro_id,subrubro_id'),
     sbSelect('proveedores', 'select=id,nombre,cuit,tel,email,pago,notas,activo'),
     sbSelect('alicuotas_iva', 'select=id,valor,activo'),
-    sbSelect('producto_proveedor', 'select=producto_id,proveedor_id,precio,bonificacion,obs')
+    sbSelect('producto_proveedor', 'select=producto_id,proveedor_id,precio,bonificacion,obs'),
+    sbSelect('rubros', 'select=id,nombre,activo'),
+    sbSelect('subrubros', 'select=id,rubro_id,nombre,activo')
   ]);
 
   const productos = filasProductos.map(p => {
@@ -931,6 +939,7 @@ async function cargarCatalogosStockDesdeSupabase(){
       desc: p.descripcion || '',
       activo: p.activo, baja: p.baja,
       alicuotaIvaId: p.alicuota_iva_id,
+      rubroId: p.rubro_id, subrubroId: p.subrubro_id,
       proveedoresIds: [...new Set(filasPrecios.filter(pr => pr.producto_id === p.id).map(pr => pr.proveedor_id))],
       precios
     };
@@ -942,8 +951,10 @@ async function cargarCatalogosStockDesdeSupabase(){
   }));
 
   const alicuotasIva = filasAlicuotas.map(a => ({ id: a.id, valor: a.valor, activo: a.activo }));
+  const rubros = filasRubros.map(r => ({ id: r.id, nombre: r.nombre, activo: r.activo }));
+  const subrubros = filasSubrubros.map(s => ({ id: s.id, rubroId: s.rubro_id, nombre: s.nombre, activo: s.activo }));
 
-  return { productos, proveedores, alicuotasIva };
+  return { productos, proveedores, alicuotasIva, rubros, subrubros };
 }
 
 // Reconstruye DB.lotes (array) y DB.stockSimple (objeto por productoId) con
@@ -1091,6 +1102,8 @@ async function cargarDesdeSupabase(){
       DB.productos = catalogos.productos;
       DB.proveedores = catalogos.proveedores;
       DB.alicuotasIva = catalogos.alicuotasIva;
+      DB.rubros = catalogos.rubros;
+      DB.subrubros = catalogos.subrubros;
 
       // ── Lotes / Stock Simple: ya NO vienen del blob JSONB — se pisan acá
       // con lo que realmente vive en las tablas relacionales.
@@ -1122,6 +1135,8 @@ async function cargarDesdeSupabase(){
       idSeq.remito = DB.remitos.length ? Math.max(...DB.remitos.map(x=>x.id),0)+1 : 1;
       idSeq.oc     = Math.max(252, DB.ordenesCompra.length ? Math.max(...DB.ordenesCompra.map(x=>x.id),0)+1 : 1);
       idSeq.alicuota = maxId('alicuotasIva');
+      idSeq.rubro = maxId('rubros');
+      idSeq.subrubro = maxId('subrubros');
       localStorage.setItem('sf_v3', JSON.stringify(DB));
       renderAll();
     }
@@ -1242,6 +1257,13 @@ function getProd(id){ return DB.productos.find(p=>p.id===id); }
 function getProv(id){ return DB.proveedores.find(p=>p.id===id); }
 function nomProv(id){ const p=getProv(id);return p?p.nombre:'—'; }
 function nomProd(id){ const p=getProd(id);return p?p.nombre:'—'; }
+
+// ── RUBROS / SUB-RUBROS (catálogo jerárquico, usado por Productos) ──
+function getRubro(id){ return DB.rubros.find(r=>r.id===id); }
+function nomRubro(id){ const r=getRubro(id); return r?r.nombre:'—'; }
+function getSubrubro(id){ return DB.subrubros.find(s=>s.id===id); }
+function nomSubrubro(id){ const s=getSubrubro(id); return s?s.nombre:'—'; }
+function subrubrosDeRubro(rubroId){ return DB.subrubros.filter(s=>s.rubroId===rubroId); }
 
 // ── ALÍCUOTAS DE IVA ─────────────────────────────────────
 function getAlicuota(id){ return DB.alicuotasIva.find(a=>a.id===id); }
@@ -2203,7 +2225,13 @@ function renderProductos(){
   // Los productos dados de baja (p.baja) no se muestran: quedan archivados
   // internamente solo para que el historial siga resolviendo sus nombres.
   const catalogo=DB.productos.filter(p=>!p.baja);
-  const lista=catalogo.filter(p=>!q||p.nombre.toLowerCase().includes(q));
+  const lista=catalogo.filter(p=>{
+    if(!q) return true;
+    if(p.nombre.toLowerCase().includes(q)) return true;
+    if(p.rubroId && nomRubro(p.rubroId).toLowerCase().includes(q)) return true;
+    if(p.subrubroId && nomSubrubro(p.subrubroId).toLowerCase().includes(q)) return true;
+    return false;
+  });
   if(!catalogo.length){
     el.innerHTML=`<div class="empty-state"><div class="icon">🏷</div><p>No hay productos cargados.<br>Creá tu primer producto con el botón de arriba.</p></div>`;
     return;
@@ -2225,6 +2253,7 @@ function renderProductos(){
     const alicBadge = alic
       ? `<span class="badge badge-neutral" style="margin-left:6px">IVA ${fmtAlicuota(alic.valor)}</span>`
       : `<span class="badge badge-danger" style="margin-left:6px">IVA sin asignar</span>`;
+    const rubroTxt = [p.rubroId ? nomRubro(p.rubroId) : null, p.subrubroId ? nomSubrubro(p.subrubroId) : null].filter(Boolean).join(' › ');
     return `<div class="item-card ${p.activo?'':'inactivo'}">
       <div>
         <div class="item-name">${p.nombre} ${!p.activo?'<span class="badge badge-neutral">Inactivo</span>':''}
@@ -2232,6 +2261,7 @@ function renderProductos(){
         </div>
         <div class="item-detail">
           Unidad: <strong>${p.unidad}</strong> · Proveedores: ${provNames}
+          ${rubroTxt?`<br>🗂 ${rubroTxt}`:''}
           ${preciosTxt?`<br>💲 ${preciosTxt}`:''}
           ${p.desc?`<br>${p.desc}`:''}
         </div>
@@ -2300,6 +2330,206 @@ function renderProdAlicuotaSelect(seleccionadaId){
   sel.innerHTML = '<option value="">— Sin asignar —</option>' +
     activas.map(a => `<option value="${a.id}">${fmtAlicuota(a.valor)}${(!a.activo)?' (inactiva)':''}</option>`).join('');
   sel.value = seleccionadaId ? String(seleccionadaId) : '';
+}
+
+// ── RUBROS / SUB-RUBROS (catálogo, panel dedicado + selects en Productos) ──
+function renderRubros(){
+  const el = document.getElementById('rubros-list');
+  if(!el) return;
+  if(!DB.rubros.length){
+    el.innerHTML = `<div class="empty-state"><div class="icon">🗂</div><p>No hay rubros cargados.<br>Creá el primero con el botón de arriba.</p></div>`;
+  } else {
+    el.innerHTML = [...DB.rubros].sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(r=>{
+      const cantSub = DB.subrubros.filter(s=>s.rubroId===r.id && s.activo).length;
+      return `<div class="item-card ${r.activo?'':'inactivo'}">
+        <div>
+          <div class="item-name">${r.nombre} ${!r.activo?'<span class="badge badge-neutral">Inactivo</span>':''}</div>
+          <div class="item-detail">${cantSub} sub-rubro${cantSub===1?'':'s'} activo${cantSub===1?'':'s'}</div>
+        </div>
+        <div class="item-actions">
+          <button class="btn btn-secondary btn-sm" onclick="abrirModalRubro(${r.id})">Editar</button>
+          <button class="btn btn-sm ${r.activo?'btn-warn':'btn-secondary'}" onclick="toggleActivoRubro(${r.id})">${r.activo?'Desactivar':'Activar'}</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  renderSubrubrosFiltroSelect();
+  renderSubrubros();
+  // Si el modal de producto está abierto, refrescamos también sus selectores.
+  const selProdRubro = document.getElementById('prod-rubro');
+  if(selProdRubro){
+    const p = editProdId ? getProd(editProdId) : null;
+    renderProdRubroSelect(selProdRubro.value ? parseInt(selProdRubro.value) : (p ? p.rubroId : null));
+    renderProdSubrubroSelect(p ? p.subrubroId : null);
+  }
+  if (typeof isReadonly !== 'undefined' && isReadonly) applyReadonlyMode(true);
+}
+
+function renderSubrubrosFiltroSelect(){
+  const sel = document.getElementById('subrubros-filtro-rubro');
+  if(!sel) return;
+  const prev = sel.value;
+  const rubros = [...DB.rubros].sort((a,b)=>a.nombre.localeCompare(b.nombre));
+  sel.innerHTML = rubros.length
+    ? rubros.map(r=>`<option value="${r.id}">${r.nombre}${!r.activo?' (inactivo)':''}</option>`).join('')
+    : '<option value="">— No hay rubros cargados —</option>';
+  if(prev && rubros.some(r=>String(r.id)===prev)) sel.value = prev;
+}
+
+function renderSubrubros(){
+  const el = document.getElementById('subrubros-list');
+  if(!el) return;
+  const btnNuevo = document.getElementById('btn-nuevo-subrubro');
+  if(btnNuevo) btnNuevo.disabled = !DB.rubros.length;
+  if(!DB.rubros.length){
+    el.innerHTML = `<div class="empty-state"><p>Primero creá un rubro.</p></div>`;
+    return;
+  }
+  const sel = document.getElementById('subrubros-filtro-rubro');
+  const rubroId = sel && sel.value ? parseInt(sel.value) : null;
+  const lista = DB.subrubros.filter(s=>s.rubroId===rubroId);
+  if(!lista.length){
+    el.innerHTML = `<div class="empty-state"><p>Este rubro todavía no tiene sub-rubros.</p></div>`;
+    return;
+  }
+  el.innerHTML = [...lista].sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(s=>`
+    <div class="item-card ${s.activo?'':'inactivo'}">
+      <div>
+        <div class="item-name">${s.nombre} ${!s.activo?'<span class="badge badge-neutral">Inactivo</span>':''}</div>
+      </div>
+      <div class="item-actions">
+        <button class="btn btn-secondary btn-sm" onclick="abrirModalSubrubro(${s.id})">Editar</button>
+        <button class="btn btn-sm ${s.activo?'btn-warn':'btn-secondary'}" onclick="toggleActivoSubrubro(${s.id})">${s.activo?'Desactivar':'Activar'}</button>
+      </div>
+    </div>`).join('');
+}
+
+function abrirModalRubro(id=null){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés editar rubros','error'); return; }
+  editRubroId = id;
+  document.getElementById('modal-rubro-title').textContent = id ? 'Editar rubro' : 'Nuevo rubro';
+  document.getElementById('rubro-nombre').value = id ? getRubro(id).nombre : '';
+  document.getElementById('modal-rubro').classList.remove('hidden');
+}
+
+async function guardarRubro(){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés guardar cambios','error'); return; }
+  const nombre = document.getElementById('rubro-nombre').value.trim();
+  if(!nombre){ toast('El nombre es obligatorio','error'); return; }
+  try{
+    if(editRubroId){
+      const r = getRubro(editRubroId);
+      await sbUpdate('rubros', `id=eq.${editRubroId}`, { nombre });
+      r.nombre = nombre;
+      toast(`✓ "${nombre}" actualizado`);
+    } else {
+      const [creado] = await sbInsert('rubros', { nombre, activo: true });
+      DB.rubros.push({ id: creado.id, nombre, activo: true });
+      idSeq.rubro = Math.max(idSeq.rubro, creado.id + 1);
+      toast(`✓ "${nombre}" agregado`);
+    }
+  } catch(e){
+    console.warn('Error guardando rubro:', e);
+    toast('⚠ No se pudo guardar el rubro','error');
+    return;
+  }
+  save(); cerrarModal('modal-rubro'); renderAll();
+}
+
+async function toggleActivoRubro(id){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés modificar rubros','error'); return; }
+  const r = getRubro(id);
+  const nuevoActivo = !r.activo;
+  try { await sbUpdate('rubros', `id=eq.${id}`, { activo: nuevoActivo }); }
+  catch(e){ console.warn('Error actualizando rubro:', e); toast('⚠ No se pudo guardar el cambio','error'); return; }
+  r.activo = nuevoActivo; save(); renderAll(); toast(`${r.nombre} ${r.activo?'reactivado':'desactivado'}`);
+}
+
+function abrirModalSubrubro(id=null){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés editar sub-rubros','error'); return; }
+  if(!DB.rubros.length){ toast('Primero creá un rubro','error'); return; }
+  editSubrubroId = id;
+  document.getElementById('modal-subrubro-title').textContent = id ? 'Editar sub-rubro' : 'Nuevo sub-rubro';
+  const selRubro = document.getElementById('subrubro-rubro');
+  selRubro.innerHTML = [...DB.rubros].sort((a,b)=>a.nombre.localeCompare(b.nombre))
+    .map(r=>`<option value="${r.id}">${r.nombre}${!r.activo?' (inactivo)':''}</option>`).join('');
+  if(id){
+    const s = getSubrubro(id);
+    selRubro.value = s.rubroId;
+    document.getElementById('subrubro-nombre').value = s.nombre;
+  } else {
+    const filtro = document.getElementById('subrubros-filtro-rubro');
+    if(filtro && filtro.value) selRubro.value = filtro.value;
+    document.getElementById('subrubro-nombre').value = '';
+  }
+  document.getElementById('modal-subrubro').classList.remove('hidden');
+}
+
+async function guardarSubrubro(){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés guardar cambios','error'); return; }
+  const rubroId = parseInt(document.getElementById('subrubro-rubro').value);
+  const nombre = document.getElementById('subrubro-nombre').value.trim();
+  if(!rubroId){ toast('Seleccioná un rubro','error'); return; }
+  if(!nombre){ toast('El nombre es obligatorio','error'); return; }
+  try{
+    if(editSubrubroId){
+      const s = getSubrubro(editSubrubroId);
+      await sbUpdate('subrubros', `id=eq.${editSubrubroId}`, { nombre, rubro_id: rubroId });
+      s.nombre = nombre; s.rubroId = rubroId;
+      toast(`✓ "${nombre}" actualizado`);
+    } else {
+      const [creado] = await sbInsert('subrubros', { nombre, rubro_id: rubroId, activo: true });
+      DB.subrubros.push({ id: creado.id, nombre, rubroId, activo: true });
+      idSeq.subrubro = Math.max(idSeq.subrubro, creado.id + 1);
+      toast(`✓ "${nombre}" agregado`);
+    }
+  } catch(e){
+    console.warn('Error guardando sub-rubro:', e);
+    toast('⚠ No se pudo guardar el sub-rubro','error');
+    return;
+  }
+  save(); cerrarModal('modal-subrubro'); renderAll();
+  const filtro = document.getElementById('subrubros-filtro-rubro');
+  if(filtro){ filtro.value = String(rubroId); renderSubrubros(); }
+}
+
+async function toggleActivoSubrubro(id){
+  if (typeof isReadonly !== 'undefined' && isReadonly) { toast('Acceso de solo lectura — no podés modificar sub-rubros','error'); return; }
+  const s = getSubrubro(id);
+  const nuevoActivo = !s.activo;
+  try { await sbUpdate('subrubros', `id=eq.${id}`, { activo: nuevoActivo }); }
+  catch(e){ console.warn('Error actualizando sub-rubro:', e); toast('⚠ No se pudo guardar el cambio','error'); return; }
+  s.activo = nuevoActivo; save(); renderAll(); toast(`${s.nombre} ${s.activo?'reactivado':'desactivado'}`);
+}
+
+// Puebla el <select id="prod-rubro"> del modal de producto con los rubros
+// activos (más el que ya tuviera asignado el producto, aunque esté
+// desactivado, para no perder el dato). Dispara el filtrado del combo de
+// sub-rubro según el rubro que quede seleccionado.
+function renderProdRubroSelect(seleccionadoId){
+  const sel = document.getElementById('prod-rubro');
+  if(!sel) return;
+  const activos = DB.rubros.filter(r => r.activo || r.id === seleccionadoId).slice().sort((a,b)=>a.nombre.localeCompare(b.nombre));
+  sel.innerHTML = '<option value="">— Sin asignar —</option>' +
+    activos.map(r => `<option value="${r.id}">${r.nombre}${(!r.activo)?' (inactivo)':''}</option>`).join('');
+  sel.value = seleccionadoId ? String(seleccionadoId) : '';
+}
+
+// Puebla el <select id="prod-subrubro"> con los sub-rubros del rubro elegido
+// en prod-rubro (más el que ya tuviera asignado el producto, aunque haya
+// quedado inactivo o el rubro haya cambiado, para no perder el dato al abrir).
+function renderProdSubrubroSelect(seleccionadoId){
+  const selProd = document.getElementById('prod-rubro');
+  const sel = document.getElementById('prod-subrubro');
+  if(!sel || !selProd) return;
+  const rubroId = selProd.value ? parseInt(selProd.value) : null;
+  const subSeleccionado = seleccionadoId!==undefined ? seleccionadoId : (sel.value?parseInt(sel.value):null);
+  const disponibles = DB.subrubros.filter(s => (s.rubroId===rubroId) && (s.activo || s.id===subSeleccionado)).slice().sort((a,b)=>a.nombre.localeCompare(b.nombre));
+  sel.innerHTML = '<option value="">— Sin asignar —</option>' +
+    disponibles.map(s => `<option value="${s.id}">${s.nombre}${(!s.activo)?' (inactivo)':''}</option>`).join('');
+  // Solo conservamos la selección si ese sub-rubro efectivamente pertenece al rubro actual.
+  const sigueValido = subSeleccionado && disponibles.some(s=>s.id===subSeleccionado);
+  sel.value = sigueValido ? String(subSeleccionado) : '';
 }
 
 function abrirHistorialPrecios(productoId){
@@ -2393,11 +2623,15 @@ function abrirModalProducto(id=null){
     document.getElementById('prod-perecedero').value=p.perecedero;
     document.getElementById('prod-desc').value=p.desc||'';
     renderProdAlicuotaSelect(p.alicuotaIvaId||null);
+    renderProdRubroSelect(p.rubroId||null);
+    renderProdSubrubroSelect(p.subrubroId||null);
   } else {
     ['prod-nombre','prod-desc'].forEach(x=>document.getElementById(x).value='');
     document.getElementById('prod-unidad').value='';
     document.getElementById('prod-perecedero').value='si';
     renderProdAlicuotaSelect(null);
+    renderProdRubroSelect(null);
+    renderProdSubrubroSelect(null);
   }
   document.getElementById('prod-provs-list').innerHTML=
     provs.length
@@ -2441,15 +2675,19 @@ async function guardarProducto(){
   const perecedero=document.getElementById('prod-perecedero').value;
   const desc=document.getElementById('prod-desc').value.trim();
   const alicSel=document.getElementById('prod-alicuota-iva').value;
+  const rubroSel=document.getElementById('prod-rubro').value;
+  const subrubroSel=document.getElementById('prod-subrubro').value;
   const checks=[...document.querySelectorAll('#prod-provs-list input[type=checkbox]:checked')];
   const provIds=checks.map(c=>parseInt(c.value));
   if(!nombre){toast('El nombre es obligatorio','error');return;}
   if(!unidad){toast('Seleccioná una unidad','error');return;}
   if(!provIds.length){toast('Asociá al menos un proveedor','error');return;}
-  const datos={nombre,unidad,perecedero,desc,proveedoresIds:provIds,activo:true,alicuotaIvaId:alicSel?parseInt(alicSel):null};
+  const datos={nombre,unidad,perecedero,desc,proveedoresIds:provIds,activo:true,alicuotaIvaId:alicSel?parseInt(alicSel):null,
+    rubroId:rubroSel?parseInt(rubroSel):null, subrubroId:subrubroSel?parseInt(subrubroSel):null};
   const filaTabla = {
     nombre, unidad, perecedero: perecedero === 'si',
-    descripcion: desc || null, alicuota_iva_id: alicSel ? parseInt(alicSel) : null
+    descripcion: desc || null, alicuota_iva_id: alicSel ? parseInt(alicSel) : null,
+    rubro_id: rubroSel ? parseInt(rubroSel) : null, subrubro_id: subrubroSel ? parseInt(subrubroSel) : null
   };
 
   let prod;
@@ -3506,7 +3744,7 @@ function renderHistorial(){
 }
 
 // ── MODALES ───────────────────────────────────────────
-function cerrarModal(id){ document.getElementById(id).classList.add('hidden'); editProdId=null; editProvId=null; }
+function cerrarModal(id){ document.getElementById(id).classList.add('hidden'); editProdId=null; editProvId=null; editRubroId=null; editSubrubroId=null; }
 function cerrarSiOverlay(e,id){ if(e.target.id===id) cerrarModal(id); }
 
 // ── REMITOS ───────────────────────────────────────────
@@ -3821,7 +4059,7 @@ function renderRemitos(){
 
 // ── TABS ──────────────────────────────────────────────
 function switchTab(tab){
-  const tabs=['stock','listado','ingreso','egreso','remitos','productos','proveedores','compras','historial'];
+  const tabs=['stock','listado','ingreso','egreso','remitos','productos','rubros','proveedores','compras','historial'];
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===tab));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   document.getElementById('panel-'+tab).classList.add('active');
@@ -4511,7 +4749,7 @@ function extraerNroOCDeDetalle(detalle){
 
 // ── INIT ──────────────────────────────────────────────
 function renderAll(){
-  const pasos = [renderAlertas, renderStock, renderProductos, renderProveedores, renderHistorial, renderRemitos];
+  const pasos = [renderAlertas, renderStock, renderProductos, renderRubros, renderProveedores, renderHistorial, renderRemitos];
   pasos.forEach(fn => {
     try { fn(); } catch(e) { console.warn('renderAll — error en ' + fn.name + ':', e); }
   });
@@ -4562,6 +4800,23 @@ function applyReadonlyMode(readonly) {
         btn.onclick = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
       });
       panelProd.querySelectorAll('.item-actions').forEach(div => {
+        div.style.display = 'none';
+        div.querySelectorAll('button').forEach(btn => {
+          btn.disabled = true;
+          btn.onclick = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
+        });
+      });
+    }
+
+    // 3b. En Rubros: bloquear botones Editar, Desactivar/Activar y "Nuevo rubro/sub-rubro"
+    const panelRubros = container.querySelector('#panel-rubros');
+    if (panelRubros) {
+      panelRubros.querySelectorAll('.btn-primary, .section-header button').forEach(btn => {
+        btn.style.display = 'none';
+        btn.disabled = true;
+        btn.onclick = e => { e.preventDefault(); e.stopImmediatePropagation(); return false; };
+      });
+      panelRubros.querySelectorAll('.item-actions').forEach(div => {
         div.style.display = 'none';
         div.querySelectorAll('button').forEach(btn => {
           btn.disabled = true;
@@ -4720,6 +4975,7 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
     <button class="tab" onclick="switchTab('egreso')">➖ Egreso</button>
     <button class="tab" onclick="switchTab('remitos')">🧾 Remitos</button>
     <button class="tab" onclick="switchTab('productos')">🏷 Productos</button>
+    <button class="tab" onclick="switchTab('rubros')">🗂 Rubros</button>
     <button class="tab" onclick="switchTab('proveedores')">🏭 Proveedores</button>
     <button class="tab" onclick="switchTab('compras')">🛒 Compras</button>
     <button class="tab" onclick="switchTab('historial')">🕓 Historial</button>
@@ -5089,6 +5345,25 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
     <div id="productos-list" class="item-list"></div>
   </div>
 
+  <!-- RUBROS -->
+  <div id="panel-rubros" class="panel">
+    <div class="section-header">
+      <div class="section-title">Rubros</div>
+      <button class="btn btn-primary btn-sm" onclick="abrirModalRubro()">+ Nuevo rubro</button>
+    </div>
+    <div id="rubros-list" class="item-list"></div>
+
+    <div class="section-header" style="margin-top:28px">
+      <div class="section-title">Sub-rubros</div>
+      <button class="btn btn-primary btn-sm" id="btn-nuevo-subrubro" onclick="abrirModalSubrubro()">+ Nuevo sub-rubro</button>
+    </div>
+    <div style="margin-bottom:14px;max-width:320px">
+      <label>Ver sub-rubros del rubro</label>
+      <select id="subrubros-filtro-rubro" onchange="renderSubrubros()"></select>
+    </div>
+    <div id="subrubros-list" class="item-list"></div>
+  </div>
+
   <!-- PROVEEDORES -->
   <div id="panel-proveedores" class="panel">
     <div class="section-header">
@@ -5228,11 +5503,27 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
           <option value="no">No — solo totalizar stock</option>
         </select>
       </div>
-      <div>
-        <label>Alícuota de IVA</label>
-        <select id="prod-alicuota-iva">
-          <option value="">— Sin asignar —</option>
-        </select>
+      <div class="col-full">
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div style="flex:0 0 110px;min-width:100px">
+            <label>Alícuota IVA</label>
+            <select id="prod-alicuota-iva">
+              <option value="">— Sin asignar —</option>
+            </select>
+          </div>
+          <div style="flex:1.4;min-width:150px">
+            <label>Rubro</label>
+            <select id="prod-rubro" onchange="renderProdSubrubroSelect(null)">
+              <option value="">— Sin asignar —</option>
+            </select>
+          </div>
+          <div style="flex:1.4;min-width:150px">
+            <label>Sub-rubro</label>
+            <select id="prod-subrubro">
+              <option value="">— Sin asignar —</option>
+            </select>
+          </div>
+        </div>
       </div>
       <div class="col-full">
         <label>Proveedores asociados <span class="req">*</span></label>
@@ -5247,6 +5538,44 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="cerrarModal('modal-producto')">Cancelar</button>
       <button class="btn btn-primary" onclick="guardarProducto()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL RUBRO -->
+<div id="modal-rubro" class="modal-overlay hidden" onclick="cerrarSiOverlay(event,'modal-rubro')">
+  <div class="modal">
+    <div class="modal-title" id="modal-rubro-title">Nuevo rubro</div>
+    <div class="form-grid">
+      <div class="col-full">
+        <label>Nombre <span class="req">*</span></label>
+        <input type="text" id="rubro-nombre" placeholder="Ej: Lácteos">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="cerrarModal('modal-rubro')">Cancelar</button>
+      <button class="btn btn-primary" onclick="guardarRubro()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL SUB-RUBRO -->
+<div id="modal-subrubro" class="modal-overlay hidden" onclick="cerrarSiOverlay(event,'modal-subrubro')">
+  <div class="modal">
+    <div class="modal-title" id="modal-subrubro-title">Nuevo sub-rubro</div>
+    <div class="form-grid">
+      <div class="col-full">
+        <label>Rubro <span class="req">*</span></label>
+        <select id="subrubro-rubro"></select>
+      </div>
+      <div class="col-full">
+        <label>Nombre <span class="req">*</span></label>
+        <input type="text" id="subrubro-nombre" placeholder="Ej: Quesos">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="cerrarModal('modal-subrubro')">Cancelar</button>
+      <button class="btn btn-primary" onclick="guardarSubrubro()">Guardar</button>
     </div>
   </div>
 </div>
@@ -5627,7 +5956,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0081</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0082</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -10537,12 +10866,12 @@ const ventasModuloHTML = `<div class="stock-module" id="ventas-module-wrap">
       </div>
       <label style="margin-top:16px">Personas de contacto</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-        <div style="flex:2;min-width:120px"><input type="text" id="vtcli-contacto1-nombre" placeholder="Nombre 1"></div>
-        <div style="flex:0 0 70px"><input type="text" id="vtcli-contacto1-cargo" placeholder="Cargo" maxlength="12"></div>
-        <div style="flex:2;min-width:120px"><input type="text" id="vtcli-contacto2-nombre" placeholder="Nombre 2"></div>
-        <div style="flex:0 0 70px"><input type="text" id="vtcli-contacto2-cargo" placeholder="Cargo" maxlength="12"></div>
-        <div style="flex:2;min-width:120px"><input type="text" id="vtcli-contacto3-nombre" placeholder="Nombre 3"></div>
-        <div style="flex:0 0 70px"><input type="text" id="vtcli-contacto3-cargo" placeholder="Cargo" maxlength="12"></div>
+        <div style="flex:1.6;min-width:95px"><input type="text" id="vtcli-contacto1-nombre" placeholder="Nombre 1"></div>
+        <div style="flex:0 0 105px"><input type="text" id="vtcli-contacto1-cargo" placeholder="Cargo" maxlength="12"></div>
+        <div style="flex:1.6;min-width:95px"><input type="text" id="vtcli-contacto2-nombre" placeholder="Nombre 2"></div>
+        <div style="flex:0 0 105px"><input type="text" id="vtcli-contacto2-cargo" placeholder="Cargo" maxlength="12"></div>
+        <div style="flex:1.6;min-width:95px"><input type="text" id="vtcli-contacto3-nombre" placeholder="Nombre 3"></div>
+        <div style="flex:0 0 105px"><input type="text" id="vtcli-contacto3-cargo" placeholder="Cargo" maxlength="12"></div>
       </div>
       <label style="margin-top:16px">Notas</label>
       <textarea id="vtcli-notas" placeholder="Datos generales del cliente..."></textarea>
