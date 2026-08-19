@@ -829,6 +829,41 @@ async function sbDelete(tabla, filtroQS){
   if(!res.ok) throw new Error(`sbDelete(${tabla}): HTTP ${res.status} — ${await res.text()}`);
 }
 
+// ── STORAGE (adjuntos) ───────────────────────────────────
+// Sube un archivo (objeto File del input) a un bucket público de Supabase
+// Storage con un nombre único (timestamp + sufijo aleatorio, conserva la
+// extensión original) y devuelve la URL pública lista para guardar en la
+// tabla correspondiente.
+async function sbSubirArchivo(bucket, file){
+  const extMatch = /\.[a-zA-Z0-9]+$/.exec(file.name || '');
+  const ext = extMatch ? extMatch[0].toLowerCase() : '';
+  const nombreUnico = `${Date.now()}-${Math.random().toString(36).slice(2,8)}${ext}`;
+  const res = await fetch(`${SB_URL}/storage/v1/object/${bucket}/${nombreUnico}`, {
+    method: 'POST',
+    headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': file.type || 'application/octet-stream' },
+    body: file
+  });
+  if(!res.ok) throw new Error(`sbSubirArchivo(${bucket}): HTTP ${res.status} — ${await res.text()}`);
+  return `${SB_URL}/storage/v1/object/public/${bucket}/${nombreUnico}`;
+}
+
+// Borra un adjunto del bucket a partir de su URL pública. Es "best effort":
+// si falla (ej. ya no existe) no interrumpe el flujo — el registro de todos
+// modos queda actualizado con el nuevo adjunto o sin adjunto.
+async function sbBorrarArchivoPorUrl(bucket, url){
+  if(!url) return;
+  const marca = `/storage/v1/object/public/${bucket}/`;
+  const i = url.indexOf(marca);
+  if(i === -1) return;
+  const path = url.slice(i + marca.length);
+  try {
+    await fetch(`${SB_URL}/storage/v1/object/${bucket}/${path}`, {
+      method: 'DELETE',
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY }
+    });
+  } catch(e){ console.warn('No se pudo borrar el adjunto anterior del storage:', e); }
+}
+
 // Llama a una función RPC de Postgres (ej. rpc_login, rpc_set_password).
 async function sbRpc(nombreFuncion, params){
   const res = await fetch(`${SB_URL}/rest/v1/rpc/${nombreFuncion}`, {
@@ -5956,7 +5991,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0082</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0083</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -10806,6 +10841,14 @@ const ventasModuloHTML = `<div class="stock-module" id="ventas-module-wrap">
       <label style="margin-top:16px">Notas</label>
       <textarea id="vt-notas" placeholder="Qué se habló, próximos pasos, contexto..."></textarea>
 
+      <label style="margin-top:16px">Adjuntar documento (opcional)</label>
+      <div id="vt-adjunto-actual" style="display:none;align-items:center;gap:8px;margin-bottom:8px;font-size:.85rem">
+        📎 <a href="#" id="vt-adjunto-actual-link" target="_blank" rel="noopener"></a>
+        <button type="button" class="btn btn-sm btn-secondary" onclick="ventasQuitarAdjunto()">Quitar</button>
+      </div>
+      <input type="file" id="vt-adjunto" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png">
+      <p class="hint">PDF o imagen (JPG/PNG), máx. 5 MB.</p>
+
       <div class="form-grid" style="margin-top:16px">
         <div id="vt-proximo-wrap">
           <label>Próximo contacto <span class="req">*</span></label>
@@ -10904,6 +10947,11 @@ const ventasModuloHTML = `<div class="stock-module" id="ventas-module-wrap">
 let VT_CLIENTES = [];
 let VT_CONVERSACIONES = [];
 let vtEditandoId = null;      // id de conversación en edición, o null = alta nueva
+// Adjunto del registro en edición: URL/nombre ya guardados en la fila (si
+// los hay) y si el usuario tocó "Quitar" para borrarlo al guardar.
+let vtAdjuntoActualUrl = null;
+let vtAdjuntoActualNombre = null;
+let vtAdjuntoQuitar = false;
 let vtCliEditandoId = null;   // id de cliente en edición, o null = alta nueva
 let isReadonlyVentas = false;
 
@@ -11182,9 +11230,33 @@ function ventasLimpiarFormulario(){
   document.getElementById('vt-fecha-cierre').value = '';
   document.getElementById('vt-cerrar-check').checked = false;
   ventasToggleCerrar();
+  document.getElementById('vt-adjunto').value = '';
+  document.getElementById('vt-adjunto-actual').style.display = 'none';
+  vtAdjuntoActualUrl = null; vtAdjuntoActualNombre = null; vtAdjuntoQuitar = false;
   document.getElementById('vt-btn-guardar').textContent = 'Guardar conversación';
   document.getElementById('vt-btn-cancelar-edicion').style.display = 'none';
   vtEditandoId = null;
+}
+
+// Muestra el adjunto ya guardado del registro en edición (link + botón Quitar).
+function ventasMostrarAdjuntoActual(url, nombre){
+  vtAdjuntoActualUrl = url; vtAdjuntoActualNombre = nombre; vtAdjuntoQuitar = false;
+  const div = document.getElementById('vt-adjunto-actual');
+  const link = document.getElementById('vt-adjunto-actual-link');
+  if(url){
+    link.href = url;
+    link.textContent = nombre || 'Ver adjunto';
+    div.style.display = 'flex';
+  } else {
+    div.style.display = 'none';
+  }
+}
+
+// Marca el adjunto actual para borrarlo al guardar (no lo borra todavía del
+// storage — recién se confirma cuando se guarda el registro).
+function ventasQuitarAdjunto(){
+  vtAdjuntoQuitar = true;
+  document.getElementById('vt-adjunto-actual').style.display = 'none';
 }
 
 async function ventasGuardarConversacion(){
@@ -11203,6 +11275,14 @@ async function ventasGuardarConversacion(){
   if(cerrarAhora && !fecha_cierre){ ventasToast('Falta la fecha de cierre','error'); return; }
   if(!cerrarAhora && !fecha_proximo_contacto){ ventasToast('Falta la fecha de próximo contacto','error'); return; }
 
+  const archivoInput = document.getElementById('vt-adjunto');
+  const archivoNuevo = (archivoInput.files && archivoInput.files[0]) ? archivoInput.files[0] : null;
+  if(archivoNuevo){
+    const tiposOk = ['application/pdf','image/jpeg','image/png','image/jpg'];
+    if(archivoNuevo.size > 5*1024*1024){ ventasToast('El adjunto no puede superar los 5 MB','error'); return; }
+    if(tiposOk.indexOf(archivoNuevo.type) === -1){ ventasToast('El adjunto debe ser PDF o imagen (JPG/PNG)','error'); return; }
+  }
+
   const btn = document.getElementById('vt-btn-guardar');
   const original = btn.textContent;
   btn.disabled = true; btn.textContent = 'Guardando...';
@@ -11214,6 +11294,22 @@ async function ventasGuardarConversacion(){
       fecha_proximo_contacto: cerrarAhora ? null : fecha_proximo_contacto,
       fecha_cierre: cerrarAhora ? fecha_cierre : null
     };
+
+    // Adjunto: si se eligió un archivo nuevo lo subimos y reemplaza al que
+    // hubiera; si se tocó "Quitar" sin elegir uno nuevo, se limpia el campo.
+    // En ambos casos, el archivo viejo (si había) se borra del storage
+    // recién después de guardar la fila con éxito.
+    let adjuntoUrlABorrar = null;
+    if(archivoNuevo){
+      payload.adjunto_url = await sbSubirArchivo('ventas-adjuntos', archivoNuevo);
+      payload.adjunto_nombre = archivoNuevo.name;
+      if(vtAdjuntoActualUrl) adjuntoUrlABorrar = vtAdjuntoActualUrl;
+    } else if(vtAdjuntoQuitar){
+      payload.adjunto_url = null;
+      payload.adjunto_nombre = null;
+      if(vtAdjuntoActualUrl) adjuntoUrlABorrar = vtAdjuntoActualUrl;
+    }
+
     const usuarioId = (typeof currentUser !== 'undefined' && currentUser && currentUser.id) ? currentUser.id : null;
     if(vtEditandoId){
       await sbUpdate('ventas_conversaciones', `id=eq.${vtEditandoId}`, payload);
@@ -11223,6 +11319,7 @@ async function ventasGuardarConversacion(){
       await sbInsert('ventas_conversaciones', payload);
       ventasToast('Conversación registrada');
     }
+    if(adjuntoUrlABorrar) await sbBorrarArchivoPorUrl('ventas-adjuntos', adjuntoUrlABorrar);
     ventasLimpiarFormulario();
     VT_CONVERSACIONES = await sbSelect('ventas_conversaciones', '');
     ventasRenderConversaciones();
@@ -11253,6 +11350,8 @@ function ventasEditarConversacion(id){
     document.getElementById('vt-fecha-cierre').value = '';
   }
   ventasToggleCerrar();
+  document.getElementById('vt-adjunto').value = '';
+  ventasMostrarAdjuntoActual(r.adjunto_url || null, r.adjunto_nombre || null);
   document.getElementById('vt-btn-guardar').textContent = 'Guardar cambios';
   document.getElementById('vt-btn-cancelar-edicion').style.display = '';
   switchTabVentas('registro');
@@ -11368,7 +11467,7 @@ function ventasCard(r){
   return `<div class="item-card${r.anulado ? ' inactivo' : ''}">
     <div>
       <div class="item-name">${c ? escVt(c.nombre) : '(cliente eliminado)'} <span class="badge ${badgeClass}" style="margin-left:6px">${semLabel}</span></div>
-      <div class="item-detail">${escVt(r.nombre_contacto)} · ${ventasFf(r.fecha_conversacion)} · ${estadoLbl}${r.notas ? '<br>'+escVt(r.notas) : ''}</div>
+      <div class="item-detail">${escVt(r.nombre_contacto)} · ${ventasFf(r.fecha_conversacion)} · ${estadoLbl}${r.notas ? '<br>'+escVt(r.notas) : ''}${r.adjunto_url ? `<br>📎 <a href="${r.adjunto_url}" target="_blank" rel="noopener">Ver adjunto</a>` : ''}</div>
     </div>
     ${acciones}
   </div>`;
