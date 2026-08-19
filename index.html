@@ -578,6 +578,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
 
@@ -5832,7 +5833,7 @@ const backupModuloHTML = `<div class="stock-module" id="backup-module-wrap">
   <div class="container">
     <div class="section-title">💾 Backup completo del sistema</div>
     <div style="font-size:.8rem;color:var(--muted);margin:10px 0 22px;max-width:560px;line-height:1.5">
-      Genera un único archivo con una copia completa de Stock y Producción — se lee todo fresco desde la base en el momento de generarlo, no depende de qué módulo tengas abierto ni de cuándo fue el último F5.
+      Genera un único archivo .zip con una copia completa de Stock, Producción y Ventas (clientes y conversaciones, incluidos los documentos adjuntos) — se lee todo fresco desde la base en el momento de generarlo, no depende de qué módulo tengas abierto ni de cuándo fue el último F5.
     </div>
     <div class="card" style="max-width:420px">
       <button class="btn btn-primary" id="btn-generar-backup" onclick="generarBackupCompleto()" style="width:100%;font-size:.85rem;padding:12px">💾 Generar Backup Completo</button>
@@ -5991,7 +5992,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0083</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0084</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -6525,12 +6526,17 @@ function toastBackup(msg, t){
   setTimeout(()=>{ el.className = 'toast'; }, 3200);
 }
 
-// Junta Stock + Producción en un solo JSON. Vuelve a leer todo desde
-// Supabase en el momento (cargarDesdeSupabase()/cargarProdDesdeSupabase(),
-// las mismas funciones que usan los módulos Stock y Producción al
+// Junta Stock + Producción + Ventas (clientes, conversaciones y sus
+// documentos adjuntos) en un único .zip. Vuelve a leer todo desde
+// Supabase en el momento (cargarDesdeSupabase()/cargarProdDesdeSupabase()/
+// ventasCargarTodo(), las mismas funciones que usan los módulos al
 // abrirse) — no depende de lo que haya quedado en memoria de una
 // navegación anterior. Usa el guard bloquear()/desbloquear() (sección
 // 0.A de la Referencia Técnica) para evitar doble-click mientras corre.
+// Los adjuntos de Ventas se descargan de Supabase Storage y se empaquetan
+// en la carpeta adjuntos/ del zip, renombrados como
+// "{id de conversación}_{empresa}_{fecha}.{ext}" para poder identificar
+// cada archivo a simple vista sin tener que cruzarlo contra el JSON.
 async function generarBackupCompleto(){
   if(!bloquear('backup')) return;
   const btn = document.getElementById('btn-generar-backup');
@@ -6541,7 +6547,8 @@ async function generarBackupCompleto(){
     await cargarDesdeSupabase();
     if(status) status.textContent = 'Leyendo Producción...';
     await cargarProdDesdeSupabase();
-    if(status) status.textContent = 'Armando el archivo...';
+    if(status) status.textContent = 'Leyendo Ventas...';
+    await ventasCargarTodo();
 
     // Defensa extra (además del borrado activo en cargarDesdeSupabase()):
     // nunca exportar DB.usuarios, el campo legado de antes de la
@@ -6551,16 +6558,44 @@ async function generarBackupCompleto(){
     delete stockParaExportar.usuarios;
 
     const backup = {
-      version: 1,
+      version: 2,
       generadoEn: new Date().toISOString(),
       generadoPor: currentUser ? currentUser.name : null,
       stock: stockParaExportar,
-      produccion: PDB
+      produccion: PDB,
+      ventas: { clientes: VT_CLIENTES, conversaciones: VT_CONVERSACIONES }
     };
+
+    const zip = new JSZip();
+    zip.file('backup.json', JSON.stringify(backup, null, 2));
+
+    // Adjuntos: se descargan uno por uno de Supabase Storage y se
+    // empaquetan en adjuntos/. Si alguno falla (ej. se borró del bucket),
+    // se salta y se avisa por consola — no interrumpe el resto del backup.
+    const conAdjunto = VT_CONVERSACIONES.filter(r => r.adjunto_url);
+    for(let i = 0; i < conAdjunto.length; i++){
+      const r = conAdjunto[i];
+      if(status) status.textContent = `Descargando adjuntos... (${i+1}/${conAdjunto.length})`;
+      try{
+        const res = await fetch(r.adjunto_url);
+        if(!res.ok) throw new Error('HTTP ' + res.status);
+        const blobArchivo = await res.blob();
+        const cliente = VT_CLIENTES.find(c => c.id === r.cliente_id);
+        const empresa = (cliente ? cliente.nombre : 'sin_cliente').replace(/[^a-zA-Z0-9]+/g, '_');
+        const extMatch = /\.[a-zA-Z0-9]+$/.exec(r.adjunto_nombre || r.adjunto_url);
+        const ext = extMatch ? extMatch[0] : '';
+        zip.file(`adjuntos/${r.id}_${empresa}_${r.fecha_conversacion || 'sinfecha'}${ext}`, blobArchivo);
+      } catch(e){
+        console.warn(`No se pudo descargar el adjunto de la conversación ${r.id}:`, e);
+      }
+    }
+
+    if(status) status.textContent = 'Comprimiendo el archivo...';
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+
     const fecha = new Date().toISOString().slice(0,10);
-    const nombre = `bbf-backup-completo-${fecha}.json`;
-    const blob = new Blob([JSON.stringify(backup, null, 2)], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
+    const nombre = `bbf-backup-completo-${fecha}.zip`;
+    const url = URL.createObjectURL(zipBlob);
     const a = document.createElement('a');
     a.href = url; a.download = nombre; a.click();
     URL.revokeObjectURL(url);
