@@ -1385,7 +1385,7 @@ function stockTotal(productoId){
 // ── ALERTAS ───────────────────────────────────────────
 function renderAlertas(){
   const al=[];
-  DB.lotes.filter(l=>l.cantidad>0).forEach(l=>{
+  DB.lotes.filter(l=>l.cantidad>0 && (getProd(l.productoId)||{}).perecedero==='si').forEach(l=>{
     const d=dias(l.vencimiento);
     const pn=nomProd(l.productoId);
     if(d<=0) al.push({t:'danger',m:`⚠ ${pn} — Lote ${l.loteRef||'#'+l.id} VENCIDO (${ff(l.vencimiento)})`});
@@ -5992,7 +5992,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0084</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0085</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
