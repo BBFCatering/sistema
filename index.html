@@ -1605,7 +1605,7 @@ function renderListadoRemitos(){
   if(desde) remitos = remitos.filter(r => r.fecha >= desde);
   if(hasta) remitos = remitos.filter(r => r.fecha <= hasta);
   if(destino) remitos = remitos.filter(r => r.destino === destino);
-  remitos.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  remitos.sort((a,b)=> a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
 
   if(!remitos.length){
     el.innerHTML = `<div class="empty-state"><div class="icon">🧾</div><p>No hay remitos en el rango seleccionado.</p></div>`;
@@ -1683,13 +1683,19 @@ function renderListadoOC(){
     });
   }
 
+  const locDestino = document.getElementById('loc-destino').value;
+  if(locDestino) entradas = entradas.filter(h=> extraerDestinoDeDetalle(h.detalle) === locDestino);
+
+  const locPerecedero = document.getElementById('loc-perecedero').value;
+  if(locPerecedero) entradas = entradas.filter(h=>{ const p=getProd(h.productoId); return p && p.perecedero===locPerecedero; });
+
   const locProvId = parseInt(document.getElementById('loc-proveedor').value);
   if(!isNaN(locProvId) && locProvId){
     const nomProvSel = nomProv(locProvId);
     entradas = entradas.filter(h=> extraerProveedorDeDetalle(h.detalle) === nomProvSel);
   }
 
-  entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  entradas.sort((a,b)=> a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
 
   if(!entradas.length){
     el.innerHTML = `<div class="empty-state"><div class="icon">🛒</div><p>No hay ingresos de stock en el rango seleccionado.</p></div>`;
@@ -1761,7 +1767,13 @@ function renderListadoOCObs(){
     });
   }
 
-  entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  const locobsDestino = document.getElementById('locobs-destino').value;
+  if(locobsDestino) entradas = entradas.filter(h=> extraerDestinoDeDetalle(h.detalle) === locobsDestino);
+
+  const locobsPerecedero = document.getElementById('locobs-perecedero').value;
+  if(locobsPerecedero) entradas = entradas.filter(h=>{ const p=getProd(h.productoId); return p && p.perecedero===locobsPerecedero; });
+
+  entradas.sort((a,b)=> a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
 
   if(!entradas.length){
     el.innerHTML = `<div class="empty-state"><div class="icon">✅</div><p>No hay observaciones en los ingresos de materias primas en el rango seleccionado.</p></div>`;
@@ -1882,6 +1894,7 @@ async function ingresarStock(){
   const loteRef=document.getElementById('ing-lote').value.trim();
   const obs=document.getElementById('ing-observaciones').value.trim();
   let tempRaw=document.getElementById('ing-temp').value.trim().replace(',','.');
+  const destino=document.getElementById('ing-destino').value; // '' = Stock Central, o 'Cocina Ternium'
 
   if(!provId){toast('Seleccioná un proveedor','error');return;}
   if(!prodId){toast('Seleccioná un producto','error');return;}
@@ -1892,7 +1905,9 @@ async function ingresarStock(){
   if(tempRaw && !/^-?\d{1,2}(\.\d)?$/.test(tempRaw)){ toast('Temperatura inválida. Formato: hasta 2 dígitos y 1 decimal, ej: -18.5','error'); return; }
   const temp = (prod.perecedero==='si' && tempRaw) ? tempRaw : null;
 
-  const detalleSufijo = (obs?` · Obs: ${obs}`:'') + (temp?` · Temp: ${temp}°C`:'');
+  const detalleDestino = destino ? ` · Destino: ${destino}` : '';
+  const detalleSufijo = (obs?` · Obs: ${obs}`:'') + (temp?` · Temp: ${temp}°C`:'') + detalleDestino;
+  let lineaEgresoTernium = null;
   try {
     if(prod.perecedero==='si'){
       const loteFila = await crearLote(prodId, provId, cant, venc, temp, loteRef);
@@ -1901,6 +1916,9 @@ async function ingresarStock(){
       const detalleTexto = `Lote ${loteRef||'#'+lote.id} · ${nomProv(provId)}${detalleSufijo}`;
       await registrarHistorial('ingreso', {productoId:prodId, nombre:prod.nombre, cantidad:cant, unidad:prod.unidad, detalle:detalleTexto});
       DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:detalleTexto,fecha:new Date().toISOString()});
+      if(destino==='Cocina Ternium'){
+        lineaEgresoTernium = {productoId:prodId, nombre:prod.nombre, unidad:prod.unidad, loteId:lote.id, loteRef:lote.loteRef||'#'+lote.id, vencimiento:venc, proveedorId:provId, temp:temp||null, cantidad:cant};
+      }
     } else {
       const stockFila = await ajustarStockSimple(prodId, cant, prod.unidad);
       if(!DB.stockSimple[prodId]) DB.stockSimple[prodId]={cantidad:0,unidad:prod.unidad};
@@ -1908,12 +1926,17 @@ async function ingresarStock(){
       const detalleTexto = `Proveedor: ${nomProv(provId)}${loteRef?' · '+loteRef:''}${detalleSufijo}`;
       await registrarHistorial('ingreso', {productoId:prodId, nombre:prod.nombre, cantidad:cant, unidad:prod.unidad, detalle:detalleTexto});
       DB.historial.unshift({tipo:'ingreso',productoId:prodId,nombre:prod.nombre,cantidad:cant,unidad:prod.unidad,detalle:detalleTexto,fecha:new Date().toISOString()});
+      if(destino==='Cocina Ternium'){
+        lineaEgresoTernium = {productoId:prodId, nombre:prod.nombre, unidad:prod.unidad, cantidad:cant};
+      }
     }
   } catch(e){
     console.warn('Error en ingresarStock:', e);
     toast('⚠ No se pudo guardar el ingreso','error');
     return;
   }
+
+  if(lineaEgresoTernium) agregarAlBorradorEgresoTernium([lineaEgresoTernium], loteRef||null);
 
   save();
   resetProvSearchWidget('ing-prov-wrap');
@@ -1923,9 +1946,11 @@ async function ingresarStock(){
   document.getElementById('ing-lote').value='';
   document.getElementById('ing-observaciones').value='';
   document.getElementById('ing-temp').value='';
+  document.getElementById('ing-destino').value='';
   onProveedorChange();
   renderAll(); switchTab('stock');
-  toast(`✓ Ingresado: ${cant} ${prod.unidad} de ${prod.nombre}`);
+  if(lineaEgresoTernium) toast(`✓ Ingresado: ${cant} ${prod.unidad} de ${prod.nombre} — agregado al borrador de egreso a Cocina Ternium (revisá la pestaña Egreso)`);
+  else toast(`✓ Ingresado: ${cant} ${prod.unidad} de ${prod.nombre}`);
 }
 
 // Aplica un ingreso de stock para un producto dado (usado tanto por el
@@ -2124,13 +2149,15 @@ async function confirmarIngresoOCImpl(){
   const provId = ingOCActual.proveedorId;
   const obs = (document.getElementById('ingoc-observaciones')?.value||'').trim();
   const detalleObs = obs ? ` · Obs: ${obs}` : '';
+  const destino = document.getElementById('ingoc-destino').value; // '' = Stock Central, o 'Cocina Ternium'
+  const detalleDestino = destino ? ` · Destino: ${destino}` : '';
 
   const recepcionLineas = [];
   try {
     for(const l of ingOCLineas){
       const detalle = l.extra
-        ? `Adicional — no incluido en OC ${ingOCActual.nro}${detalleObs}`
-        : `Ingreso desde OC ${ingOCActual.nro}${detalleObs}`;
+        ? `Adicional — no incluido en OC ${ingOCActual.nro}${detalleObs}${detalleDestino}`
+        : `Ingreso desde OC ${ingOCActual.nro}${detalleObs}${detalleDestino}`;
       const ref = await aplicarIngresoLinea(l.productoId, provId, l.cantidad, l.vencimiento, l.loteRef, detalle, l.perecedero==='si'?(l.temp||null):null, ingOCActual.id);
       if(ref) recepcionLineas.push(ref);
     }
@@ -2138,6 +2165,20 @@ async function confirmarIngresoOCImpl(){
     console.warn('Error en confirmarIngresoOC:', e);
     toast('⚠ No se pudo registrar el ingreso completo — revisá el stock antes de reintentar','error');
     return;
+  }
+
+  // Destino Cocina Ternium: precargar el borrador de Egreso con lo recién
+  // ingresado, para no tener que cargarlo dos veces (ver agregarAlBorradorEgresoTernium).
+  if(destino==='Cocina Ternium' && recepcionLineas.length){
+    const lineasEgreso = recepcionLineas.map(ref=>{
+      const p = getProd(ref.productoId);
+      return ref.perecedero==='si'
+        ? {productoId:ref.productoId, nombre:p?p.nombre:'', unidad:ref.unidad, loteId:ref.loteId, loteRef:ref.loteRef||'#'+ref.loteId, vencimiento:ref.vencimiento, proveedorId:ref.proveedorId, temp:ref.temp||null, cantidad:ref.cantidad}
+        : {productoId:ref.productoId, nombre:p?p.nombre:'', unidad:ref.unidad, cantidad:ref.cantidad};
+    });
+    const lotesRefsUnicos = [...new Set(recepcionLineas.map(r=>r.loteRef).filter(Boolean))];
+    const nroSugerido = lotesRefsUnicos.length===1 ? lotesRefsUnicos[0] : ingOCActual.nro;
+    agregarAlBorradorEgresoTernium(lineasEgreso, nroSugerido);
   }
 
   // Marcar la OC como recibida — relacional (tabla ordenes_compra) y espejo
@@ -2160,7 +2201,8 @@ async function confirmarIngresoOCImpl(){
   ingOCActual.recepcion = recepcion;
 
   save();
-  toast(`✓ Ingreso registrado desde ${ingOCActual.nro}`);
+  if(destino==='Cocina Ternium') toast(`✓ Ingreso registrado desde ${ingOCActual.nro} — agregado al borrador de egreso a Cocina Ternium (revisá la pestaña Egreso)`);
+  else toast(`✓ Ingreso registrado desde ${ingOCActual.nro}`);
 
   cancelarIngresoOC();
   renderAll();
@@ -2172,6 +2214,8 @@ function cancelarIngresoOC(){
   ingOCActual = null;
   const selOrden = document.getElementById('ingoc-orden');
   if(selOrden) selOrden.value = '';
+  const destinoEl = document.getElementById('ingoc-destino');
+  if(destinoEl) destinoEl.value = '';
   const obsEl = document.getElementById('ingoc-observaciones');
   if(obsEl) obsEl.value = '';
   const wrap = document.getElementById('ingoc-lineas-wrap');
@@ -3490,7 +3534,7 @@ function exportarPDF_ListadoRemitos(){
   if(desde) remitos = remitos.filter(r => r.fecha >= desde);
   if(hasta) remitos = remitos.filter(r => r.fecha <= hasta);
   if(destino) remitos = remitos.filter(r => r.destino === destino);
-  remitos.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  remitos.sort((a,b)=> a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
 
   if(!remitos.length){ toast('No hay remitos en el rango seleccionado','error'); return; }
 
@@ -3529,7 +3573,7 @@ function exportarExcel_ListadoRemitos(){
   if(desde) remitos = remitos.filter(r => r.fecha >= desde);
   if(hasta) remitos = remitos.filter(r => r.fecha <= hasta);
   if(destino) remitos = remitos.filter(r => r.destino === destino);
-  remitos.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  remitos.sort((a,b)=> a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
 
   if(!remitos.length){ toast('No hay remitos en el rango seleccionado','error'); return; }
 
@@ -3586,13 +3630,19 @@ function exportarPDF_ListadoOC(){
     });
   }
 
+  const locDestinoPdf = document.getElementById('loc-destino').value;
+  if(locDestinoPdf) entradas = entradas.filter(h=> extraerDestinoDeDetalle(h.detalle) === locDestinoPdf);
+
+  const locPerecederoPdf = document.getElementById('loc-perecedero').value;
+  if(locPerecederoPdf) entradas = entradas.filter(h=>{ const p=getProd(h.productoId); return p && p.perecedero===locPerecederoPdf; });
+
   const locProvIdPdf = parseInt(document.getElementById('loc-proveedor').value);
   if(!isNaN(locProvIdPdf) && locProvIdPdf){
     const nomProvSelPdf = nomProv(locProvIdPdf);
     entradas = entradas.filter(h=> extraerProveedorDeDetalle(h.detalle) === nomProvSelPdf);
   }
 
-  entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  entradas.sort((a,b)=> a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
 
   if(!entradas.length){ toast('No hay ingresos de stock en el rango seleccionado','error'); return; }
 
@@ -3650,13 +3700,19 @@ function exportarExcel_ListadoOC(){
     });
   }
 
+  const locDestinoXls = document.getElementById('loc-destino').value;
+  if(locDestinoXls) entradas = entradas.filter(h=> extraerDestinoDeDetalle(h.detalle) === locDestinoXls);
+
+  const locPerecederoXls = document.getElementById('loc-perecedero').value;
+  if(locPerecederoXls) entradas = entradas.filter(h=>{ const p=getProd(h.productoId); return p && p.perecedero===locPerecederoXls; });
+
   const locProvIdXls = parseInt(document.getElementById('loc-proveedor').value);
   if(!isNaN(locProvIdXls) && locProvIdXls){
     const nomProvSelXls = nomProv(locProvIdXls);
     entradas = entradas.filter(h=> extraerProveedorDeDetalle(h.detalle) === nomProvSelXls);
   }
 
-  entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  entradas.sort((a,b)=> a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
 
   if(!entradas.length){ toast('No hay ingresos de stock en el rango seleccionado','error'); return; }
 
@@ -3718,7 +3774,13 @@ function exportarPDF_ListadoOCObs(){
     });
   }
 
-  entradas.sort((a,b)=> a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  const locobsDestinoPdf = document.getElementById('locobs-destino').value;
+  if(locobsDestinoPdf) entradas = entradas.filter(h=> extraerDestinoDeDetalle(h.detalle) === locobsDestinoPdf);
+
+  const locobsPerecederoPdf = document.getElementById('locobs-perecedero').value;
+  if(locobsPerecederoPdf) entradas = entradas.filter(h=>{ const p=getProd(h.productoId); return p && p.perecedero===locobsPerecederoPdf; });
+
+  entradas.sort((a,b)=> a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
 
   if(!entradas.length){ toast('No hay observaciones en los ingresos de materias primas en el rango seleccionado','error'); return; }
 
@@ -3889,6 +3951,23 @@ function renderLineasBorrador(){
 }
 
 function quitarLinea(i){ remitoLineas.splice(i,1); renderLineasBorrador(); }
+
+// Agrega automáticamente al borrador de Egreso (mismo array remitoLineas que
+// usa el panel Egreso) las líneas de un ingreso cuyo Destino fue "Cocina
+// Ternium". Evita cargar dos veces la misma mercadería (ingreso a Stock
+// Central + egreso a Ternium): el usuario solo revisa y cierra el remito ya
+// armado desde la pestaña Egreso — el descuento de stock recién ocurre ahí.
+function agregarAlBorradorEgresoTernium(lineasNuevas, nroSugerido){
+  if(!lineasNuevas || !lineasNuevas.length) return;
+  remitoLineas.push(...lineasNuevas);
+  const destinoEl = document.getElementById('rem-destino');
+  if(destinoEl && !destinoEl.value) destinoEl.value = 'Cocina Ternium';
+  const fechaEl = document.getElementById('rem-fecha');
+  if(fechaEl && !fechaEl.value) fechaEl.value = new Date().toISOString().split('T')[0];
+  const nroEl = document.getElementById('rem-nro');
+  if(nroEl && !nroEl.value && nroSugerido) nroEl.value = nroSugerido;
+  renderLineasBorrador();
+}
 
 async function cerrarRemito(){
   if(!bloquear('cerrarRemito')) return;
@@ -4774,6 +4853,14 @@ function extraerNroOCDeDetalle(detalle){
   if(m) return m[1];
   return null;
 }
+// Extrae el destino embebido en el "detalle" de un registro de historial de
+// ingreso ("· Destino: Cocina Ternium"). Los ingresos previos a esta función
+// no llevan la etiqueta — se asumen Stock Central (comportamiento histórico).
+function extraerDestinoDeDetalle(detalle){
+  if(!detalle) return 'Stock Central';
+  const m = detalle.match(/Destino:\s*([^·]+)/);
+  return m ? m[1].trim() : 'Stock Central';
+}
 
 // ── BACKUP / RESTORE ──────────────────────────────────
 // exportarBackup()/importarBackup() (Stock) se sacaron en agosto 2026 —
@@ -5112,6 +5199,20 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
             <input type="number" min="1" id="loc-nro-hasta" placeholder="999" style="width:90px;font-size:.78rem;padding:5px 8px;">
           </label>
         </span>
+        <label style="font-size:.78rem;color:var(--muted)">Destino
+          <select id="loc-destino" style="width:auto;font-size:.78rem;padding:5px 8px;">
+            <option value="">Todos</option>
+            <option value="Stock Central">Stock Central</option>
+            <option value="Cocina Ternium">Cocina Ternium</option>
+          </select>
+        </label>
+        <label style="font-size:.78rem;color:var(--muted)">Perecedero
+          <select id="loc-perecedero" style="width:auto;font-size:.78rem;padding:5px 8px;">
+            <option value="">Todos</option>
+            <option value="si">Perecedero</option>
+            <option value="no">No perecedero</option>
+          </select>
+        </label>
         <label style="font-size:.78rem;color:var(--muted)">Proveedor
           <div class="prov-search-wrap" id="loc-prov-wrap" style="width:220px;display:inline-block;vertical-align:middle">
             <input type="text" class="prov-search-input" id="loc-prov-text" placeholder="Todos" autocomplete="off" style="font-size:.78rem;padding:5px 8px;" oninput="filterProvSearch('loc-prov-wrap')" onfocus="openProvDropdown('loc-prov-wrap')" onblur="closeProvDropdownDelayed('loc-prov-wrap')">
@@ -5156,6 +5257,20 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
             <input type="number" min="1" id="locobs-nro-hasta" placeholder="999" style="width:90px;font-size:.78rem;padding:5px 8px;">
           </label>
         </span>
+        <label style="font-size:.78rem;color:var(--muted)">Destino
+          <select id="locobs-destino" style="width:auto;font-size:.78rem;padding:5px 8px;">
+            <option value="">Todos</option>
+            <option value="Stock Central">Stock Central</option>
+            <option value="Cocina Ternium">Cocina Ternium</option>
+          </select>
+        </label>
+        <label style="font-size:.78rem;color:var(--muted)">Perecedero
+          <select id="locobs-perecedero" style="width:auto;font-size:.78rem;padding:5px 8px;">
+            <option value="">Todos</option>
+            <option value="si">Perecedero</option>
+            <option value="no">No perecedero</option>
+          </select>
+        </label>
         <button class="btn btn-secondary btn-sm" onclick="renderListadoOCObs()">🔍 Filtrar</button>
         <button class="btn btn-secondary btn-sm" onclick="exportarPDF_ListadoOCObs()">📄 PDF</button>
       </div>
@@ -5197,6 +5312,13 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
               <div class="prod-dropdown" style="display:none"></div>
               <input type="hidden" id="ing-producto">
             </div>
+          </div>
+          <div style="max-width:170px">
+            <label>Destino</label>
+            <select id="ing-destino">
+              <option value="">Stock Central</option>
+              <option value="Cocina Ternium">Cocina Ternium</option>
+            </select>
           </div>
           <div id="ing-cantidad-wrap" style="display:none;max-width:110px">
             <label>Cantidad <span class="req">*</span></label>
@@ -5246,6 +5368,13 @@ const stockModuleHTML = `<div class="stock-module" id="stock-module-wrap">
             <label>2. Orden de compra <span class="req">*</span></label>
             <select id="ingoc-orden" onchange="onIngOCOrdenChange()" disabled>
               <option value="">— Primero elegí proveedor —</option>
+            </select>
+          </div>
+          <div style="max-width:170px">
+            <label>3. Destino</label>
+            <select id="ingoc-destino">
+              <option value="">Stock Central</option>
+              <option value="Cocina Ternium">Cocina Ternium</option>
             </select>
           </div>
         </div>
@@ -5992,7 +6121,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0085</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0086</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -8577,7 +8706,7 @@ function renderListaRegistros(contId, desdeId, hastaId, pref, conAcciones, conFi
           let menuTag = '';
           if(l.menuId !== null && l.menuId !== undefined){
             const mn = menuById(l.menuId);
-            if(mn) menuTag = ' <span class="badge badge-neutral" title="' + escProd(mn.descripcion) + '">M' + menuNum(mn) + '</span>';
+            if(mn) menuTag = ' <span class="badge badge-neutral">M' + menuNum(mn) + ' — ' + escProd(mn.descripcion) + '</span>';
           }
           let fila = `<tr><td>${escProd(nombre)}${menuTag}</td><td>${tipo}</td><td>${l.cantidad}</td><td style="color:var(--muted)">${escProd(l.unidad)}</td><td style="font-weight:600">${costoUnit}</td></tr>`;
           (l.detalles || []).forEach(d => {
