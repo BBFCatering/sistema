@@ -6153,7 +6153,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0087</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0088</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -11725,7 +11725,7 @@ function ventasExportarPDF(){
     theme: 'grid',
     headStyles: { fillColor:[29,158,117], textColor:255 },
     styles: { fontSize:8 },
-    columnStyles: { 5:{cellWidth:80} },
+    columnStyles: { 2:{cellWidth:20}, 3:{cellWidth:18}, 4:{cellWidth:34}, 5:{cellWidth:111} },
     didParseCell: function(data){
       if(data.section === 'body' && data.column.index === 3){
         const v = data.cell.raw;
