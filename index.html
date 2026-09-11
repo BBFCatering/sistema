@@ -6153,7 +6153,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0091</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0092</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -7707,7 +7707,7 @@ const prodModuleHTML = '' +
 '          <input type="date" id="infre-desde" style="width:auto;font-size:.78rem;padding:6px 8px"></div>' +
 '        <div><label style="font-size:.72rem">Hasta (fecha)</label>' +
 '          <input type="date" id="infre-hasta" style="width:auto;font-size:.78rem;padding:6px 8px"></div>' +
-'        <div style="min-width:200px"><label style="font-size:.72rem">Destinatario</label>' +
+'        <div style="min-width:140px"><label style="font-size:.72rem">Destinatario</label>' +
 '          <select id="infre-destinatario"><option value="">Todos</option></select></div>' +
 '        <div style="min-width:200px"><label style="font-size:.72rem">Producto</label>' +
 '          <select id="infre-producto"><option value="">Todos</option></select></div>' +
@@ -10432,12 +10432,20 @@ async function cerrarRemitoDestinoImpl(){
 // en el sistema (ver, por ejemplo, el de impresión de remitos de Stock)
 // — así existe sin importar qué módulo esté cargado en ese momento, hoy
 // y con cualquier pantalla nueva que en el futuro también liste remitos.
+// z-index en línea: .modal-overlay trae 200, que alcanza para un modal
+// que vive ADENTRO del contenido de un módulo (compite solo con lo que
+// hay dentro de esa pantalla) — pero este modal cuelga directo de body,
+// al mismo nivel que #fullscreen-overlay (z-index:500, la pantalla
+// completa de cada módulo). Con 200 quedaba tapado detrás de esa
+// pantalla y solo se veía al cerrarla. Mismo z-index:9999 que ya usan
+// los demás overlays creados por JS y colgados de body (ver 1818/4154).
 function asegurarModalVerRemito(){
   let m = document.getElementById('modal-ver-remito');
   if(m) return m;
   m = document.createElement('div');
   m.id = 'modal-ver-remito';
   m.className = 'modal-overlay hidden';
+  m.style.zIndex = '9999';
   m.onclick = function(e){ if(e.target.id === 'modal-ver-remito') cerrarModalVerRemito(); };
   m.innerHTML =
     '<div class="modal" style="max-width:460px;text-align:center">' +
