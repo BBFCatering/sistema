@@ -6153,7 +6153,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0089</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0090</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -7587,16 +7587,6 @@ const prodModuleHTML = '' +
 '          <button class="btn btn-secondary" onclick="cerrarFormRemitoDestino()">Cancelar</button>' +
 '        </div>' +
 '      </div>' +
-
-'      <div id="remdest-emitido-card" class="card" style="display:none;text-align:center">' +
-'        <div style="font-size:34px;margin-bottom:8px">✅</div>' +
-'        <div class="card-title" id="remdest-emitido-titulo" style="margin-bottom:14px">Remito emitido</div>' +
-'        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">' +
-'          <button class="btn btn-primary" id="btn-remdest-imprimir">🖨 Imprimir (original + copia)</button>' +
-'          <button class="btn btn-primary" id="btn-remdest-pdf">📄 PDF (original)</button>' +
-'          <button class="btn btn-secondary" onclick="document.getElementById(\'remdest-emitido-card\').style.display=\'none\'">Cerrar</button>' +
-'        </div>' +
-'      </div>' +
 '    </div>' +
 '  </div>' +
 '  <div id="panelp-informes" class="panel">' +
@@ -7723,6 +7713,7 @@ const prodModuleHTML = '' +
 '          <select id="infre-producto"><option value="">Todos</option></select></div>' +
 '        <button class="btn btn-secondary btn-sm" onclick="renderInformeRemitosEmitidos()">🔍 Filtrar</button>' +
 '        <button class="btn btn-secondary btn-sm" onclick="limpiarFiltrosInfRemitos()">✨ Todos</button>' +
+'        <button class="btn btn-secondary btn-sm" onclick="exportarInformeRemitosEmitidosExcel()">📊 Excel</button>' +
 '      </div>' +
 '      <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">Los tres filtros admiten "Todos" y se combinan entre sí. Documental — estos remitos no descuentan stock.</div>' +
 '      <div id="infre-lista"></div>' +
@@ -7747,6 +7738,24 @@ const prodModuleHTML = '' +
 '      <div style=\"display:flex;gap:10px\">' +
 '        <button class=\"btn btn-primary\" style=\"flex:1\" onclick=\"cerrarModalReceta(false)\">✔ Confirmar</button>' +
 '        <button class=\"btn btn-secondary\" style=\"flex:1\" onclick=\"cerrarModalReceta(true)\">Cancelar</button>' +
+'      </div>' +
+'    </div>' +
+'  </div>' +
+
+// Modal único para "Ver" un remito emitido — usado desde Destino, desde
+// Informes → Remitos Emitidos y desde Ajustes → Ajuste de Remitos. Vive
+// fuera de los paneles con tabs (como receta-modal-overlay) para que
+// funcione igual sin importar qué pestaña esté activa — reemplaza a la
+// vieja tarjeta remdest-emitido-card, que solo se veía estando parado en
+// la pestaña Destino.
+'  <div id="modal-ver-remito" class="modal-overlay hidden" onclick="cerrarSiOverlayVerRemito(event)">' +
+'    <div class="modal" style="max-width:460px;text-align:center">' +
+'      <div style="font-size:34px;margin-bottom:8px">🧾</div>' +
+'      <div class="modal-title" id="vrd-titulo">Remito</div>' +
+'      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:16px">' +
+'        <button class="btn btn-primary" id="btn-vrd-imprimir">🖨 Imprimir (original + copia)</button>' +
+'        <button class="btn btn-primary" id="btn-vrd-pdf">📄 PDF (original)</button>' +
+'        <button class="btn btn-secondary" onclick="cerrarModalVerRemito()">Cerrar</button>' +
 '      </div>' +
 '    </div>' +
 '  </div>' +
@@ -9638,7 +9647,7 @@ function renderAjustesRemitos(){
         <span style="font-size:.72rem;color:var(--muted)">${r.lineas.length} línea${r.lineas.length === 1 ? '' : 's'} · ${escProd(r.usuario || '—')}</span>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn btn-secondary btn-sm" onclick="mostrarAccionesRemito(${r.id})">👁 Ver</button>
+        <button class="btn btn-secondary btn-sm" onclick="abrirModalVerRemito(${r.id})">👁 Ver</button>
         <button class="btn btn-secondary btn-sm prod-edit-action" onclick="modificarRemitoDesdeAjustes(${r.id})">✏ Modificar</button>
         <button class="btn btn-secondary btn-sm prod-edit-action" onclick="eliminarRemitoAdmin(${r.id})">🗑 Eliminar</button>
       </div>
@@ -10214,7 +10223,7 @@ function abrirFormRemitoDestino(id){
   document.getElementById('remdest-domicilio').value = r ? (r.domicilio || '') : '';
   document.getElementById('remdest-cuit').value = r ? (r.cuit || '') : '';
   document.getElementById('remdest-obs').value = r ? (r.observacion || '') : '';
-  document.getElementById('remdest-emitido-card').style.display = 'none';
+  cerrarModalVerRemito();
   renderRemDestLineas(r ? r.lineas : null);
   document.getElementById('remdest-form-card').style.display = 'block';
   document.getElementById('remdest-form-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -10376,7 +10385,7 @@ async function cerrarRemitoDestinoImpl(){
     saveProd();
     remAdminEditId = null;
     document.getElementById('remdest-form-card').style.display = 'none';
-    mostrarAccionesRemito(r.id);
+    abrirModalVerRemito(r.id);
     renderRemitosDestinoLista();
     renderAjustesRemitos();
     toastProd('✓ Remito Nº ' + numRemDest(r.id) + ' actualizado');
@@ -10422,21 +10431,33 @@ async function cerrarRemitoDestinoImpl(){
   saveProd();
 
   document.getElementById('remdest-form-card').style.display = 'none';
-  mostrarAccionesRemito(remito.id);
+  abrirModalVerRemito(remito.id);
   renderRemitosDestinoLista();
   toastProd('✓ Remito Nº ' + numRemDest(remito.id) + ' emitido');
 }
 
-// Muestra la card de acciones (Imprimir/PDF) para un remito ya emitido —
-// se usa tanto justo después de cerrar como al reabrir uno del listado.
-function mostrarAccionesRemito(id){
+// Modal de acciones (Imprimir/PDF) para un remito ya emitido — reemplaza
+// a la vieja mostrarAccionesRemito()/remdest-emitido-card (esa tarjeta
+// vivía dentro del panel de la pestaña Destino, así que "Ver" no hacía
+// nada visible si se llamaba desde Informes o desde Ajuste de Remitos,
+// porque el panel de Destino estaba oculto). Este modal es un único
+// camino de código, independiente de qué pestaña esté activa — se usa
+// tanto justo después de emitir/modificar un remito como al hacer clic
+// en "Ver" desde cualquiera de los tres listados que muestran remitos.
+function abrirModalVerRemito(id){
   const r = remitoDestinoById(id);
-  if(!r) return;
-  document.getElementById('remdest-emitido-titulo').textContent = 'Remito Nº ' + numRemDest(r.id) + ' — ' + r.destinatario;
-  document.getElementById('btn-remdest-imprimir').onclick = () => imprimirRemitoDestino(r.id);
-  document.getElementById('btn-remdest-pdf').onclick = () => exportarRemitoDestinoPDF(r.id);
-  document.getElementById('remdest-emitido-card').style.display = 'block';
-  document.getElementById('remdest-emitido-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if(!r){ toastProd('El remito ya no existe', 'error'); return; }
+  document.getElementById('vrd-titulo').textContent = 'Remito Nº ' + numRemDest(r.id) + ' — ' + r.destinatario;
+  document.getElementById('btn-vrd-imprimir').onclick = () => imprimirRemitoDestino(r.id);
+  document.getElementById('btn-vrd-pdf').onclick = () => exportarRemitoDestinoPDF(r.id);
+  document.getElementById('modal-ver-remito').classList.remove('hidden');
+}
+function cerrarModalVerRemito(){
+  const m = document.getElementById('modal-ver-remito');
+  if(m) m.classList.add('hidden');
+}
+function cerrarSiOverlayVerRemito(e){
+  if(e.target.id === 'modal-ver-remito') cerrarModalVerRemito();
 }
 
 // ── INFORME: REMITOS EMITIDOS (Informes) ────────────────────
@@ -10472,9 +10493,10 @@ function limpiarFiltrosInfRemitos(){
   renderInformeRemitosEmitidos();
 }
 
-function renderInformeRemitosEmitidos(){
-  const cont = document.getElementById('infre-lista');
-  if(!cont) return;
+// Filtrado compartido por la pantalla de Informes → Remitos Emitidos y
+// por su exportación a Excel — para que el .xlsx siempre traiga
+// exactamente lo mismo que se ve filtrado en pantalla en ese momento.
+function filasInformeRemitosEmitidos(){
   const desde = document.getElementById('infre-desde').value;
   const hasta = document.getElementById('infre-hasta').value;
   const destId = parseInt(document.getElementById('infre-destinatario').value);
@@ -10494,6 +10516,14 @@ function renderInformeRemitosEmitidos(){
       filas.push({ remito: r, linea: l });
     });
   });
+  return { filas: filas, remitos: rems };
+}
+
+function renderInformeRemitosEmitidos(){
+  const cont = document.getElementById('infre-lista');
+  if(!cont) return;
+  const res = filasInformeRemitosEmitidos();
+  const filas = res.filas, rems = res.remitos;
 
   if(!filas.length){
     cont.innerHTML = '<div class="empty-state"><div class="icon">📦</div><p>No hay remitos emitidos con esos filtros.</p></div>';
@@ -10504,17 +10534,59 @@ function renderInformeRemitosEmitidos(){
     return '<tr>' +
       '<td style="font-family:\'Syne\',sans-serif;font-weight:700">' + numRemDest(f.remito.id) + '</td>' +
       '<td>' + fechaBonitaProd(f.remito.fecha) + '</td>' +
-      '<td>' + escProd(f.remito.destinatario) + '</td>' +
-      '<td>' + escProd(f.linea.nombre) + '</td>' +
-      '<td style="text-align:right">' + f.linea.cantidad + '</td>' +
+      '<td style="max-width:110px">' + escProd(f.remito.destinatario) + '</td>' +
+      '<td style="max-width:140px">' + escProd(f.linea.nombre) + '</td>' +
+      '<td style="text-align:right;max-width:60px">' + f.linea.cantidad + '</td>' +
       '<td style="color:var(--muted)">' + escProd(f.linea.unidad) + '</td>' +
-      '<td><button class="btn btn-secondary btn-sm" onclick="mostrarAccionesRemito(' + f.remito.id + ')">👁 Ver</button></td>' +
+      '<td>' + escProd(f.remito.usuario || '—') + '</td>' +
+      '<td style="color:var(--muted);max-width:180px">' + escProd(f.remito.observacion || '—') + '</td>' +
+      '<td><button class="btn btn-secondary btn-sm" onclick="abrirModalVerRemito(' + f.remito.id + ')">👁 Ver</button></td>' +
     '</tr>';
   }).join('');
 
-  cont.innerHTML = '<table class="stock-table"><thead><tr><th>Nº</th><th>Fecha</th><th>Destinatario</th><th>Producto</th><th>Cantidad</th><th>Unidad</th><th></th></tr></thead><tbody>' +
+  cont.innerHTML = '<table class="stock-table"><thead><tr><th>Nº</th><th>Fecha</th><th style="max-width:110px">Destinatario</th><th style="max-width:140px">Producto</th><th style="text-align:right;max-width:60px">Cantidad</th><th>Unidad</th><th>Usuario</th><th style="max-width:180px">Observaciones</th><th></th></tr></thead><tbody>' +
     filasHtml + '</tbody></table>' +
     '<div style="font-size:.72rem;color:var(--muted);margin-top:8px">' + filas.length + ' línea(s) de ' + rems.length + ' remito(s).</div>';
+}
+
+function exportarInformeRemitosEmitidosExcel(){
+  if(typeof XLSX === 'undefined'){
+    toastProd('Cargando generador de Excel, intentá de nuevo en unos segundos...', 'error');
+    return;
+  }
+  const res = filasInformeRemitosEmitidos();
+  const filas = res.filas;
+  if(!filas.length){
+    toastProd('No hay remitos con esos filtros para exportar', 'error');
+    return;
+  }
+
+  const desde = document.getElementById('infre-desde').value;
+  const hasta = document.getElementById('infre-hasta').value;
+  const destSelEl = document.getElementById('infre-destinatario');
+  const prodSelEl = document.getElementById('infre-producto');
+  const destTxt = (destSelEl && destSelEl.value) ? destSelEl.options[destSelEl.selectedIndex].textContent : 'Todos';
+  const prodTxt = (prodSelEl && prodSelEl.value) ? prodSelEl.options[prodSelEl.selectedIndex].textContent : 'Todos';
+
+  const aoa = [
+    ['Remitos Emitidos'],
+    ['Fechas: ' + (desde ? fechaBonitaProd(desde) : 'inicio') + ' a ' + (hasta ? fechaBonitaProd(hasta) : 'hoy'),
+     'Destinatario: ' + destTxt, 'Producto: ' + prodTxt],
+    ['Emitido: ' + new Date().toLocaleString('es-AR')],
+    [],
+    ['Nº','Fecha','Destinatario','Producto','Cantidad','Unidad','Usuario','Observaciones']
+  ];
+  filas.forEach(function(f){
+    aoa.push([numRemDest(f.remito.id), fechaBonitaProd(f.remito.fecha), f.remito.destinatario, f.linea.nombre, f.linea.cantidad, f.linea.unidad, f.remito.usuario || '—', f.remito.observacion || '']);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:8},{wch:12},{wch:22},{wch:26},{wch:10},{wch:10},{wch:14},{wch:30}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Remitos Emitidos');
+  const hoy = new Date().toISOString().split('T')[0];
+  XLSX.writeFile(wb, 'remitos-emitidos-' + hoy + '.xlsx');
+  toastProd('✓ Excel de remitos emitidos descargado');
 }
 
 function renderRemitosDestinoLista(){
@@ -10529,7 +10601,7 @@ function renderRemitosDestinoLista(){
     <td>${fechaBonitaProd(r.fecha)}</td>
     <td>${escProd(r.destinatario)}</td>
     <td style="color:var(--muted)">${r.lineas.length} línea${r.lineas.length === 1 ? '' : 's'}</td>
-    <td><button class="btn btn-secondary btn-sm" onclick="mostrarAccionesRemito(${r.id})">👁 Ver / Reimprimir</button></td>
+    <td><button class="btn btn-secondary btn-sm" onclick="abrirModalVerRemito(${r.id})">👁 Ver / Reimprimir</button></td>
   </tr>`).join('');
   cont.innerHTML = `<div class="card-title" style="margin-top:22px;margin-bottom:10px">Remitos emitidos</div>
     <table class="stock-table"><thead>
