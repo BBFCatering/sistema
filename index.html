@@ -6153,7 +6153,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0090</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0091</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -7714,6 +7714,7 @@ const prodModuleHTML = '' +
 '        <button class="btn btn-secondary btn-sm" onclick="renderInformeRemitosEmitidos()">🔍 Filtrar</button>' +
 '        <button class="btn btn-secondary btn-sm" onclick="limpiarFiltrosInfRemitos()">✨ Todos</button>' +
 '        <button class="btn btn-secondary btn-sm" onclick="exportarInformeRemitosEmitidosExcel()">📊 Excel</button>' +
+'        <button class="btn btn-secondary btn-sm" onclick="exportarInformeRemitosEmitidosPDF()">📄 PDF</button>' +
 '      </div>' +
 '      <div style="font-size:.7rem;color:var(--muted);margin-bottom:10px">Los tres filtros admiten "Todos" y se combinan entre sí. Documental — estos remitos no descuentan stock.</div>' +
 '      <div id="infre-lista"></div>' +
@@ -7738,24 +7739,6 @@ const prodModuleHTML = '' +
 '      <div style=\"display:flex;gap:10px\">' +
 '        <button class=\"btn btn-primary\" style=\"flex:1\" onclick=\"cerrarModalReceta(false)\">✔ Confirmar</button>' +
 '        <button class=\"btn btn-secondary\" style=\"flex:1\" onclick=\"cerrarModalReceta(true)\">Cancelar</button>' +
-'      </div>' +
-'    </div>' +
-'  </div>' +
-
-// Modal único para "Ver" un remito emitido — usado desde Destino, desde
-// Informes → Remitos Emitidos y desde Ajustes → Ajuste de Remitos. Vive
-// fuera de los paneles con tabs (como receta-modal-overlay) para que
-// funcione igual sin importar qué pestaña esté activa — reemplaza a la
-// vieja tarjeta remdest-emitido-card, que solo se veía estando parado en
-// la pestaña Destino.
-'  <div id="modal-ver-remito" class="modal-overlay hidden" onclick="cerrarSiOverlayVerRemito(event)">' +
-'    <div class="modal" style="max-width:460px;text-align:center">' +
-'      <div style="font-size:34px;margin-bottom:8px">🧾</div>' +
-'      <div class="modal-title" id="vrd-titulo">Remito</div>' +
-'      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:16px">' +
-'        <button class="btn btn-primary" id="btn-vrd-imprimir">🖨 Imprimir (original + copia)</button>' +
-'        <button class="btn btn-primary" id="btn-vrd-pdf">📄 PDF (original)</button>' +
-'        <button class="btn btn-secondary" onclick="cerrarModalVerRemito()">Cerrar</button>' +
 '      </div>' +
 '    </div>' +
 '  </div>' +
@@ -10437,27 +10420,54 @@ async function cerrarRemitoDestinoImpl(){
 }
 
 // Modal de acciones (Imprimir/PDF) para un remito ya emitido — reemplaza
-// a la vieja mostrarAccionesRemito()/remdest-emitido-card (esa tarjeta
-// vivía dentro del panel de la pestaña Destino, así que "Ver" no hacía
-// nada visible si se llamaba desde Informes o desde Ajuste de Remitos,
-// porque el panel de Destino estaba oculto). Este modal es un único
-// camino de código, independiente de qué pestaña esté activa — se usa
-// tanto justo después de emitir/modificar un remito como al hacer clic
-// en "Ver" desde cualquiera de los tres listados que muestran remitos.
+// a la vieja mostrarAccionesRemito()/remdest-emitido-card. Esa tarjeta
+// (y su primer reemplazo, un modal fijo dentro de prodModuleHTML) vivían
+// dentro del HTML de UN módulo puntual: Destino en el primer caso,
+// Producción entero en el segundo — por eso "Ver" seguía sin hacer nada
+// al llamarlo desde Ajustes, que es un módulo totalmente aparte
+// (ajustesModuloHTML, Script 1) y no tiene cargado ese HTML.
+// asegurarModalVerRemito() resuelve esto de raíz: crea el modal una sola
+// vez por JS y lo cuelga directo de document.body (no del contenedor de
+// ningún módulo), mismo patrón que ya usan otros overlays armados por JS
+// en el sistema (ver, por ejemplo, el de impresión de remitos de Stock)
+// — así existe sin importar qué módulo esté cargado en ese momento, hoy
+// y con cualquier pantalla nueva que en el futuro también liste remitos.
+function asegurarModalVerRemito(){
+  let m = document.getElementById('modal-ver-remito');
+  if(m) return m;
+  m = document.createElement('div');
+  m.id = 'modal-ver-remito';
+  m.className = 'modal-overlay hidden';
+  m.onclick = function(e){ if(e.target.id === 'modal-ver-remito') cerrarModalVerRemito(); };
+  m.innerHTML =
+    '<div class="modal" style="max-width:460px;text-align:center">' +
+      '<div style="font-size:34px;margin-bottom:8px">🧾</div>' +
+      '<div class="modal-title" id="vrd-titulo">Remito</div>' +
+      '<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:16px">' +
+        '<button class="btn btn-primary" id="btn-vrd-imprimir">🖨 Imprimir (original + copia)</button>' +
+        '<button class="btn btn-primary" id="btn-vrd-pdf">📄 PDF (original)</button>' +
+        '<button class="btn btn-secondary" onclick="cerrarModalVerRemito()">Cerrar</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(m);
+  return m;
+}
+// Se usa tanto justo después de emitir/modificar un remito como al hacer
+// clic en "Ver" desde cualquiera de los listados que muestran remitos
+// (Producción → Destino, Informes → Remitos Emitidos, y Ajustes →
+// Ajuste de Remitos).
 function abrirModalVerRemito(id){
   const r = remitoDestinoById(id);
   if(!r){ toastProd('El remito ya no existe', 'error'); return; }
+  const m = asegurarModalVerRemito();
   document.getElementById('vrd-titulo').textContent = 'Remito Nº ' + numRemDest(r.id) + ' — ' + r.destinatario;
   document.getElementById('btn-vrd-imprimir').onclick = () => imprimirRemitoDestino(r.id);
   document.getElementById('btn-vrd-pdf').onclick = () => exportarRemitoDestinoPDF(r.id);
-  document.getElementById('modal-ver-remito').classList.remove('hidden');
+  m.classList.remove('hidden');
 }
 function cerrarModalVerRemito(){
   const m = document.getElementById('modal-ver-remito');
   if(m) m.classList.add('hidden');
-}
-function cerrarSiOverlayVerRemito(e){
-  if(e.target.id === 'modal-ver-remito') cerrarModalVerRemito();
 }
 
 // ── INFORME: REMITOS EMITIDOS (Informes) ────────────────────
@@ -10587,6 +10597,61 @@ function exportarInformeRemitosEmitidosExcel(){
   const hoy = new Date().toISOString().split('T')[0];
   XLSX.writeFile(wb, 'remitos-emitidos-' + hoy + '.xlsx');
   toastProd('✓ Excel de remitos emitidos descargado');
+}
+
+function exportarInformeRemitosEmitidosPDF(){
+  if(typeof window.jspdf === 'undefined'){
+    toastProd('Cargando generador de PDF, intentá de nuevo en unos segundos...', 'error');
+    return;
+  }
+  const res = filasInformeRemitosEmitidos();
+  const filas = res.filas;
+  if(!filas.length){
+    toastProd('No hay remitos con esos filtros para exportar', 'error');
+    return;
+  }
+
+  const desde = document.getElementById('infre-desde').value;
+  const hasta = document.getElementById('infre-hasta').value;
+  const destSelEl = document.getElementById('infre-destinatario');
+  const prodSelEl = document.getElementById('infre-producto');
+  const destTxt = (destSelEl && destSelEl.value) ? destSelEl.options[destSelEl.selectedIndex].textContent : 'Todos';
+  const prodTxt = (prodSelEl && prodSelEl.value) ? prodSelEl.options[prodSelEl.selectedIndex].textContent : 'Todos';
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape' });
+
+  let y = 15;
+  try {
+    const logoImg = document.querySelector('.sidebar-logo img');
+    if(logoImg && logoImg.src.startsWith('data:image')){
+      doc.addImage(logoImg.src, 'JPEG', 15, y, 28, 22);
+    }
+  } catch(e){ /* sin logo, seguimos */ }
+
+  doc.setFontSize(15);
+  doc.setFont('helvetica','bold');
+  doc.text('Remitos Emitidos', 50, 22);
+  doc.setFontSize(9);
+  doc.setFont('helvetica','normal');
+  doc.text('Fechas: ' + (desde ? fechaBonitaProd(desde) : 'inicio') + ' a ' + (hasta ? fechaBonitaProd(hasta) : 'hoy') +
+    '   ·   Destinatario: ' + destTxt + '   ·   Producto: ' + prodTxt, 50, 28);
+  doc.text('Emitido: ' + new Date().toLocaleString('es-AR'), 50, 33);
+
+  doc.autoTable({
+    startY: 42,
+    head: [['Nº','Fecha','Destinatario','Producto','Cantidad','Unidad','Usuario','Observaciones']],
+    body: filas.map(function(f){
+      return [numRemDest(f.remito.id), fechaBonitaProd(f.remito.fecha), f.remito.destinatario, f.linea.nombre, String(f.linea.cantidad), f.linea.unidad, f.remito.usuario || '—', f.remito.observacion || ''];
+    }),
+    theme: 'grid',
+    headStyles: { fillColor: [29,158,117], textColor: 255 },
+    styles: { fontSize: 8.5 }
+  });
+
+  const hoy = new Date().toISOString().split('T')[0];
+  doc.save('remitos-emitidos-' + hoy + '.pdf');
+  toastProd('✓ PDF de remitos emitidos descargado');
 }
 
 function renderRemitosDestinoLista(){
