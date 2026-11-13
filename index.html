@@ -6352,7 +6352,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0098</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0099</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -6743,14 +6743,26 @@ document.getElementById('modalSave').onclick = async () => {
       await sbUpdate('usuarios', `id=eq.${userId}&select=id`, { name, username });
       if (pass) await resetPasswordAdmin(userId, pass);
 
-      // Reemplazar el set de permisos completo: se borran los actuales y se
-      // insertan los del modal (más simple y seguro que comparar diffs).
-      await sbDelete('usuario_permisos', `usuario_id=eq.${userId}`);
+      // Reemplazar el set de permisos de los módulos EDITABLES desde este
+      // modal (los que no son adminOnly): se borran los actuales de esos
+      // módulos y se insertan los nuevos (más simple y seguro que comparar
+      // diffs). Importante: nunca tocar permisos de módulos adminOnly
+      // (usuarios/ajustes) — el modal no los gestiona (ver MODULES.filter
+      // más arriba), así que un DELETE sin este filtro los borraría sin
+      // forma de recrearlos desde la UI (bug detectado y corregido en
+      // Rev:0099 — ver Registro de Revisiones).
+      const modulosEditablesIds = MODULES.filter(m => !m.adminOnly).map(m => m.id);
+      await sbDelete('usuario_permisos', `usuario_id=eq.${userId}&modulo=in.(${modulosEditablesIds.join(',')})`);
       const filas = Object.entries(perms).map(([modulo, nivel]) => ({ usuario_id: userId, modulo, nivel }));
       if (filas.length) await sbInsert('usuario_permisos', filas);
 
       const u = users.find(u => u.id === userId);
-      u.name = name; u.username = username; u.perms = perms;
+      // Preservar los permisos adminOnly que ya tenía (no gestionados acá).
+      const permsAdminOnlyPreservados = {};
+      Object.entries(u.perms || {}).forEach(([modulo, nivel]) => {
+        if (!modulosEditablesIds.includes(modulo)) permsAdminOnlyPreservados[modulo] = nivel;
+      });
+      u.name = name; u.username = username; u.perms = { ...permsAdminOnlyPreservados, ...perms };
       if (u.id === currentUser.id) {
         currentUser = u;
         document.getElementById('sidebarName').textContent = u.name;
