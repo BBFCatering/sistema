@@ -907,6 +907,26 @@ async function sbBorrarArchivoPorUrl(bucket, url){
   } catch(e){ console.warn('No se pudo borrar el adjunto anterior del storage:', e); }
 }
 
+// Cambia la contraseña de OTRO usuario (no la propia) — tarea aparte de
+// la Etapa 2 de fase 2. Reemplaza al viejo rpc_set_password para este
+// caso puntual: ese RPC solo escribía en la columna vieja
+// usuarios.password_hash, sin relación con el login real desde que este
+// pasa por Supabase Auth. Cambiarle la clave a OTRA persona requiere la
+// API de administración de Auth (llave service_role) — nunca expuesta acá;
+// pasa por la Edge Function admin-reset-password, que corre del lado del
+// servidor, valida que quien llama sea un admin logueado, y recién ahí
+// actualiza la cuenta de Auth del usuario pedido.
+async function resetPasswordAdmin(usuarioId, nuevaPassword){
+  const res = await fetch(`${SB_URL}/functions/v1/admin-reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type':'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + (await sbAuthToken()) },
+    body: JSON.stringify({ usuario_id: usuarioId, new_password: nuevaPassword })
+  });
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok) throw new Error(data.error || `admin-reset-password: HTTP ${res.status}`);
+  return data;
+}
+
 // Llama a una función RPC de Postgres (ej. rpc_login, rpc_set_password).
 async function sbRpc(nombreFuncion, params){
   const res = await fetch(`${SB_URL}/rest/v1/rpc/${nombreFuncion}`, {
@@ -6288,7 +6308,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0095</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0096</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -6672,7 +6692,7 @@ document.getElementById('modalSave').onclick = async () => {
       // Editar existente
       userId = editingUser.id;
       await sbUpdate('usuarios', `id=eq.${userId}`, { name, username });
-      if (pass) await sbRpc('rpc_set_password', { p_usuario_id: userId, p_password: pass });
+      if (pass) await resetPasswordAdmin(userId, pass);
 
       // Reemplazar el set de permisos completo: se borran los actuales y se
       // insertan los del modal (más simple y seguro que comparar diffs).
@@ -6693,6 +6713,11 @@ document.getElementById('modalSave').onclick = async () => {
       // Nuevo usuario — password_hash placeholder, se define de verdad con
       // rpc_set_password justo después (nunca queda una fila con hash vacío
       // salvo que la segunda llamada falle, en cuyo caso se avisa igual).
+      // PENDIENTE (fase 2, no resuelto en esta tarea): un usuario creado
+      // acá NO recibe cuenta de Supabase Auth (auth_user_id queda null), así
+      // que por ahora no podría loguearse con el login real hasta que se le
+      // cree la cuenta a mano en el Dashboard y se vincule — igual que se
+      // hizo con los 10 usuarios existentes en la Etapa 1.
       const [creado] = await sbInsert('usuarios', { name, username, role: 'user', password_hash: '·', activo: true });
       userId = creado.id;
       await sbRpc('rpc_set_password', { p_usuario_id: userId, p_password: pass });
