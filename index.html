@@ -755,11 +755,20 @@ const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 // sin importar qué usuario entró. Ahora, tras un login exitoso contra
 // Supabase Auth, cada persona tiene su propia credencial (JWT) y las
 // llamadas viajan con ESA credencial — es la base real para repartir
-// permisos por usuario (Etapa 3). Se guarda solo en memoria (variable JS),
-// a propósito: hoy el sistema ya pide loguearse de nuevo en cada recarga
-// forzada (forzarRecargaYAbrir) y tras 14' de inactividad — no cambiamos
-// ese comportamiento en esta etapa.
+// permisos por usuario (Etapa 3).
 let authSession = null; // {access_token, refresh_token, expires_at (epoch ms)} o null si no hay sesión Auth (pre-login, o login viejo de respaldo)
+
+// Guarda la sesión de Auth (en memoria) y, además, el refresh_token en
+// sessionStorage — lo necesita restaurarSesionTrasRecarga() para reconstruir
+// una sesión real después de forzarRecargaYAbrir() (ver esa función, Script 1),
+// que hace una recarga completa de página y por lo tanto borra `authSession`
+// de la memoria. Se usa tanto al loguear como al renovar el token (Supabase
+// rota el refresh_token en cada uso: hay que guardar siempre el más nuevo,
+// nunca reusar uno viejo).
+function guardarAuthSession(data){
+  authSession = { access_token: data.access_token, refresh_token: data.refresh_token, expires_at: Date.now() + data.expires_in * 1000 };
+  try { sessionStorage.setItem('bbf_auth_refresh', data.refresh_token); } catch(e){}
+}
 
 // Si el access_token está por vencer (o ya venció), lo renueva en
 // silencio con el refresh_token antes de que el usuario note nada. No
@@ -775,8 +784,7 @@ async function asegurarTokenVigente(){
       body: JSON.stringify({ refresh_token: authSession.refresh_token })
     });
     if(!res.ok) throw new Error('refresh_token rechazado: HTTP ' + res.status);
-    const data = await res.json();
-    authSession = { access_token: data.access_token, refresh_token: data.refresh_token, expires_at: Date.now() + data.expires_in * 1000 };
+    guardarAuthSession(await res.json());
   } catch(e){
     console.warn('No se pudo renovar la sesión de Supabase Auth automáticamente:', e);
   }
@@ -5188,6 +5196,38 @@ async function cargarUsuariosDesdeSupabase(){
   const loginBtn = document.getElementById('loginBtn');
   const original = loginBtn ? loginBtn.textContent : '';
   if(loginBtn){ loginBtn.disabled = true; loginBtn.textContent = 'Cargando...'; }
+
+  // ── Restaurar la sesión real de Supabase Auth tras una recarga forzada ──
+  // forzarRecargaYAbrir() (al entrar a cualquier módulo) hace una recarga
+  // completa de la página, que borra `authSession` de la memoria. Antes de
+  // este arreglo, lo que seguía (incluida la carga de usuarios de acá
+  // abajo) viajaba con la llave genérica del sistema en vez de la
+  // credencial real de quien está logueado — invisible mientras esa llave
+  // tenía acceso a todo, pero rompe cualquier tabla ya migrada a permisos
+  // reales por usuario (Etapa 3: Ventas, Producción, Stock+Compras). Si no
+  // hay refresh_token guardado o Supabase lo rechaza (sesión vieja/revocada),
+  // sigue de largo y cae en el login normal, como siempre.
+  let authUserIdRestaurado = null;
+  const refreshGuardado = sessionStorage.getItem('bbf_auth_refresh');
+  if(refreshGuardado){
+    try {
+      const res = await fetch(`${SB_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'apikey': SB_KEY },
+        body: JSON.stringify({ refresh_token: refreshGuardado })
+      });
+      if(res.ok){
+        const data = await res.json();
+        guardarAuthSession(data);
+        authUserIdRestaurado = data.user && data.user.id;
+      } else {
+        sessionStorage.removeItem('bbf_auth_refresh');
+      }
+    } catch(e){
+      console.warn('No se pudo restaurar la sesión de Supabase Auth tras la recarga:', e);
+    }
+  }
+
   try {
     users = await cargarUsuariosDesdeSupabase();
 
@@ -5211,20 +5251,28 @@ async function cargarUsuariosDesdeSupabase(){
     if(loginBtn){ loginBtn.disabled = false; loginBtn.textContent = original || 'Ingresar'; }
   }
 
-  // ── AUTO-LOGIN tras una recarga forzada (al entrar a Stock/Compras) ──
+  // ── AUTO-LOGIN tras una recarga forzada (al entrar a un módulo) ──
   // La recarga es solo para garantizar que se ejecute la versión más
-  // reciente del sistema; no debe obligar a loguearse de nuevo.
-  const usuarioRecordado = sessionStorage.getItem('bbf_usuario_actual');
-  if(usuarioRecordado){
-    const u = users.find(x => x.username === usuarioRecordado);
+  // reciente del sistema; no debe obligar a loguearse de nuevo. Se basa en
+  // la sesión de Auth restaurada arriba (no en el usuario recordado por
+  // nombre) — si esa sesión no se pudo restaurar, no hay auto-login real
+  // posible y se muestra el login normal.
+  if(authUserIdRestaurado){
+    const u = users.find(x => x.authUserId === authUserIdRestaurado);
     if(u){
       currentUser = u;
       showApp();
     } else {
-      // El usuario ya no existe (fue eliminado) — limpiar y mostrar login normal
+      // La sesión de Auth es válida pero no corresponde a ningún usuario
+      // activo del sistema (ej: se lo desactivó) — limpiar y mostrar login normal.
+      authSession = null;
+      sessionStorage.removeItem('bbf_auth_refresh');
       sessionStorage.removeItem('bbf_usuario_actual');
       sessionStorage.removeItem('bbf_modulo_pendiente');
     }
+  } else {
+    sessionStorage.removeItem('bbf_usuario_actual');
+    sessionStorage.removeItem('bbf_modulo_pendiente');
   }
 })();
 
@@ -6197,11 +6245,7 @@ async function doLogin() {
       return;
     }
     const dataAuth = await resAuth.json();
-    authSession = {
-      access_token: dataAuth.access_token,
-      refresh_token: dataAuth.refresh_token,
-      expires_at: Date.now() + dataAuth.expires_in * 1000
-    };
+    guardarAuthSession(dataAuth);
 
     let user = users.find(u => u.authUserId === dataAuth.user.id);
     if(!user){
@@ -6308,7 +6352,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0097</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0098</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -6421,6 +6465,7 @@ function doLogout() {
   clearInterval(inactividadCountdownTimer);
   sessionStorage.removeItem('bbf_usuario_actual');
   sessionStorage.removeItem('bbf_modulo_pendiente');
+  sessionStorage.removeItem('bbf_auth_refresh');
   document.getElementById('inactividad-overlay')?.classList.add('hidden');
   document.getElementById('viewApp').classList.add('hidden');
   document.getElementById('viewLogin').classList.remove('hidden');
