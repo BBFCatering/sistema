@@ -748,7 +748,49 @@ function maxId(k){ return DB[k].length ? Math.max(...DB[k].map(x=>x.id),0)+1 : 1
 const SB_URL = 'https://aeucfekavdptmbccoftu.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFldWNmZWthdmRwdG1iY2NvZnR1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExMDY1NDksImV4cCI6MjA5NjY4MjU0OX0.s7KWmO1RXzNWrJj70tp_UdGYs17BRlxndqQ1b727iAc';
 // Nuevo formato Supabase: sb_publishable va SOLO en apikey, sin Authorization Bearer
-const SB_HEADERS = { 'Content-Type':'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
+
+// ── SESIÓN DE SUPABASE AUTH (fase 2, Etapa 2) ──────────
+// Antes de esta etapa, TODAS las llamadas a Supabase (incluso después de
+// loguearse con rpc_login) viajaban siempre con la misma anon key fija,
+// sin importar qué usuario entró. Ahora, tras un login exitoso contra
+// Supabase Auth, cada persona tiene su propia credencial (JWT) y las
+// llamadas viajan con ESA credencial — es la base real para repartir
+// permisos por usuario (Etapa 3). Se guarda solo en memoria (variable JS),
+// a propósito: hoy el sistema ya pide loguearse de nuevo en cada recarga
+// forzada (forzarRecargaYAbrir) y tras 14' de inactividad — no cambiamos
+// ese comportamiento en esta etapa.
+let authSession = null; // {access_token, refresh_token, expires_at (epoch ms)} o null si no hay sesión Auth (pre-login, o login viejo de respaldo)
+
+// Si el access_token está por vencer (o ya venció), lo renueva en
+// silencio con el refresh_token antes de que el usuario note nada. No
+// fuerza un logout si falla: la llamada que siga va a fallar con su
+// propio error de conexión, igual que hoy ante cualquier corte de red.
+async function asegurarTokenVigente(){
+  if(!authSession) return;
+  if(Date.now() < authSession.expires_at - 60000) return; // todavía válido, con 60s de margen
+  try {
+    const res = await fetch(`${SB_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'apikey': SB_KEY },
+      body: JSON.stringify({ refresh_token: authSession.refresh_token })
+    });
+    if(!res.ok) throw new Error('refresh_token rechazado: HTTP ' + res.status);
+    const data = await res.json();
+    authSession = { access_token: data.access_token, refresh_token: data.refresh_token, expires_at: Date.now() + data.expires_in * 1000 };
+  } catch(e){
+    console.warn('No se pudo renovar la sesión de Supabase Auth automáticamente:', e);
+  }
+}
+// Token a usar en el header Authorization de cada llamada: el del usuario
+// logueado por Auth si existe, o la anon key fija (comportamiento de
+// siempre) antes de loguearse / durante el login mismo.
+async function sbAuthToken(){
+  await asegurarTokenVigente();
+  return authSession ? authSession.access_token : SB_KEY;
+}
+async function sbHeaders(){
+  return { 'Content-Type':'application/json', 'apikey': SB_KEY, 'Authorization': 'Bearer ' + (await sbAuthToken()) };
+}
 
 // ── HELPERS GENÉRICOS DE ACCESO AL ESQUEMA RELACIONAL (PostgREST) ──
 // Reemplazan el patrón viejo de "modificar el blob completo en memoria y
@@ -782,7 +824,7 @@ async function sbSelect(tabla, queryString){
   let todas = [];
   while(true){
     const url = `${SB_URL}/rest/v1/${tabla}?${qs}&offset=${offset}`;
-    const res = await fetch(url, { headers: SB_HEADERS });
+    const res = await fetch(url, { headers: await sbHeaders() });
     if(!res.ok) throw new Error(`sbSelect(${tabla}): HTTP ${res.status} — ${await res.text()}`);
     const pagina = await res.json();
     if(!pagina.length) break;
@@ -798,7 +840,7 @@ async function sbSelect(tabla, queryString){
 async function sbInsert(tabla, fila){
   const res = await fetch(`${SB_URL}/rest/v1/${tabla}`, {
     method: 'POST',
-    headers: { ...SB_HEADERS, 'Prefer': 'return=representation' },
+    headers: { ...(await sbHeaders()), 'Prefer': 'return=representation' },
     body: JSON.stringify(fila)
   });
   if(!res.ok) throw new Error(`sbInsert(${tabla}): HTTP ${res.status} — ${await res.text()}`);
@@ -810,7 +852,7 @@ async function sbInsert(tabla, fila){
 async function sbUpdate(tabla, filtroQS, cambios){
   const res = await fetch(`${SB_URL}/rest/v1/${tabla}?${filtroQS}`, {
     method: 'PATCH',
-    headers: { ...SB_HEADERS, 'Prefer': 'return=representation' },
+    headers: { ...(await sbHeaders()), 'Prefer': 'return=representation' },
     body: JSON.stringify(cambios)
   });
   if(!res.ok) throw new Error(`sbUpdate(${tabla}): HTTP ${res.status} — ${await res.text()}`);
@@ -825,7 +867,7 @@ async function sbUpdate(tabla, filtroQS, cambios){
 async function sbDelete(tabla, filtroQS){
   const res = await fetch(`${SB_URL}/rest/v1/${tabla}?${filtroQS}`, {
     method: 'DELETE',
-    headers: SB_HEADERS
+    headers: await sbHeaders()
   });
   if(!res.ok) throw new Error(`sbDelete(${tabla}): HTTP ${res.status} — ${await res.text()}`);
 }
@@ -841,7 +883,7 @@ async function sbSubirArchivo(bucket, file){
   const nombreUnico = `${Date.now()}-${Math.random().toString(36).slice(2,8)}${ext}`;
   const res = await fetch(`${SB_URL}/storage/v1/object/${bucket}/${nombreUnico}`, {
     method: 'POST',
-    headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': file.type || 'application/octet-stream' },
+    headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + (await sbAuthToken()), 'Content-Type': file.type || 'application/octet-stream' },
     body: file
   });
   if(!res.ok) throw new Error(`sbSubirArchivo(${bucket}): HTTP ${res.status} — ${await res.text()}`);
@@ -860,7 +902,7 @@ async function sbBorrarArchivoPorUrl(bucket, url){
   try {
     await fetch(`${SB_URL}/storage/v1/object/${bucket}/${path}`, {
       method: 'DELETE',
-      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY }
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + (await sbAuthToken()) }
     });
   } catch(e){ console.warn('No se pudo borrar el adjunto anterior del storage:', e); }
 }
@@ -869,7 +911,7 @@ async function sbBorrarArchivoPorUrl(bucket, url){
 async function sbRpc(nombreFuncion, params){
   const res = await fetch(`${SB_URL}/rest/v1/rpc/${nombreFuncion}`, {
     method: 'POST',
-    headers: SB_HEADERS,
+    headers: await sbHeaders(),
     body: JSON.stringify(params || {})
   });
   if(!res.ok) throw new Error(`sbRpc(${nombreFuncion}): HTTP ${res.status} — ${await res.text()}`);
@@ -1113,7 +1155,7 @@ async function cargarOCDesdeSupabase(){
 async function cargarDesdeSupabase(){
   setSyncStatus('loading');
   try {
-    const res = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.main&select=data`, { headers: SB_HEADERS });
+    const res = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.main&select=data`, { headers: await sbHeaders() });
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const rows = await res.json();
 
@@ -1205,7 +1247,7 @@ async function guardarEnSupabase(){
     const localVacio = (!DB.productos || DB.productos.length === 0) &&
                         (!DB.proveedores || DB.proveedores.length === 0);
     if(localVacio){
-      const check = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.main&select=data`, { headers: SB_HEADERS });
+      const check = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.main&select=data`, { headers: await sbHeaders() });
       if(check.ok){
         const rows = await check.json();
         const remoto = rows && rows[0] && rows[0].data;
@@ -1224,7 +1266,7 @@ async function guardarEnSupabase(){
 
     const res = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.main`, {
       method: 'PATCH',
-      headers: { ...SB_HEADERS, 'Prefer': 'return=minimal' },
+      headers: { ...(await sbHeaders()), 'Prefer': 'return=minimal' },
       body: JSON.stringify({ data: DB, updated_at: new Date().toISOString() })
     });
     if(!res.ok) throw new Error('HTTP ' + res.status);
@@ -5112,13 +5154,13 @@ let users = [];
 // pantallas que leen currentUser.perms[moduloId].
 async function cargarUsuariosDesdeSupabase(){
   const [filasUsuarios, filasPermisos] = await Promise.all([
-    sbSelect('usuarios', 'activo=eq.true&select=id,name,username,role'),
+    sbSelect('usuarios', 'activo=eq.true&select=id,name,username,role,auth_user_id'),
     sbSelect('usuario_permisos', 'select=usuario_id,modulo,nivel')
   ]);
   return filasUsuarios.map(u => {
     const perms = {};
     filasPermisos.filter(p => p.usuario_id === u.id).forEach(p => { perms[p.modulo] = p.nivel; });
-    return { id: u.id, name: u.name, username: u.username, role: u.role, perms };
+    return { id: u.id, name: u.name, username: u.username, role: u.role, authUserId: u.auth_user_id, perms };
   });
 }
 
@@ -6114,25 +6156,51 @@ async function doLogin() {
   const original = loginBtn.textContent;
   loginBtn.disabled = true; loginBtn.textContent = 'Verificando...';
   try {
-    // La contraseña viaja al servidor y se compara ahí contra el hash
-    // bcrypt (rpc_login, sección 15.7) — nunca se compara en el navegador.
-    const resultado = await sbRpc('rpc_login', { p_username: un, p_password: pw });
-    const fila = resultado && resultado[0];
-    if(fila){
-      let user = users.find(u => u.id === fila.id);
-      if(!user){
-        // Por si el login se hizo antes de que cargarUsuariosDesdeSupabase()
-        // terminara — recargamos la lista una vez más.
-        users = await cargarUsuariosDesdeSupabase();
-        user = users.find(u => u.id === fila.id);
-      }
-      currentUser = user || { id: fila.id, name: fila.name, username: fila.username, role: fila.role, perms: {} };
-      document.getElementById('loginError').textContent = '';
-      document.getElementById('loginPass').value = '';
-      showApp();
-    } else {
+    // Fase 2, Etapa 2: el login real pasa a ser Supabase Auth (antes era
+    // rpc_login comparando a mano contra usuarios.password_hash). La
+    // pantalla sigue pidiendo "usuario", así que primero traducimos a su
+    // email (rpc_email_por_username, sección 15.x) y recién ahí logueamos
+    // contra Auth — la contraseña nunca se compara en el navegador, igual
+    // que antes.
+    const email = await sbRpc('rpc_email_por_username', { p_username: un });
+    if(!email){
       document.getElementById('loginError').textContent = 'Usuario o contraseña incorrectos.';
+      return;
     }
+    const resAuth = await fetch(`${SB_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'apikey': SB_KEY },
+      body: JSON.stringify({ email, password: pw })
+    });
+    if(!resAuth.ok){
+      document.getElementById('loginError').textContent = 'Usuario o contraseña incorrectos.';
+      return;
+    }
+    const dataAuth = await resAuth.json();
+    authSession = {
+      access_token: dataAuth.access_token,
+      refresh_token: dataAuth.refresh_token,
+      expires_at: Date.now() + dataAuth.expires_in * 1000
+    };
+
+    let user = users.find(u => u.authUserId === dataAuth.user.id);
+    if(!user){
+      // Por si el login se hizo antes de que cargarUsuariosDesdeSupabase()
+      // terminara — recargamos la lista una vez más.
+      users = await cargarUsuariosDesdeSupabase();
+      user = users.find(u => u.authUserId === dataAuth.user.id);
+    }
+    if(!user){
+      // No debería pasar (las 10 cuentas activas ya están vinculadas) —
+      // defensivo, por si se crea una cuenta de Auth sin enlazar a tiempo.
+      authSession = null;
+      document.getElementById('loginError').textContent = 'Tu cuenta no está vinculada en el sistema. Avisá al administrador.';
+      return;
+    }
+    currentUser = user;
+    document.getElementById('loginError').textContent = '';
+    document.getElementById('loginPass').value = '';
+    showApp();
   } catch(e){
     console.warn('Error en login:', e);
     document.getElementById('loginError').textContent = 'No se pudo verificar — revisá tu conexión.';
@@ -6220,7 +6288,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0094</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0095</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -6317,6 +6385,16 @@ function cerrarSesionPorInactividad(){
 }
 
 function doLogout() {
+  // Avisamos a Supabase Auth para invalidar el refresh_token del lado del
+  // servidor — best effort, no bloquea el cierre de sesión si falla o no
+  // hay conexión (mismo criterio que sbBorrarArchivoPorUrl).
+  if(authSession){
+    fetch(`${SB_URL}/auth/v1/logout`, {
+      method: 'POST',
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + authSession.access_token }
+    }).catch(()=>{});
+  }
+  authSession  = null;
   currentUser  = null;
   activeModule = null;
   clearTimeout(inactividadTimer);
@@ -7204,7 +7282,7 @@ async function cargarProduccionHistorialDesdeSupabase(){
 async function cargarProdDesdeSupabase(){
   setSyncStatusProd('loading');
   try {
-    const res = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.produccion&select=data`, { headers: SB_HEADERS });
+    const res = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.produccion&select=data`, { headers: await sbHeaders() });
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const rows = await res.json();
 
@@ -7214,7 +7292,7 @@ async function cargarProdDesdeSupabase(){
       // de guardado siempre encuentran la fila.
       const ins = await fetch(`${SB_URL}/rest/v1/stockbbf`, {
         method: 'POST',
-        headers: { ...SB_HEADERS, 'Prefer': 'return=minimal' },
+        headers: { ...(await sbHeaders()), 'Prefer': 'return=minimal' },
         body: JSON.stringify({ id: 'produccion', data: PDB, updated_at: new Date().toISOString() })
       });
       if(!ins.ok) throw new Error('HTTP ' + ins.status + ' al crear fila produccion');
@@ -7282,7 +7360,7 @@ async function guardarProdEnSupabase(){
                        (!PDB.productosProd || PDB.productosProd.length === 0) &&
                        (!PDB.registros || PDB.registros.length === 0);
     if(localVacio){
-      const check = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.produccion&select=data`, { headers: SB_HEADERS });
+      const check = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.produccion&select=data`, { headers: await sbHeaders() });
       if(check.ok){
         const rows = await check.json();
         const remoto = rows && rows[0] && rows[0].data;
@@ -7303,7 +7381,7 @@ async function guardarProdEnSupabase(){
     // PATCH con return=representation para detectar si la fila existe.
     const res = await fetch(`${SB_URL}/rest/v1/stockbbf?id=eq.produccion`, {
       method: 'PATCH',
-      headers: { ...SB_HEADERS, 'Prefer': 'return=representation' },
+      headers: { ...(await sbHeaders()), 'Prefer': 'return=representation' },
       body: JSON.stringify({ data: PDB, updated_at: new Date().toISOString() })
     });
     if(!res.ok) throw new Error('HTTP ' + res.status);
@@ -7312,7 +7390,7 @@ async function guardarProdEnSupabase(){
       // La fila no existía (caso raro: se borró manualmente) → crearla.
       const ins = await fetch(`${SB_URL}/rest/v1/stockbbf`, {
         method: 'POST',
-        headers: { ...SB_HEADERS, 'Prefer': 'return=minimal' },
+        headers: { ...(await sbHeaders()), 'Prefer': 'return=minimal' },
         body: JSON.stringify({ id: 'produccion', data: PDB, updated_at: new Date().toISOString() })
       });
       if(!ins.ok) throw new Error('HTTP ' + ins.status + ' al recrear fila produccion');
