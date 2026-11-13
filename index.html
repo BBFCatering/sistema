@@ -6308,7 +6308,7 @@ function renderWelcome() {
   document.getElementById('topbarTitle').textContent = 'Inicio';
   const permPill = document.getElementById('topbarPerm');
   permPill.className = '';
-  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0096</span>';
+  permPill.innerHTML = '<span style="font-size:10px;color:var(--text2);letter-spacing:.5px;opacity:.7">Rev:0097</span>';
 
   const hora = new Date().getHours();
   const saludo = hora < 12 ? 'Buenos días' : hora < 19 ? 'Buenas tardes' : 'Buenas noches';
@@ -6691,7 +6691,11 @@ document.getElementById('modalSave').onclick = async () => {
     if (editingUser) {
       // Editar existente
       userId = editingUser.id;
-      await sbUpdate('usuarios', `id=eq.${userId}`, { name, username });
+      // select=id: el PATCH solo necesita devolver una columna que el rol sí
+      // pueda leer (password_hash quedó sin SELECT para anon/authenticated
+      // desde la Rev:0093) — si no, Postgres rechaza todo el PATCH al intentar
+      // devolver la fila completa. El valor devuelto no se usa.
+      await sbUpdate('usuarios', `id=eq.${userId}&select=id`, { name, username });
       if (pass) await resetPasswordAdmin(userId, pass);
 
       // Reemplazar el set de permisos completo: se borran los actuales y se
